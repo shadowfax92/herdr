@@ -2439,6 +2439,88 @@ command = ["sh", "-c", "printf '%s\n%s\n%s' \"$HERDR_PLUGIN_ROOT\" \"$HERDR_PLUG
     }
 
     #[cfg(unix)]
+    #[tokio::test]
+    async fn copy_mode_keybound_plugin_action_includes_selection_context() {
+        let mut app = test_app();
+        let workspace = crate::workspace::Workspace::test_new("copy-plugin-selection");
+        let pane_id = workspace.tabs[0].root_pane;
+        let terminal_id = workspace.terminal_id(pane_id).cloned().unwrap();
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.terminal_runtimes.insert(
+            terminal_id,
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"hello plugin\n"),
+        );
+        app.state.selection = Some(crate::selection::Selection::range(pane_id, 0, 0, 4, None));
+        app.state.copy_mode = Some(crate::app::state::CopyModeState {
+            pane_id,
+            cursor_row: 0,
+            cursor_col: 4,
+            entry_offset_from_bottom: 0,
+            selection: Some(crate::app::state::CopyModeSelection::Character),
+            search: crate::app::state::CopyModeSearchState::default(),
+        });
+        app.state.mode = crate::app::Mode::Copy;
+        let config: crate::config::Config = toml::from_str(
+            r#"
+[[keys.command]]
+key = "c"
+mode = "copy"
+type = "plugin_action"
+command = "example.copy-context.capture"
+"#,
+        )
+        .unwrap();
+        app.state.keybinds = config.keybinds();
+        let expected_pane_id = app.public_pane_id(0, pane_id).unwrap();
+        let root = unique_temp_path("copy-plugin-context");
+        let capture = root.join("context.json");
+        write_manifest_content(
+            &root,
+            &format!(
+                r#"
+id = "example.copy-context"
+name = "Copy Context"
+version = "0.1.0"
+min_herdr_version = "0.6.10"
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "capture"
+title = "Capture"
+contexts = ["selection"]
+command = ["sh", "-c", "printf '%s' \"$HERDR_PLUGIN_CONTEXT_JSON\" > {}"]
+"#,
+                capture.display()
+            ),
+        );
+        link_manifest(&mut app, &root);
+
+        app.handle_copy_mode_key(crate::input::TerminalKey::new(
+            crossterm::event::KeyCode::Char('c'),
+            crossterm::event::KeyModifiers::empty(),
+        ));
+
+        let context: PluginInvocationContext =
+            serde_json::from_str(&read_capture_when_ready(&capture, || {
+                app.drain_all_internal_events();
+            }))
+            .unwrap();
+        assert_eq!(
+            context.focused_pane_id.as_deref(),
+            Some(expected_pane_id.as_str())
+        );
+        assert_eq!(context.selected_text.as_deref(), Some("hello"));
+        assert_eq!(context.invocation_source.as_deref(), Some("keybinding"));
+        assert_eq!(app.state.mode, crate::app::Mode::Copy);
+        assert!(app.state.selection.is_some());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
     #[test]
     fn startup_hooks_run_once_with_plugin_environment() {
         let mut app = test_app();

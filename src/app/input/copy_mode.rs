@@ -20,9 +20,16 @@ impl App {
             self.state.mode = Mode::Prefix;
             return;
         }
-        self.state
+        let handled = self
+            .state
             .handle_copy_mode_key(&self.terminal_runtimes, key);
         self.dispatch_pending_clipboard_write();
+        if handled {
+            return;
+        }
+        if let Some(binding) = super::navigate::copy_mode_command_for_key(&self.state, key) {
+            self.launch_custom_command(binding, super::navigate::ActionContext::Copy);
+        }
     }
 }
 
@@ -79,9 +86,9 @@ impl AppState {
         &mut self,
         terminal_runtimes: &TerminalRuntimeRegistry,
         key: TerminalKey,
-    ) {
+    ) -> bool {
         if self.handle_copy_mode_search_prompt_key(terminal_runtimes, key) {
-            return;
+            return true;
         }
         match key.code {
             KeyCode::Esc => {
@@ -104,68 +111,72 @@ impl AppState {
                             ..Default::default()
                         };
                     }
-                    return;
+                    return true;
                 }
                 self.exit_copy_mode(terminal_runtimes, false);
-                return;
+                return true;
             }
             KeyCode::Enter => {
                 self.exit_copy_mode(terminal_runtimes, true);
-                return;
+                return true;
             }
             KeyCode::Left => {
                 self.move_copy_cursor(terminal_runtimes, 0, -1);
-                return;
+                return true;
             }
             KeyCode::Down => {
                 self.move_copy_cursor(terminal_runtimes, 1, 0);
-                return;
+                return true;
             }
             KeyCode::Up => {
                 self.move_copy_cursor(terminal_runtimes, -1, 0);
-                return;
+                return true;
             }
             KeyCode::Right => {
                 self.move_copy_cursor(terminal_runtimes, 0, 1);
-                return;
+                return true;
             }
             KeyCode::PageUp => {
                 self.scroll_copy_mode_page(terminal_runtimes, -1, false);
-                return;
+                return true;
             }
             KeyCode::PageDown => {
                 self.scroll_copy_mode_page(terminal_runtimes, 1, false);
-                return;
+                return true;
             }
             KeyCode::Home => {
                 self.copy_mode_line_edge(terminal_runtimes, false);
-                return;
+                return true;
             }
             KeyCode::End => {
                 self.copy_mode_line_edge(terminal_runtimes, true);
-                return;
+                return true;
             }
             _ => {}
         }
 
         match (key.code, key.modifiers) {
             (KeyCode::Char('b'), mods) if mods.contains(KeyModifiers::CONTROL) => {
-                self.scroll_copy_mode_page(terminal_runtimes, -1, false)
+                self.scroll_copy_mode_page(terminal_runtimes, -1, false);
+                return true;
             }
             (KeyCode::Char('f'), mods) if mods.contains(KeyModifiers::CONTROL) => {
-                self.scroll_copy_mode_page(terminal_runtimes, 1, false)
+                self.scroll_copy_mode_page(terminal_runtimes, 1, false);
+                return true;
             }
             (KeyCode::Char('u'), mods) if mods.contains(KeyModifiers::CONTROL) => {
-                self.scroll_copy_mode_page(terminal_runtimes, -1, true)
+                self.scroll_copy_mode_page(terminal_runtimes, -1, true);
+                return true;
             }
             (KeyCode::Char('d'), mods) if mods.contains(KeyModifiers::CONTROL) => {
-                self.scroll_copy_mode_page(terminal_runtimes, 1, true)
+                self.scroll_copy_mode_page(terminal_runtimes, 1, true);
+                return true;
             }
             _ => {}
         }
 
         let Some(ch) = copy_mode_command_char(key) else {
-            return;
+            return false;
         };
         match ch {
             'q' => self.exit_copy_mode(terminal_runtimes, false),
@@ -190,8 +201,9 @@ impl AppState {
             'e' => self.copy_mode_word_motion(terminal_runtimes, WordMotion::NextEnd),
             '{' => self.copy_mode_paragraph(terminal_runtimes, -1),
             '}' => self.copy_mode_paragraph(terminal_runtimes, 1),
-            _ => {}
+            _ => return false,
         }
+        true
     }
 
     fn handle_copy_mode_search_prompt_key(
@@ -1215,6 +1227,91 @@ mod tests {
 
         assert_eq!(app.state.mode, Mode::Copy);
         assert_eq!(app.state.copy_mode, Some(copy_mode));
+    }
+
+    #[tokio::test]
+    async fn copy_mode_custom_command_failure_preserves_selection() {
+        let config: crate::config::Config = toml::from_str(
+            r#"
+[[keys.command]]
+key = "c"
+mode = "copy"
+type = "plugin_action"
+command = "missing.plugin.action"
+"#,
+        )
+        .unwrap();
+        let (mut app, _) = app_with_copy_screen(b"alpha\nbeta\n");
+        app.state.keybinds = config.keybinds();
+        app.state.enter_copy_mode(&app.terminal_runtimes);
+        app.handle_copy_mode_key(TerminalKey::new(KeyCode::Char('v'), KeyModifiers::empty()));
+        app.handle_copy_mode_key(TerminalKey::new(KeyCode::Char('l'), KeyModifiers::empty()));
+        let copy_mode = app.state.copy_mode.clone();
+        let selection = format!("{:?}", app.state.selection);
+
+        app.handle_copy_mode_key(TerminalKey::new(KeyCode::Char('c'), KeyModifiers::empty()));
+
+        assert_eq!(app.state.mode, Mode::Copy);
+        assert_eq!(app.state.copy_mode, copy_mode);
+        assert_eq!(format!("{:?}", app.state.selection), selection);
+        assert_eq!(
+            app.state.toast.as_ref().map(|toast| toast.title.as_str()),
+            Some("custom command failed")
+        );
+    }
+
+    #[tokio::test]
+    async fn copy_mode_search_prompt_owns_scoped_command_key() {
+        let config: crate::config::Config = toml::from_str(
+            r#"
+[[keys.command]]
+key = "c"
+mode = "copy"
+type = "plugin_action"
+command = "missing.plugin.action"
+"#,
+        )
+        .unwrap();
+        let (mut app, _) = app_with_copy_screen(b"alpha\nbeta\n");
+        app.state.keybinds = config.keybinds();
+        app.state.enter_copy_mode(&app.terminal_runtimes);
+        app.handle_copy_mode_key(TerminalKey::new(KeyCode::Char('/'), KeyModifiers::empty()));
+
+        app.handle_copy_mode_key(TerminalKey::new(KeyCode::Char('c'), KeyModifiers::empty()));
+
+        assert_eq!(
+            app.state
+                .copy_mode
+                .as_ref()
+                .and_then(|copy_mode| copy_mode.search.prompt.as_ref())
+                .map(|prompt| prompt.query.as_str()),
+            Some("c")
+        );
+        assert!(app.state.toast.is_none());
+    }
+
+    #[tokio::test]
+    async fn copy_mode_builtin_key_precedes_scoped_command() {
+        let (mut app, _) = app_with_copy_screen(b"alpha\nbeta\n");
+        app.state.keybinds.copy_mode_commands = vec![crate::config::CustomCommandKeybind {
+            bindings: crate::config::ActionKeybinds::direct("l"),
+            label: "l".into(),
+            command: "missing.plugin.action".into(),
+            action: crate::config::CustomCommandAction::PluginAction,
+            description: None,
+            width: None,
+            height: None,
+        }];
+        app.state.enter_copy_mode(&app.terminal_runtimes);
+        let previous_col = app.state.copy_mode.as_ref().unwrap().cursor_col;
+
+        app.handle_copy_mode_key(TerminalKey::new(KeyCode::Char('l'), KeyModifiers::empty()));
+
+        assert_eq!(
+            app.state.copy_mode.as_ref().unwrap().cursor_col,
+            previous_col + 1
+        );
+        assert!(app.state.toast.is_none());
     }
 
     #[tokio::test]

@@ -48,6 +48,7 @@ pub(crate) enum ActionContext {
     Direct,
     Prefix,
     Navigate,
+    Copy,
 }
 
 impl App {
@@ -1150,6 +1151,18 @@ pub(crate) fn command_for_key(
         .cloned()
 }
 
+pub(crate) fn copy_mode_command_for_key(
+    state: &AppState,
+    key: TerminalKey,
+) -> Option<crate::config::CustomCommandKeybind> {
+    state
+        .keybinds
+        .copy_mode_commands
+        .iter()
+        .find(|binding| binding.bindings.matches_direct_key(key))
+        .cloned()
+}
+
 fn unmodified_digit_for_key(key: TerminalKey) -> Option<char> {
     ('1'..='9').find(|digit| {
         crate::config::terminal_key_matches_combo(
@@ -1774,7 +1787,9 @@ pub(super) fn execute_navigate_action_in_context(
 
 fn workspace_action_target(state: &AppState, context: ActionContext) -> Option<usize> {
     let idx = match context {
-        ActionContext::Direct | ActionContext::Prefix => state.active.unwrap_or(state.selected),
+        ActionContext::Direct | ActionContext::Prefix | ActionContext::Copy => {
+            state.active.unwrap_or(state.selected)
+        }
         ActionContext::Navigate => state.selected,
     };
     (idx < state.workspaces.len()).then_some(idx)
@@ -1821,10 +1836,12 @@ fn finish_custom_command_context(
     context: ActionContext,
     previous_mode: Mode,
 ) {
-    if context == ActionContext::Navigate {
-        leave_navigate_mode(state);
-    } else {
-        finish_action_context(state, context, previous_mode);
+    match context {
+        ActionContext::Navigate => leave_navigate_mode(state),
+        ActionContext::Copy => state.sync_copy_mode_with_focus(),
+        ActionContext::Direct | ActionContext::Prefix => {
+            finish_action_context(state, context, previous_mode);
+        }
     }
 }
 
