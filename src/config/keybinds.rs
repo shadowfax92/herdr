@@ -472,7 +472,7 @@ impl Config {
         navigate_registry.reserve_direct(prefix, "keys.prefix", prefix_source);
         reserve_navigate_runtime_keys(&mut navigate_registry);
         let mut copy_mode_registry = BindingRegistry::new(prefix, prefix_source);
-        reserve_copy_mode_runtime_keys(&mut copy_mode_registry, prefix);
+        copy_mode_registry.reserve_direct(prefix, "keys.prefix", prefix_source);
 
         macro_rules! empty_action {
             () => {
@@ -738,51 +738,6 @@ fn reserve_navigate_runtime_keys(registry: &mut BindingRegistry) {
             "navigate reserved keys",
             BindingSource::Default,
         );
-    }
-}
-
-fn reserve_copy_mode_runtime_keys(registry: &mut BindingRegistry, prefix: KeyCombo) {
-    for combo in [
-        prefix,
-        (KeyCode::Esc, KeyModifiers::empty()),
-        (KeyCode::Enter, KeyModifiers::empty()),
-        (KeyCode::Left, KeyModifiers::empty()),
-        (KeyCode::Down, KeyModifiers::empty()),
-        (KeyCode::Up, KeyModifiers::empty()),
-        (KeyCode::Right, KeyModifiers::empty()),
-        (KeyCode::PageUp, KeyModifiers::empty()),
-        (KeyCode::PageDown, KeyModifiers::empty()),
-        (KeyCode::Home, KeyModifiers::empty()),
-        (KeyCode::End, KeyModifiers::empty()),
-        (KeyCode::Char('q'), KeyModifiers::empty()),
-        (KeyCode::Char('y'), KeyModifiers::empty()),
-        (KeyCode::Char('v'), KeyModifiers::empty()),
-        (KeyCode::Char('v'), KeyModifiers::SHIFT),
-        (KeyCode::Char(' '), KeyModifiers::empty()),
-        (KeyCode::Char('h'), KeyModifiers::empty()),
-        (KeyCode::Char('j'), KeyModifiers::empty()),
-        (KeyCode::Char('k'), KeyModifiers::empty()),
-        (KeyCode::Char('l'), KeyModifiers::empty()),
-        (KeyCode::Char('g'), KeyModifiers::empty()),
-        (KeyCode::Char('g'), KeyModifiers::SHIFT),
-        (KeyCode::Char('0'), KeyModifiers::empty()),
-        (KeyCode::Char('$'), KeyModifiers::empty()),
-        (KeyCode::Char('^'), KeyModifiers::empty()),
-        (KeyCode::Char('/'), KeyModifiers::empty()),
-        (KeyCode::Char('?'), KeyModifiers::empty()),
-        (KeyCode::Char('n'), KeyModifiers::empty()),
-        (KeyCode::Char('n'), KeyModifiers::SHIFT),
-        (KeyCode::Char('w'), KeyModifiers::empty()),
-        (KeyCode::Char('b'), KeyModifiers::empty()),
-        (KeyCode::Char('e'), KeyModifiers::empty()),
-        (KeyCode::Char('{'), KeyModifiers::empty()),
-        (KeyCode::Char('}'), KeyModifiers::empty()),
-        (KeyCode::Char('b'), KeyModifiers::CONTROL),
-        (KeyCode::Char('f'), KeyModifiers::CONTROL),
-        (KeyCode::Char('u'), KeyModifiers::CONTROL),
-        (KeyCode::Char('d'), KeyModifiers::CONTROL),
-    ] {
-        registry.reserve_direct(combo, "copy-mode reserved keys", BindingSource::Default);
     }
 }
 
@@ -1125,7 +1080,7 @@ fn reject_copy_mode_binding(
         return true;
     }
 
-    if let Some(first_binding) = registry.conflict(binding) {
+    if let Some(first_binding) = copy_mode_conflict(registry, binding) {
         let first_field = &first_binding.field;
         let diag = format!("{}: kept {first_field}, disabled {field}", binding.label);
         warn!(message = %diag, "config diagnostic");
@@ -1133,7 +1088,48 @@ fn reject_copy_mode_binding(
         return true;
     }
 
+    let (code, modifiers) = binding.trigger.combo();
+    if crate::input::copy_mode_command(TerminalKey::new(code, modifiers)).is_some() {
+        let diag = format!(
+            "copy-mode reserved key: {field} = {:?} is owned by Copy mode; disabling binding",
+            binding.label
+        );
+        warn!(message = %diag, "config diagnostic");
+        diagnostics.push(diag);
+        return true;
+    }
+
     false
+}
+
+fn copy_mode_conflict<'a>(
+    registry: &'a BindingRegistry,
+    binding: &ResolvedBinding,
+) -> Option<&'a RegisteredBinding> {
+    let BindingTrigger::Direct(combo) = binding.trigger else {
+        return None;
+    };
+    let combo = canonical_copy_mode_conflict_combo(combo);
+    registry.direct.iter().find_map(|(registered, binding)| {
+        (canonical_copy_mode_conflict_combo(*registered) == combo).then_some(binding)
+    })
+}
+
+fn canonical_copy_mode_conflict_combo(combo: KeyCombo) -> KeyCombo {
+    let (mut code, mut modifiers) = normalize_key_combo(combo);
+    let KeyCode::Char(ch) = code else {
+        return (code, modifiers);
+    };
+    if !modifiers.contains(KeyModifiers::SHIFT) {
+        return (code, modifiers);
+    }
+    let shifted = crate::input::shifted_ascii_char(ch)
+        .or_else(|| (ch.is_ascii_uppercase() || is_shifted_punctuation(ch)).then_some(ch));
+    if let Some(shifted) = shifted {
+        code = KeyCode::Char(shifted);
+        modifiers.remove(KeyModifiers::SHIFT);
+    }
+    (code, modifiers)
 }
 
 fn reject_binding(
@@ -2467,6 +2463,55 @@ command = "echo copy"
     }
 
     #[test]
+    fn copy_mode_commands_reject_shifted_prefix_and_duplicate_aliases() {
+        let prefix_config: Config = toml::from_str(
+            r#"
+[keys]
+prefix = "!"
+
+[[keys.command]]
+key = "shift+1"
+mode = "copy"
+command = "echo shadowed"
+"#,
+        )
+        .unwrap();
+
+        assert!(prefix_config.keybinds().copy_mode_commands.is_empty());
+        assert!(prefix_config
+            .collect_diagnostics()
+            .iter()
+            .any(|diagnostic| {
+                diagnostic.contains("kept keys.prefix")
+                    && diagnostic.contains("disabled keys.command[0].key")
+            }));
+
+        let duplicate_config: Config = toml::from_str(
+            r#"
+[[keys.command]]
+key = "!"
+mode = "copy"
+command = "echo first"
+
+[[keys.command]]
+key = "shift+1"
+mode = "copy"
+command = "echo duplicate"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(duplicate_config.keybinds().copy_mode_commands.len(), 1);
+        assert!(duplicate_config
+            .collect_diagnostics()
+            .iter()
+            .any(|diagnostic| {
+                diagnostic.contains("kept keys.command[0].key")
+                    && diagnostic.contains("disabled keys.command[1].key")
+            }));
+    }
+
+    #[test]
     fn copy_mode_commands_reject_prefix_reserved_and_duplicate_keys() {
         let config: Config = toml::from_str(
             r#"
@@ -2479,6 +2524,21 @@ command = "echo prefixed"
 key = "y"
 mode = "copy"
 command = "echo reserved"
+
+[[keys.command]]
+key = "alt+left"
+mode = "copy"
+command = "echo modified-special"
+
+[[keys.command]]
+key = "shift+4"
+mode = "copy"
+command = "echo shifted-alias"
+
+[[keys.command]]
+key = "ctrl+alt+b"
+mode = "copy"
+command = "echo control-superset"
 
 [[keys.command]]
 key = "c"
@@ -2502,12 +2562,24 @@ command = "echo duplicate"
                 && diagnostic.contains("keys.command[0].key")
         }));
         assert!(diagnostics.iter().any(|diagnostic| {
-            diagnostic.contains("copy-mode reserved keys")
+            diagnostic.contains("copy-mode reserved key")
                 && diagnostic.contains("keys.command[1].key")
         }));
         assert!(diagnostics.iter().any(|diagnostic| {
-            diagnostic.contains("kept keys.command[2].key")
-                && diagnostic.contains("disabled keys.command[3].key")
+            diagnostic.contains("copy-mode reserved key")
+                && diagnostic.contains("keys.command[2].key")
+        }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.contains("copy-mode reserved key")
+                && diagnostic.contains("keys.command[3].key")
+        }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.contains("copy-mode reserved key")
+                && diagnostic.contains("keys.command[4].key")
+        }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.contains("kept keys.command[5].key")
+                && diagnostic.contains("disabled keys.command[6].key")
         }));
     }
 }

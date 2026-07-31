@@ -1,7 +1,11 @@
+mod copy_mode;
 mod encode;
 mod model;
 mod parse;
 
+pub(crate) use copy_mode::{
+    copy_mode_command, copy_mode_text_char, shifted_ascii_char, CopyModeCommand,
+};
 #[allow(unused_imports)]
 pub use encode::{
     encode_cursor_key, encode_key, encode_mouse_button, encode_mouse_scroll, encode_terminal_key,

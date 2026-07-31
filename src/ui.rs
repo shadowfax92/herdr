@@ -1499,6 +1499,15 @@ mod tests {
                 height: None,
             },
         ];
+        app.keybinds.copy_mode_commands = vec![crate::config::CustomCommandKeybind {
+            bindings: crate::config::ActionKeybinds::direct("c"),
+            label: "c".to_string(),
+            command: "example.comments.capture".to_string(),
+            action: crate::config::CustomCommandAction::PluginAction,
+            description: Some("comment on selection".to_string()),
+            width: None,
+            height: None,
+        }];
 
         let groups = keybind_help_groups(&app);
         let custom = groups
@@ -1513,6 +1522,15 @@ mod tests {
         assert!(custom
             .iter()
             .any(|(key, label)| key == "prefix+alt+h" && label.as_ref() == "custom command"));
+        let copy_custom = groups
+            .iter()
+            .find(|(name, _)| *name == "copy mode custom")
+            .expect("copy mode custom group")
+            .1
+            .clone();
+        assert!(copy_custom
+            .iter()
+            .any(|(key, label)| key == "c" && label.as_ref() == "comment on selection"));
 
         let rendered_help = keybind_help_lines(&app)
             .into_iter()
@@ -1522,6 +1540,7 @@ mod tests {
             .join("");
         assert!(rendered_help.contains("open lazygit"));
         assert!(rendered_help.contains("custom command"));
+        assert!(rendered_help.contains("comment on selection"));
     }
 
     #[test]

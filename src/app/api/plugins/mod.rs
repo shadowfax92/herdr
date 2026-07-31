@@ -401,7 +401,7 @@ impl App {
             return encode_error(
                 id,
                 "ui_busy",
-                "popup panes can only open from the normal workspace view",
+                "popup panes can only open from the normal workspace view or Copy mode",
             );
         }
         match placement {
@@ -1433,6 +1433,10 @@ platforms = ["linux", "macos"]
         let settings_response = open_popup(&mut app, "settings-popup");
         let settings_error: serde_json::Value = serde_json::from_str(&settings_response).unwrap();
         assert_eq!(settings_error["error"]["code"], "ui_busy");
+        assert_eq!(
+            settings_error["error"]["message"],
+            "popup panes can only open from the normal workspace view or Copy mode"
+        );
         assert_eq!(app.state.mode, crate::app::Mode::Settings);
         assert_eq!(
             app.state.settings.original_theme.as_deref(),

@@ -327,6 +327,52 @@ mod tests {
     }
 
     #[test]
+    fn popup_suspends_copy_mode_when_focus_returns_to_source() {
+        let mut app = app_with_popup();
+        let source_pane = app.state.workspaces[0].tabs[0].root_pane;
+        app.state
+            .workspaces
+            .push(crate::workspace::Workspace::test_new("other"));
+        app.state.copy_mode = Some(crate::app::state::CopyModeState {
+            pane_id: source_pane,
+            cursor_row: 2,
+            cursor_col: 3,
+            entry_offset_from_bottom: 4,
+            selection: Some(crate::app::state::CopyModeSelection::Character),
+            search: crate::app::state::CopyModeSearchState::default(),
+        });
+        app.state.selection = Some(crate::selection::Selection::range(
+            source_pane,
+            2,
+            1,
+            3,
+            None,
+        ));
+        app.state.mode = Mode::Terminal;
+
+        app.state.active = Some(1);
+        app.state.selected = 1;
+        app.state.sync_copy_mode_with_focus();
+        assert_eq!(app.state.mode, Mode::Terminal);
+        assert!(app.state.selection.is_none());
+
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.sync_copy_mode_with_focus();
+        assert_eq!(app.state.mode, Mode::Terminal);
+
+        assert!(app.close_popup_pane());
+        assert_eq!(app.state.mode, Mode::Copy);
+        assert_eq!(
+            app.state
+                .copy_mode
+                .as_ref()
+                .and_then(|copy_mode| copy_mode.selection),
+            None
+        );
+    }
+
+    #[test]
     fn close_popup_clears_direct_attach_resize_lock() {
         let mut app = app_with_popup();
         let terminal_id = app.state.popup_pane.as_ref().unwrap().terminal_id.clone();

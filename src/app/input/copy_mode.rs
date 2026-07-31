@@ -5,7 +5,7 @@ use crate::{
         state::{CopyModeSearchDirection, CopyModeSearchPrompt, CopyModeSelection, CopyModeState},
         App, AppState, Mode,
     },
-    input::TerminalKey,
+    input::{CopyModeCommand, TerminalKey},
     selection::Selection,
     terminal::TerminalRuntimeRegistry,
 };
@@ -90,8 +90,11 @@ impl AppState {
         if self.handle_copy_mode_search_prompt_key(terminal_runtimes, key) {
             return true;
         }
-        match key.code {
-            KeyCode::Esc => {
+        let Some(command) = crate::input::copy_mode_command(key) else {
+            return false;
+        };
+        match command {
+            CopyModeCommand::Escape => {
                 let should_clear = self.copy_mode.as_ref().is_some_and(|copy_mode| {
                     copy_mode.selection.is_some()
                         || !copy_mode.search.query.is_empty()
@@ -114,94 +117,45 @@ impl AppState {
                     return true;
                 }
                 self.exit_copy_mode(terminal_runtimes, false);
-                return true;
             }
-            KeyCode::Enter => {
-                self.exit_copy_mode(terminal_runtimes, true);
-                return true;
+            CopyModeCommand::CopyAndExit => self.exit_copy_mode(terminal_runtimes, true),
+            CopyModeCommand::Quit => self.exit_copy_mode(terminal_runtimes, false),
+            CopyModeCommand::Left => self.move_copy_cursor(terminal_runtimes, 0, -1),
+            CopyModeCommand::Down => self.move_copy_cursor(terminal_runtimes, 1, 0),
+            CopyModeCommand::Up => self.move_copy_cursor(terminal_runtimes, -1, 0),
+            CopyModeCommand::Right => self.move_copy_cursor(terminal_runtimes, 0, 1),
+            CopyModeCommand::PageUp => self.scroll_copy_mode_page(terminal_runtimes, -1, false),
+            CopyModeCommand::PageDown => self.scroll_copy_mode_page(terminal_runtimes, 1, false),
+            CopyModeCommand::HalfPageUp => self.scroll_copy_mode_page(terminal_runtimes, -1, true),
+            CopyModeCommand::HalfPageDown => self.scroll_copy_mode_page(terminal_runtimes, 1, true),
+            CopyModeCommand::LineStart => self.copy_mode_line_edge(terminal_runtimes, false),
+            CopyModeCommand::LineEnd => self.copy_mode_line_edge(terminal_runtimes, true),
+            CopyModeCommand::FirstNonBlank => self.copy_mode_first_non_blank(terminal_runtimes),
+            CopyModeCommand::BeginSelection => self.begin_copy_mode_selection(terminal_runtimes),
+            CopyModeCommand::SelectLine => self.select_copy_mode_line(terminal_runtimes),
+            CopyModeCommand::HistoryTop => self.copy_mode_history_top(terminal_runtimes),
+            CopyModeCommand::HistoryBottom => self.copy_mode_history_bottom(terminal_runtimes),
+            CopyModeCommand::SearchForward => {
+                self.open_copy_mode_search(CopyModeSearchDirection::Forward)
             }
-            KeyCode::Left => {
-                self.move_copy_cursor(terminal_runtimes, 0, -1);
-                return true;
+            CopyModeCommand::SearchBackward => {
+                self.open_copy_mode_search(CopyModeSearchDirection::Backward)
             }
-            KeyCode::Down => {
-                self.move_copy_cursor(terminal_runtimes, 1, 0);
-                return true;
+            CopyModeCommand::SearchNext => self.repeat_copy_mode_search(terminal_runtimes, false),
+            CopyModeCommand::SearchPrevious => {
+                self.repeat_copy_mode_search(terminal_runtimes, true)
             }
-            KeyCode::Up => {
-                self.move_copy_cursor(terminal_runtimes, -1, 0);
-                return true;
+            CopyModeCommand::NextWord => {
+                self.copy_mode_word_motion(terminal_runtimes, WordMotion::NextStart)
             }
-            KeyCode::Right => {
-                self.move_copy_cursor(terminal_runtimes, 0, 1);
-                return true;
+            CopyModeCommand::PreviousWord => {
+                self.copy_mode_word_motion(terminal_runtimes, WordMotion::PreviousStart)
             }
-            KeyCode::PageUp => {
-                self.scroll_copy_mode_page(terminal_runtimes, -1, false);
-                return true;
+            CopyModeCommand::EndWord => {
+                self.copy_mode_word_motion(terminal_runtimes, WordMotion::NextEnd)
             }
-            KeyCode::PageDown => {
-                self.scroll_copy_mode_page(terminal_runtimes, 1, false);
-                return true;
-            }
-            KeyCode::Home => {
-                self.copy_mode_line_edge(terminal_runtimes, false);
-                return true;
-            }
-            KeyCode::End => {
-                self.copy_mode_line_edge(terminal_runtimes, true);
-                return true;
-            }
-            _ => {}
-        }
-
-        match (key.code, key.modifiers) {
-            (KeyCode::Char('b'), mods) if mods.contains(KeyModifiers::CONTROL) => {
-                self.scroll_copy_mode_page(terminal_runtimes, -1, false);
-                return true;
-            }
-            (KeyCode::Char('f'), mods) if mods.contains(KeyModifiers::CONTROL) => {
-                self.scroll_copy_mode_page(terminal_runtimes, 1, false);
-                return true;
-            }
-            (KeyCode::Char('u'), mods) if mods.contains(KeyModifiers::CONTROL) => {
-                self.scroll_copy_mode_page(terminal_runtimes, -1, true);
-                return true;
-            }
-            (KeyCode::Char('d'), mods) if mods.contains(KeyModifiers::CONTROL) => {
-                self.scroll_copy_mode_page(terminal_runtimes, 1, true);
-                return true;
-            }
-            _ => {}
-        }
-
-        let Some(ch) = copy_mode_command_char(key) else {
-            return false;
-        };
-        match ch {
-            'q' => self.exit_copy_mode(terminal_runtimes, false),
-            'y' => self.exit_copy_mode(terminal_runtimes, true),
-            'v' | ' ' => self.begin_copy_mode_selection(terminal_runtimes),
-            'V' => self.select_copy_mode_line(terminal_runtimes),
-            'h' => self.move_copy_cursor(terminal_runtimes, 0, -1),
-            'j' => self.move_copy_cursor(terminal_runtimes, 1, 0),
-            'k' => self.move_copy_cursor(terminal_runtimes, -1, 0),
-            'l' => self.move_copy_cursor(terminal_runtimes, 0, 1),
-            'g' => self.copy_mode_history_top(terminal_runtimes),
-            'G' => self.copy_mode_history_bottom(terminal_runtimes),
-            '0' => self.copy_mode_line_edge(terminal_runtimes, false),
-            '$' => self.copy_mode_line_edge(terminal_runtimes, true),
-            '^' => self.copy_mode_first_non_blank(terminal_runtimes),
-            '/' => self.open_copy_mode_search(CopyModeSearchDirection::Forward),
-            '?' => self.open_copy_mode_search(CopyModeSearchDirection::Backward),
-            'n' => self.repeat_copy_mode_search(terminal_runtimes, false),
-            'N' => self.repeat_copy_mode_search(terminal_runtimes, true),
-            'w' => self.copy_mode_word_motion(terminal_runtimes, WordMotion::NextStart),
-            'b' => self.copy_mode_word_motion(terminal_runtimes, WordMotion::PreviousStart),
-            'e' => self.copy_mode_word_motion(terminal_runtimes, WordMotion::NextEnd),
-            '{' => self.copy_mode_paragraph(terminal_runtimes, -1),
-            '}' => self.copy_mode_paragraph(terminal_runtimes, 1),
-            _ => return false,
+            CopyModeCommand::PreviousParagraph => self.copy_mode_paragraph(terminal_runtimes, -1),
+            CopyModeCommand::NextParagraph => self.copy_mode_paragraph(terminal_runtimes, 1),
         }
         true
     }
@@ -234,7 +188,7 @@ impl AppState {
                 prompt.query.clear();
             }
             _ => {
-                if let Some(ch) = copy_mode_command_char(key) {
+                if let Some(ch) = crate::input::copy_mode_text_char(key) {
                     prompt.query.push(ch);
                 }
             }
@@ -771,6 +725,13 @@ impl AppState {
         if self.copy_mode.is_none() {
             return;
         }
+        if self.popup_pane.is_some() {
+            if !self.copy_mode_pane_is_focused() {
+                self.clear_copy_mode_selection();
+            }
+            self.mode = Mode::Terminal;
+            return;
+        }
         if !matches!(
             self.mode,
             Mode::Copy | Mode::Terminal | Mode::Navigate | Mode::Prefix
@@ -964,53 +925,6 @@ fn copy_mode_page_lines(height: u16, half_page: bool) -> usize {
         usize::from(height / 2)
     } else {
         usize::from(height - 2)
-    }
-}
-
-fn copy_mode_command_char(key: TerminalKey) -> Option<char> {
-    if !key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
-        return None;
-    }
-
-    if let Some(ch) = key.shifted_codepoint.and_then(char::from_u32) {
-        return Some(ch);
-    }
-
-    let KeyCode::Char(ch) = key.code else {
-        return None;
-    };
-    if key.modifiers.contains(KeyModifiers::SHIFT) {
-        Some(shifted_ascii_char(ch).unwrap_or(ch))
-    } else {
-        Some(ch)
-    }
-}
-
-fn shifted_ascii_char(ch: char) -> Option<char> {
-    match ch {
-        'a'..='z' => Some(ch.to_ascii_uppercase()),
-        '1' => Some('!'),
-        '2' => Some('@'),
-        '3' => Some('#'),
-        '4' => Some('$'),
-        '5' => Some('%'),
-        '6' => Some('^'),
-        '7' => Some('&'),
-        '8' => Some('*'),
-        '9' => Some('('),
-        '0' => Some(')'),
-        '-' => Some('_'),
-        '=' => Some('+'),
-        '[' => Some('{'),
-        ']' => Some('}'),
-        '\\' => Some('|'),
-        ';' => Some(':'),
-        '\'' => Some('"'),
-        ',' => Some('<'),
-        '.' => Some('>'),
-        '/' => Some('?'),
-        '`' => Some('~'),
-        _ => None,
     }
 }
 
@@ -1260,6 +1174,40 @@ command = "missing.plugin.action"
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn copy_mode_custom_popup_restores_copy_after_close() {
+        let config: crate::config::Config = toml::from_str(
+            r#"
+[[keys.command]]
+key = "c"
+mode = "copy"
+type = "popup"
+command = "sleep 1"
+"#,
+        )
+        .unwrap();
+        let (mut app, _) = app_with_copy_screen(b"alpha\nbeta\n");
+        app.state.keybinds = config.keybinds();
+        app.state.enter_copy_mode(&app.terminal_runtimes);
+        app.handle_copy_mode_key(TerminalKey::new(KeyCode::Char('v'), KeyModifiers::empty()));
+        app.handle_copy_mode_key(TerminalKey::new(KeyCode::Char('l'), KeyModifiers::empty()));
+        let copy_mode = app.state.copy_mode.clone();
+        let selection = format!("{:?}", app.state.selection);
+
+        app.handle_copy_mode_key(TerminalKey::new(KeyCode::Char('c'), KeyModifiers::empty()));
+
+        assert!(app.state.popup_pane.is_some());
+        assert_eq!(app.state.mode, Mode::Terminal);
+        assert_eq!(app.state.copy_mode, copy_mode);
+        assert_eq!(format!("{:?}", app.state.selection), selection);
+
+        assert!(app.close_popup_pane());
+        assert_eq!(app.state.mode, Mode::Copy);
+        assert_eq!(app.state.copy_mode, copy_mode);
+        assert_eq!(format!("{:?}", app.state.selection), selection);
+    }
+
     #[tokio::test]
     async fn copy_mode_search_prompt_owns_scoped_command_key() {
         let config: crate::config::Config = toml::from_str(
@@ -1294,8 +1242,8 @@ command = "missing.plugin.action"
     async fn copy_mode_builtin_key_precedes_scoped_command() {
         let (mut app, _) = app_with_copy_screen(b"alpha\nbeta\n");
         app.state.keybinds.copy_mode_commands = vec![crate::config::CustomCommandKeybind {
-            bindings: crate::config::ActionKeybinds::direct("l"),
-            label: "l".into(),
+            bindings: crate::config::ActionKeybinds::direct("alt+right"),
+            label: "alt+right".into(),
             command: "missing.plugin.action".into(),
             action: crate::config::CustomCommandAction::PluginAction,
             description: None,
@@ -1305,7 +1253,7 @@ command = "missing.plugin.action"
         app.state.enter_copy_mode(&app.terminal_runtimes);
         let previous_col = app.state.copy_mode.as_ref().unwrap().cursor_col;
 
-        app.handle_copy_mode_key(TerminalKey::new(KeyCode::Char('l'), KeyModifiers::empty()));
+        app.handle_copy_mode_key(TerminalKey::new(KeyCode::Right, KeyModifiers::ALT));
 
         assert_eq!(
             app.state.copy_mode.as_ref().unwrap().cursor_col,
