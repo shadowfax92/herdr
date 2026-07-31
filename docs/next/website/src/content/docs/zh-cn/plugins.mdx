@@ -282,7 +282,8 @@ split、tab、zoomed 和 overlay 插件窗格打开后就是普通的 Herdr 窗�
 窗格跨标签页或工作区移动时,Herdr 会让插件窗格的所有权跟随底层窗格。
 弹窗不是 Herdr 窗格,而是会话级单例资源:它没有窗格 id,不会改变插件焦点上下文,不会发出窗格生命周期事件,也不参与 pane、layout、持久化或智能体 API。
 其进程不会收到 `HERDR_PANE_ID`;底层平铺窗格仍可通过 `HERDR_PLUGIN_CONTEXT_JSON` 获取。
-在 Settings、复制模式或其他 Herdr 模态界面打开时尝试打开弹窗会返回 `ui_busy`;启动成功后,`plugin.pane.open` 返回 `ok`。
+复制模式可以打开弹窗；关闭时，如果源窗格仍处于聚焦状态，会恢复相同的复制光标、选择、搜索和滚动位置。
+在 Settings 或复制模式以外的 Herdr 模态界面打开时尝试打开弹窗会返回 `ui_busy`；启动成功后，`plugin.pane.open` 返回 `ok`。同一时间只能打开一个弹窗。
 
 在 Windows 上,构建命令、动作命令和事件命令会在裸命令位于 `PATH` 上时
 解析常见的 `PATHEXT` shim,比如 `npm.cmd`、`bun.cmd` 和 `pnpm.cmd`。
@@ -300,6 +301,21 @@ type = "plugin_action"
 command = "example.layout.apply"
 description = "apply layout"
 ```
+
+插件动作也可以使用仅在复制模式中生效的直接按键：
+
+```toml
+[[keys.command]]
+key = "c"
+mode = "copy"
+type = "plugin_action"
+command = "shadowfax.comments.capture"
+description = "comment on selected terminal text"
+```
+
+内置复制按键和复制搜索输入优先。源窗格存在可见选择时，动作会在
+`HERDR_PLUGIN_CONTEXT_JSON` 的 `selected_text` 中收到该文本，无需经过剪贴板。
+动作可以打开弹窗，并在关闭后返回保留的复制模式状态。
 
 ## 链接处理器
 

@@ -321,8 +321,11 @@ it has no pane ID, does not change plugin focus context, emits no pane lifecycle
 events, and does not participate in pane, layout, persistence, or agent APIs.
 Its process does not receive `HERDR_PANE_ID`; the underlying tiled pane remains
 available through `HERDR_PLUGIN_CONTEXT_JSON`.
-Opening a popup returns `ui_busy` while Settings, Copy mode, or another Herdr
-modal is active, and `plugin.pane.open` returns an `ok` result after launch.
+Copy mode can open a popup; closing it restores the same Copy cursor, selection,
+search, and scroll position when the source pane is still focused. Opening a
+popup returns `ui_busy` while Settings or another non-Copy Herdr modal is active,
+and `plugin.pane.open` returns an `ok` result after launch. Only one popup can be
+open at a time.
 
 On Windows, build commands, action commands, and event commands resolve common
 `PATHEXT` shims such as `npm.cmd`, `bun.cmd`, and `pnpm.cmd` when the bare
@@ -340,6 +343,22 @@ type = "plugin_action"
 command = "example.layout.apply"
 description = "apply layout"
 ```
+
+Plugin actions can also use direct, mode-local keys in Copy mode:
+
+```toml
+[[keys.command]]
+key = "c"
+mode = "copy"
+type = "plugin_action"
+command = "shadowfax.comments.capture"
+description = "comment on selected terminal text"
+```
+
+Built-in Copy keys and Copy search input keep priority. When the source pane has
+a visible selection, the action receives it as `selected_text` in
+`HERDR_PLUGIN_CONTEXT_JSON`; no clipboard round trip is required. The action may
+open a popup and return to the retained Copy-mode state when it closes.
 
 ## Link handlers
 
