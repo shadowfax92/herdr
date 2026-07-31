@@ -392,7 +392,11 @@ impl App {
                 "width and height are only supported when placement is popup",
             );
         }
-        if placement == PluginPanePlacement::Popup && self.state.mode != crate::app::Mode::Terminal
+        if placement == PluginPanePlacement::Popup
+            && !matches!(
+                self.state.mode,
+                crate::app::Mode::Terminal | crate::app::Mode::Copy
+            )
         {
             return encode_error(
                 id,
@@ -1393,8 +1397,8 @@ platforms = ["linux", "macos"]
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[test]
-    fn plugin_pane_open_popup_preserves_existing_ui_modes() {
+    #[tokio::test]
+    async fn plugin_popup_allows_copy_mode_and_preserves_other_ui_modes() {
         let mut app = test_app();
         app.state.workspaces = vec![crate::workspace::Workspace::test_new("modal")];
         app.state.ensure_test_terminals();
@@ -1441,16 +1445,22 @@ platforms = ["linux", "macos"]
             cursor_row: 2,
             cursor_col: 3,
             entry_offset_from_bottom: 4,
-            selection: None,
+            selection: Some(crate::app::state::CopyModeSelection::Character),
             search: crate::app::state::CopyModeSearchState::default(),
         };
+        app.state.selection = Some(crate::selection::Selection::range(root_pane, 2, 1, 3, None));
+        let selection = format!("{:?}", app.state.selection);
         app.state.mode = crate::app::Mode::Copy;
         app.state.copy_mode = Some(copy_mode.clone());
         let copy_response = open_popup(&mut app, "copy-popup");
-        let copy_error: serde_json::Value = serde_json::from_str(&copy_response).unwrap();
-        assert_eq!(copy_error["error"]["code"], "ui_busy");
+        assert_eq!(response_result(&copy_response), ResponseResult::Ok {});
+        assert!(app.state.popup_pane.is_some());
+
+        assert!(app.close_popup_pane());
+
         assert_eq!(app.state.mode, crate::app::Mode::Copy);
         assert_eq!(app.state.copy_mode, Some(copy_mode));
+        assert_eq!(format!("{:?}", app.state.selection), selection);
         assert!(app.state.popup_pane.is_none());
 
         let _ = std::fs::remove_dir_all(root);
