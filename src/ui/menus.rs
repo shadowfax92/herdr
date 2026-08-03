@@ -104,9 +104,18 @@ pub(super) fn render_copy_mode_overlay(app: &AppState, frame: &mut Frame, area: 
             } else {
                 ("esc", " clear  q exit")
             };
-        Line::from(vec![
-            Span::styled(" COPY ", mode_style),
-            Span::raw(" "),
+        let mut spans = vec![Span::styled(" COPY ", mode_style), Span::raw(" ")];
+        for binding in &app.keybinds.copy_mode_commands {
+            spans.push(Span::styled(binding.label.clone(), key));
+            spans.push(Span::styled(
+                format!(
+                    " {}  ",
+                    binding.description.as_deref().unwrap_or("custom command")
+                ),
+                dim,
+            ));
+        }
+        spans.extend([
             Span::styled("h/j/k/l w/b/e { }", key),
             Span::styled(" move  ", dim),
             Span::styled("/ ?", key),
@@ -119,7 +128,8 @@ pub(super) fn render_copy_mode_overlay(app: &AppState, frame: &mut Frame, area: 
             Span::styled(" copy  ", dim),
             Span::styled(exit_keys, key),
             Span::styled(exit_label, dim),
-        ])
+        ]);
+        Line::from(spans)
     };
 
     let overlay_y = area.y + area.height.saturating_sub(1);

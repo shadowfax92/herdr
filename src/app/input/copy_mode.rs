@@ -20,6 +20,16 @@ impl App {
             self.state.mode = Mode::Prefix;
             return;
         }
+        if self
+            .state
+            .handle_copy_mode_search_prompt_key(&self.terminal_runtimes, key.clone())
+        {
+            return;
+        }
+        if let Some(binding) = super::navigate::copy_mode_command_for_key(&self.state, &key) {
+            self.launch_custom_command(binding, super::navigate::ActionContext::Copy);
+            return;
+        }
         self.state
             .handle_copy_mode_key(&self.terminal_runtimes, key);
         self.dispatch_pending_clipboard_write();
@@ -80,9 +90,6 @@ impl AppState {
         terminal_runtimes: &TerminalRuntimeRegistry,
         key: TerminalKey,
     ) {
-        if self.handle_copy_mode_search_prompt_key(terminal_runtimes, key.clone()) {
-            return;
-        }
         match key.code {
             KeyCode::Esc => {
                 let should_clear = self.copy_mode.as_ref().is_some_and(|copy_mode| {
@@ -759,6 +766,13 @@ impl AppState {
         if self.copy_mode.is_none() {
             return;
         }
+        if self.popup_pane.is_some() {
+            if !self.copy_mode_pane_is_focused() {
+                self.clear_copy_mode_selection();
+            }
+            self.mode = Mode::Terminal;
+            return;
+        }
         if !matches!(
             self.mode,
             Mode::Copy | Mode::Terminal | Mode::Navigate | Mode::Prefix
@@ -1215,6 +1229,128 @@ mod tests {
 
         assert_eq!(app.state.mode, Mode::Copy);
         assert_eq!(app.state.copy_mode, Some(copy_mode));
+    }
+
+    #[tokio::test]
+    async fn copy_mode_custom_command_failure_preserves_selection() {
+        let config: crate::config::Config = toml::from_str(
+            r#"
+[[keys.command]]
+key = "c"
+mode = "copy"
+type = "plugin_action"
+command = "missing.plugin.action"
+"#,
+        )
+        .unwrap();
+        let (mut app, _) = app_with_copy_screen(b"alpha\nbeta\n");
+        app.state.keybinds = config.keybinds();
+        app.state.enter_copy_mode(&app.terminal_runtimes);
+        app.handle_copy_mode_key(TerminalKey::new(KeyCode::Char('v'), KeyModifiers::empty()));
+        app.handle_copy_mode_key(TerminalKey::new(KeyCode::Char('l'), KeyModifiers::empty()));
+        let copy_mode = app.state.copy_mode.clone();
+        let selection = format!("{:?}", app.state.selection);
+
+        app.handle_copy_mode_key(TerminalKey::new(KeyCode::Char('c'), KeyModifiers::empty()));
+
+        assert_eq!(app.state.mode, Mode::Copy);
+        assert_eq!(app.state.copy_mode, copy_mode);
+        assert_eq!(format!("{:?}", app.state.selection), selection);
+        assert_eq!(
+            app.state.toast.as_ref().map(|toast| toast.title.as_str()),
+            Some("custom command failed")
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn copy_mode_custom_popup_restores_copy_after_close() {
+        let config: crate::config::Config = toml::from_str(
+            r#"
+[[keys.command]]
+key = "c"
+mode = "copy"
+type = "popup"
+command = "sleep 1"
+"#,
+        )
+        .unwrap();
+        let (mut app, _) = app_with_copy_screen(b"alpha\nbeta\n");
+        app.state.keybinds = config.keybinds();
+        app.state.enter_copy_mode(&app.terminal_runtimes);
+        app.handle_copy_mode_key(TerminalKey::new(KeyCode::Char('v'), KeyModifiers::empty()));
+        app.handle_copy_mode_key(TerminalKey::new(KeyCode::Char('l'), KeyModifiers::empty()));
+        let copy_mode = app.state.copy_mode.clone();
+        let selection = format!("{:?}", app.state.selection);
+
+        app.handle_copy_mode_key(TerminalKey::new(KeyCode::Char('c'), KeyModifiers::empty()));
+
+        assert!(app.state.popup_pane.is_some());
+        assert_eq!(app.state.mode, Mode::Terminal);
+        assert_eq!(app.state.copy_mode, copy_mode);
+        assert_eq!(format!("{:?}", app.state.selection), selection);
+
+        assert!(app.close_popup_pane());
+        assert_eq!(app.state.mode, Mode::Copy);
+        assert_eq!(app.state.copy_mode, copy_mode);
+        assert_eq!(format!("{:?}", app.state.selection), selection);
+    }
+
+    #[tokio::test]
+    async fn copy_mode_search_prompt_owns_scoped_command_key() {
+        let config: crate::config::Config = toml::from_str(
+            r#"
+[[keys.command]]
+key = "c"
+mode = "copy"
+type = "plugin_action"
+command = "missing.plugin.action"
+"#,
+        )
+        .unwrap();
+        let (mut app, _) = app_with_copy_screen(b"alpha\nbeta\n");
+        app.state.keybinds = config.keybinds();
+        app.state.enter_copy_mode(&app.terminal_runtimes);
+        app.handle_copy_mode_key(TerminalKey::new(KeyCode::Char('/'), KeyModifiers::empty()));
+
+        app.handle_copy_mode_key(TerminalKey::new(KeyCode::Char('c'), KeyModifiers::empty()));
+
+        assert_eq!(
+            app.state
+                .copy_mode
+                .as_ref()
+                .and_then(|copy_mode| copy_mode.search.prompt.as_ref())
+                .map(|prompt| prompt.query.as_str()),
+            Some("c")
+        );
+        assert!(app.state.toast.is_none());
+    }
+
+    #[tokio::test]
+    async fn copy_mode_scoped_command_overrides_builtin_key() {
+        let (mut app, _) = app_with_copy_screen(b"alpha\nbeta\n");
+        app.state.keybinds.copy_mode_commands = vec![crate::config::CustomCommandKeybind {
+            bindings: crate::config::ActionKeybinds::direct("alt+right"),
+            label: "alt+right".into(),
+            command: "missing.plugin.action".into(),
+            action: crate::config::CustomCommandAction::PluginAction,
+            description: None,
+            width: None,
+            height: None,
+        }];
+        app.state.enter_copy_mode(&app.terminal_runtimes);
+        let previous_col = app.state.copy_mode.as_ref().unwrap().cursor_col;
+
+        app.handle_copy_mode_key(TerminalKey::new(KeyCode::Right, KeyModifiers::ALT));
+
+        assert_eq!(
+            app.state.copy_mode.as_ref().unwrap().cursor_col,
+            previous_col
+        );
+        assert_eq!(
+            app.state.toast.as_ref().map(|toast| toast.title.as_str()),
+            Some("custom command failed")
+        );
     }
 
     #[tokio::test]

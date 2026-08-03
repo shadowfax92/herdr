@@ -32,6 +32,7 @@ impl App {
         } else {
             Mode::Navigate
         };
+        self.state.sync_copy_mode_with_focus();
         self.render_dirty.request_generic();
         self.render_notify.notify_one();
         true
@@ -260,6 +261,115 @@ mod tests {
         assert!(app.close_popup_pane());
 
         assert_eq!(app.state.mode, Mode::Navigate);
+    }
+
+    #[test]
+    fn close_popup_restores_copy_mode_for_focused_source() {
+        let mut app = app_with_popup();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let copy_mode = crate::app::state::CopyModeState {
+            pane_id,
+            cursor_row: 2,
+            cursor_col: 3,
+            entry_offset_from_bottom: 4,
+            selection: Some(crate::app::state::CopyModeSelection::Character),
+            search: crate::app::state::CopyModeSearchState::default(),
+        };
+        app.state.copy_mode = Some(copy_mode.clone());
+        app.state.selection = Some(crate::selection::Selection::range(pane_id, 2, 1, 3, None));
+        let selection = format!("{:?}", app.state.selection);
+        app.state.mode = Mode::Terminal;
+
+        assert!(app.close_popup_pane());
+
+        assert_eq!(app.state.mode, Mode::Copy);
+        assert_eq!(app.state.copy_mode, Some(copy_mode));
+        assert_eq!(format!("{:?}", app.state.selection), selection);
+    }
+
+    #[test]
+    fn close_popup_does_not_restore_copy_mode_after_focus_moves() {
+        let mut app = app_with_popup();
+        let source_pane = app.state.workspaces[0].tabs[0].root_pane;
+        app.state
+            .workspaces
+            .push(crate::workspace::Workspace::test_new("other"));
+        app.state.active = Some(1);
+        app.state.selected = 1;
+        app.state.copy_mode = Some(crate::app::state::CopyModeState {
+            pane_id: source_pane,
+            cursor_row: 2,
+            cursor_col: 3,
+            entry_offset_from_bottom: 4,
+            selection: Some(crate::app::state::CopyModeSelection::Character),
+            search: crate::app::state::CopyModeSearchState::default(),
+        });
+        app.state.selection = Some(crate::selection::Selection::range(
+            source_pane,
+            2,
+            1,
+            3,
+            None,
+        ));
+        app.state.mode = Mode::Terminal;
+
+        assert!(app.close_popup_pane());
+
+        assert_eq!(app.state.mode, Mode::Terminal);
+        assert!(app.state.selection.is_none());
+        assert_eq!(
+            app.state
+                .copy_mode
+                .as_ref()
+                .and_then(|copy_mode| copy_mode.selection),
+            None
+        );
+    }
+
+    #[test]
+    fn popup_suspends_copy_mode_when_focus_returns_to_source() {
+        let mut app = app_with_popup();
+        let source_pane = app.state.workspaces[0].tabs[0].root_pane;
+        app.state
+            .workspaces
+            .push(crate::workspace::Workspace::test_new("other"));
+        app.state.copy_mode = Some(crate::app::state::CopyModeState {
+            pane_id: source_pane,
+            cursor_row: 2,
+            cursor_col: 3,
+            entry_offset_from_bottom: 4,
+            selection: Some(crate::app::state::CopyModeSelection::Character),
+            search: crate::app::state::CopyModeSearchState::default(),
+        });
+        app.state.selection = Some(crate::selection::Selection::range(
+            source_pane,
+            2,
+            1,
+            3,
+            None,
+        ));
+        app.state.mode = Mode::Terminal;
+
+        app.state.active = Some(1);
+        app.state.selected = 1;
+        app.state.sync_copy_mode_with_focus();
+        assert_eq!(app.state.mode, Mode::Terminal);
+        assert!(app.state.selection.is_none());
+
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.sync_copy_mode_with_focus();
+        assert_eq!(app.state.mode, Mode::Terminal);
+
+        assert!(app.close_popup_pane());
+        assert_eq!(app.state.mode, Mode::Copy);
+        assert_eq!(
+            app.state
+                .copy_mode
+                .as_ref()
+                .and_then(|copy_mode| copy_mode.selection),
+            None
+        );
     }
 
     #[test]

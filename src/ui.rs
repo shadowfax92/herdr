@@ -579,7 +579,6 @@ fn dim_background(frame: &mut Frame, area: Rect) {
     }
 }
 
-/// Floating overlay for navigate mode — appears at bottom of terminal area.
 fn _build_hints(items: &[(&str, &str)], key_style: Style, dim_style: Style) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     spans.push(Span::raw(" "));
@@ -1424,6 +1423,50 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(rendered.contains("PREFIX"));
+    }
+
+    #[test]
+    fn copy_mode_footer_shows_available_custom_commands() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.mode = Mode::Copy;
+        app.view.terminal_area = Rect::new(0, 0, 180, 4);
+        app.copy_mode = Some(crate::app::state::CopyModeState {
+            pane_id: crate::layout::PaneId::alloc(),
+            cursor_row: 0,
+            cursor_col: 0,
+            entry_offset_from_bottom: 0,
+            selection: Some(crate::app::state::CopyModeSelection::Character),
+            search: crate::app::state::CopyModeSearchState::default(),
+        });
+        app.keybinds.copy_mode_commands = vec![crate::config::CustomCommandKeybind {
+            bindings: crate::config::ActionKeybinds::direct("c"),
+            label: "c".to_string(),
+            command: "example.comments.capture".to_string(),
+            action: crate::config::CustomCommandAction::PluginAction,
+            description: Some("comment on selection".to_string()),
+            width: None,
+            height: None,
+        }];
+        let mut terminal = Terminal::new(TestBackend::new(180, 4)).expect("test terminal");
+
+        terminal
+            .draw(|frame| render_copy_mode_overlay(&app, frame, app.view.terminal_area))
+            .expect("draw copy overlay");
+
+        let rendered = buffer_row_text(terminal.backend().buffer(), app.view.terminal_area, 3);
+        assert!(rendered.contains("c comment on selection"));
+
+        app.copy_mode.as_mut().expect("copy mode").search.prompt =
+            Some(crate::app::state::CopyModeSearchPrompt {
+                direction: crate::app::state::CopyModeSearchDirection::Forward,
+                query: "needle".to_string(),
+            });
+        terminal
+            .draw(|frame| render_copy_mode_overlay(&app, frame, app.view.terminal_area))
+            .expect("draw search overlay");
+
+        let rendered = buffer_row_text(terminal.backend().buffer(), app.view.terminal_area, 3);
+        assert!(!rendered.contains("comment on selection"));
     }
 
     #[test]
