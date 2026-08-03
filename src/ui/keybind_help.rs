@@ -27,22 +27,6 @@ fn keybind_label(bindings: &crate::config::ActionKeybinds) -> String {
     bindings.label().unwrap_or_else(|| "unset".to_string())
 }
 
-fn custom_command_entries(bindings: &[crate::config::CustomCommandKeybind]) -> Vec<HelpEntry> {
-    bindings
-        .iter()
-        .map(|binding| {
-            (
-                binding.label.clone(),
-                binding
-                    .description
-                    .clone()
-                    .map(Cow::Owned)
-                    .unwrap_or(Cow::Borrowed("custom command")),
-            )
-        })
-        .collect()
-}
-
 fn indexed_label(bindings: &[crate::config::IndexedKeybind]) -> String {
     if bindings.is_empty() {
         return "unset".to_string();
@@ -176,12 +160,21 @@ pub(super) fn keybind_help_groups(app: &AppState) -> Vec<HelpGroup> {
     groups.push(("panes", panes));
 
     if !kb.custom_commands.is_empty() {
-        groups.push(("custom", custom_command_entries(&kb.custom_commands)));
-    }
-    if !kb.copy_mode_commands.is_empty() {
         groups.push((
-            "copy mode custom",
-            custom_command_entries(&kb.copy_mode_commands),
+            "custom",
+            kb.custom_commands
+                .iter()
+                .map(|binding| {
+                    (
+                        binding.label.clone(),
+                        binding
+                            .description
+                            .clone()
+                            .map(Cow::Owned)
+                            .unwrap_or(Cow::Borrowed("custom command")),
+                    )
+                })
+                .collect(),
         ));
     }
 

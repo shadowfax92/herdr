@@ -318,8 +318,7 @@ API を呼び出せます。ペインがタブやワークスペースをまた�
 ポップアップは Herdr ペインではなく、セッションに 1 つだけ存在できるリソースです。
 ペイン id を持たず、プラグインのフォーカスコンテキストを変更せず、ペインのライフサイクルイベントを発行せず、pane、layout、永続化、エージェント API に参加しません。
 そのプロセスには `HERDR_PANE_ID` が渡されず、背後のタイルペインは `HERDR_PLUGIN_CONTEXT_JSON` から参照できます。
-コピーモードからポップアップを開くことができ、閉じると元のペインがフォーカスされたままなら、同じコピーカーソル、選択範囲、検索、スクロール位置に戻ります。
-Settings またはコピーモード以外の Herdr モーダルが開いている間は `ui_busy` が返り、起動後の `plugin.pane.open` は `ok` を返します。同時に開けるポップアップは 1 つだけです。
+Settings、コピーモード、または別の Herdr モーダルが開いている間にポップアップを開くと `ui_busy` が返り、起動後の `plugin.pane.open` は `ok` を返します。
 
 Windows では、ビルドコマンド、アクションコマンド、イベントコマンドは、素の
 コマンドが `PATH` にあれば `npm.cmd`、`bun.cmd`、`pnpm.cmd` のような一般的な
@@ -337,22 +336,6 @@ type = "plugin_action"
 command = "example.layout.apply"
 description = "apply layout"
 ```
-
-プラグインアクションには、コピーモード専用の直接キーも設定できます:
-
-```toml
-[[keys.command]]
-key = "c"
-mode = "copy"
-type = "plugin_action"
-command = "shadowfax.comments.capture"
-description = "comment on selected terminal text"
-```
-
-組み込みのコピーキーと検索入力が優先されます。元のペインに表示中の選択範囲がある場合、
-アクションは `HERDR_PLUGIN_CONTEXT_JSON` の `selected_text` として受け取るため、
-クリップボードを経由する必要はありません。アクションはポップアップを開き、閉じた後に
-保持されていたコピーモードの状態へ戻れます。
 
 ## リンクハンドラー
 

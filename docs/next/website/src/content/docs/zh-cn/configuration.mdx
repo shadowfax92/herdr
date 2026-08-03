@@ -205,23 +205,6 @@ command = "example.layout.apply"
 description = "apply layout"
 ```
 
-设置 `mode = "copy"` 可让直接按键绑定仅在复制模式中生效。由于不会拦截普通终端输入，
-此模式可以安全使用可打印字符：
-
-```toml
-[[keys.command]]
-key = "c"
-mode = "copy"
-type = "plugin_action"
-command = "shadowfax.comments.capture"
-description = "comment on selected terminal text"
-```
-
-复制模式按键绑定不使用 `prefix+...`。内置复制按键和正在输入的搜索内容优先；
-重复或保留的绑定会被禁用，并产生配置诊断。插件动作会通过
-`HERDR_PLUGIN_CONTEXT_JSON` 收到聚焦窗格；存在可见选择时，同一上下文还会包含
-`selected_text`。没有选择时动作仍会运行。
-
 可以提供可选的 `description`。指定后，该描述会在按键绑定帮助面板（通过 `prefix+?` 打开）中显示，替代默认的 `'custom command'` 标签。
 
 在相应值可用时，自定义命令会收到 `HERDR_SOCKET_PATH`、`HERDR_BIN_PATH`、`HERDR_ACTIVE_WORKSPACE_ID`、`HERDR_ACTIVE_TAB_ID`、`HERDR_ACTIVE_PANE_ID` 和 `HERDR_ACTIVE_PANE_CWD`。当 Herdr 能检测到聚焦窗格的工作目录时，shell 命令会从该目录运行。

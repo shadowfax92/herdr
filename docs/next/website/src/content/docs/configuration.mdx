@@ -209,24 +209,6 @@ command = "example.layout.apply"
 description = "apply layout"
 ```
 
-Set `mode = "copy"` to make a direct binding active only in Copy mode. Plain
-printable keys are safe there because they cannot intercept terminal input:
-
-```toml
-[[keys.command]]
-key = "c"
-mode = "copy"
-type = "plugin_action"
-command = "shadowfax.comments.capture"
-description = "comment on selected terminal text"
-```
-
-Copy-mode bindings do not use `prefix+...`. Built-in Copy-mode keys and active
-search input keep priority, and duplicate or reserved bindings are disabled with
-a config diagnostic. A plugin action receives the focused pane through
-`HERDR_PLUGIN_CONTEXT_JSON`; when a visible selection exists, the same context
-includes `selected_text`. The action still runs without a selection.
-
 An optional `description` can be provided. When specified, this description is displayed in the keybind help panel (opened with `prefix+?`) in place of the default `'custom command'` label.
 
 Custom commands receive `HERDR_SOCKET_PATH`, `HERDR_BIN_PATH`, `HERDR_ACTIVE_WORKSPACE_ID`, `HERDR_ACTIVE_TAB_ID`, `HERDR_ACTIVE_PANE_ID`, and `HERDR_ACTIVE_PANE_CWD` when those values are available. Shell commands run from the focused pane's working directory when Herdr can detect it.

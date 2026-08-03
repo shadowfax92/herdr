@@ -205,24 +205,6 @@ command = "example.layout.apply"
 description = "apply layout"
 ```
 
-`mode = "copy"` を指定すると、直接キーバインドはコピーモードでのみ有効になります。
-通常のターミナル入力を横取りしないため、このモードでは印字可能なキーも安全に使えます:
-
-```toml
-[[keys.command]]
-key = "c"
-mode = "copy"
-type = "plugin_action"
-command = "shadowfax.comments.capture"
-description = "comment on selected terminal text"
-```
-
-コピーモードのキーバインドでは `prefix+...` を使いません。組み込みのコピーキーと
-入力中の検索が優先され、重複または予約済みのバインドは設定診断とともに無効になります。
-プラグインアクションは `HERDR_PLUGIN_CONTEXT_JSON` からフォーカス中のペインを受け取り、
-表示中の選択範囲があれば同じコンテキストに `selected_text` も含まれます。
-選択範囲がなくてもアクションは実行されます。
-
 任意で `description` を指定できます。指定すると、キーバインドヘルプパネル（`prefix+?` で開く）に、デフォルトの `'custom command'` ラベルの代わりに表示されます。
 
 カスタムコマンドは、利用可能な場合に `HERDR_SOCKET_PATH`、`HERDR_BIN_PATH`、`HERDR_ACTIVE_WORKSPACE_ID`、`HERDR_ACTIVE_TAB_ID`、`HERDR_ACTIVE_PANE_ID`、`HERDR_ACTIVE_PANE_CWD` を受け取ります。Herdr が検出できる場合、シェルコマンドはフォーカス中のペインの作業ディレクトリから実行されます。
