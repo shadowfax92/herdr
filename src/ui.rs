@@ -1,6 +1,7 @@
 use ratatui::{
     layout::{Constraint, Layout, Rect},
-    style::Modifier,
+    style::{Modifier, Style},
+    text::Span,
     Frame,
 };
 
@@ -576,6 +577,19 @@ fn dim_background(frame: &mut Frame, area: Rect) {
             cell.set_style(cell.style().add_modifier(Modifier::DIM));
         }
     }
+}
+
+fn _build_hints(items: &[(&str, &str)], key_style: Style, dim_style: Style) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    spans.push(Span::raw(" "));
+    for (i, (k, desc)) in items.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled("  ", dim_style));
+        }
+        spans.push(Span::styled(k.to_string(), key_style));
+        spans.push(Span::styled(format!(" {desc}"), dim_style));
+    }
+    spans
 }
 
 #[cfg(test)]

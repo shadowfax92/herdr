@@ -16,18 +16,18 @@ impl App {
             return;
         }
         self.state.update_dismissed = true;
-        if self.state.is_prefix_key(key) {
+        if self.state.is_prefix_key(&key) {
             self.state.mode = Mode::Prefix;
             return;
         }
         let handled = self
             .state
-            .handle_copy_mode_key(&self.terminal_runtimes, key);
+            .handle_copy_mode_key(&self.terminal_runtimes, key.clone());
         self.dispatch_pending_clipboard_write();
         if handled {
             return;
         }
-        if let Some(binding) = super::navigate::copy_mode_command_for_key(&self.state, key) {
+        if let Some(binding) = super::navigate::copy_mode_command_for_key(&self.state, &key) {
             self.launch_custom_command(binding, super::navigate::ActionContext::Copy);
         }
     }
@@ -87,7 +87,7 @@ impl AppState {
         terminal_runtimes: &TerminalRuntimeRegistry,
         key: TerminalKey,
     ) -> bool {
-        if self.handle_copy_mode_search_prompt_key(terminal_runtimes, key) {
+        if self.handle_copy_mode_search_prompt_key(terminal_runtimes, key.clone()) {
             return true;
         }
         let Some(command) = crate::input::copy_mode_command(key) else {

@@ -4544,6 +4544,7 @@ fn events_for_app_routing(
             }
             crate::raw_input::RawInputEvent::OuterFocusLost if !source_is_foreground => None,
             crate::raw_input::RawInputEvent::Key(_)
+            | crate::raw_input::RawInputEvent::Text(_)
             | crate::raw_input::RawInputEvent::Mouse(_)
             | crate::raw_input::RawInputEvent::Paste(_) => {
                 source_is_foreground = true;
@@ -6468,6 +6469,22 @@ next_tab = ""
     }
 
     #[test]
+    fn terminal_attach_page_key_host_scrolls_shell_like_decckm_with_bracketed_paste() {
+        with_terminal_attach_page_key_runtime(b"\x1b[?1h\x1b[?2004h", 0, |runtime, input_rx| {
+            apply_terminal_attach_page_up(runtime);
+
+            assert_eq!(
+                runtime
+                    .scroll_metrics()
+                    .expect("scroll metrics")
+                    .offset_from_bottom,
+                4
+            );
+            assert!(input_rx.try_recv().is_err());
+        });
+    }
+
+    #[test]
     fn terminal_attach_page_key_forwards_in_alternate_screen_without_mouse_reporting() {
         with_terminal_attach_page_key_runtime(b"\x1b[?1049h", 3, |runtime, input_rx| {
             apply_terminal_attach_page_up(runtime);
@@ -7539,6 +7556,10 @@ next_tab = ""
                 code: crate::protocol::ClientKeyCode::Char('j'),
                 modifiers: 0,
                 kind: crate::protocol::ClientKeyKind::Press,
+
+                repeat_count: 1,
+                generated_text: None,
+                source: crate::protocol::ClientKeySource::Synthesized,
             }],
         }));
         server.foreground_client_id = Some(2);
@@ -7558,7 +7579,7 @@ next_tab = ""
                 .expect("synthetic release from background client"),
             Bytes::from_static(b"\x1b[106;1:3u")
         );
-        assert!(server.app.pressed_terminal_keys.is_empty());
+        assert!(server.app.input_leases.is_empty());
     }
 
     #[tokio::test]
@@ -7602,6 +7623,10 @@ next_tab = ""
                     code: crate::protocol::ClientKeyCode::Char('x'),
                     modifiers: 0,
                     kind: crate::protocol::ClientKeyKind::Release,
+
+                    repeat_count: 1,
+                    generated_text: None,
+                    source: crate::protocol::ClientKeySource::Synthesized,
                 },
                 crate::protocol::ClientInputEvent::FocusLost,
             ],
@@ -7652,6 +7677,10 @@ next_tab = ""
                 code: crate::protocol::ClientKeyCode::Char('x'),
                 modifiers: 0,
                 kind: crate::protocol::ClientKeyKind::Release,
+
+                repeat_count: 1,
+                generated_text: None,
+                source: crate::protocol::ClientKeySource::Synthesized,
             }],
         }));
         assert_eq!(server.foreground_client_id, Some(3));
@@ -7863,6 +7892,10 @@ next_tab = ""
                 code: crate::protocol::ClientKeyCode::Enter,
                 modifiers: 0,
                 kind: crate::protocol::ClientKeyKind::Press,
+
+                repeat_count: 1,
+                generated_text: None,
+                source: crate::protocol::ClientKeySource::Synthesized,
             }],
         }));
 
@@ -7899,6 +7932,10 @@ next_tab = ""
                 code: crate::protocol::ClientKeyCode::Esc,
                 modifiers: 0,
                 kind: crate::protocol::ClientKeyKind::Press,
+
+                repeat_count: 1,
+                generated_text: None,
+                source: crate::protocol::ClientKeySource::Synthesized,
             }],
         }));
 
@@ -7932,6 +7969,10 @@ next_tab = ""
                 code: crate::protocol::ClientKeyCode::Down,
                 modifiers: 0,
                 kind: crate::protocol::ClientKeyKind::Press,
+
+                repeat_count: 1,
+                generated_text: None,
+                source: crate::protocol::ClientKeySource::Synthesized,
             }],
         }));
 
