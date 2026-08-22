@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 /// Current protocol version. Bumped when wire format changes incompatibly.
-pub const PROTOCOL_VERSION: u32 = 22;
+pub const PROTOCOL_VERSION: u32 = 23;
 
 /// Maximum allowed frame payload size (2 MB). Frames larger than this are
 /// rejected to prevent denial-of-service via oversized length prefixes.
@@ -963,9 +963,53 @@ pub enum ClientShellCommandAction {
     Pane,
     Popup,
     PluginAction,
+    // Copy-mode commands use distinct wire values so older endpoint clients
+    // discard them as unknown instead of accidentally routing them in Terminal mode.
+    CopyShell,
+    CopyPane,
+    CopyPopup,
+    CopyPluginAction,
     /// A future endpoint action kind that this client cannot execute.
     #[serde(other)]
     Unknown,
+}
+
+impl ClientShellCommandAction {
+    pub(crate) fn from_config(
+        action: crate::config::CustomCommandAction,
+        mode: crate::config::CommandKeybindMode,
+    ) -> Self {
+        match (mode, action) {
+            (crate::config::CommandKeybindMode::Normal, action) => action.into(),
+            (
+                crate::config::CommandKeybindMode::Copy,
+                crate::config::CustomCommandAction::Shell,
+            ) => Self::CopyShell,
+            (crate::config::CommandKeybindMode::Copy, crate::config::CustomCommandAction::Pane) => {
+                Self::CopyPane
+            }
+            (
+                crate::config::CommandKeybindMode::Copy,
+                crate::config::CustomCommandAction::Popup,
+            ) => Self::CopyPopup,
+            (
+                crate::config::CommandKeybindMode::Copy,
+                crate::config::CustomCommandAction::PluginAction,
+            ) => Self::CopyPluginAction,
+        }
+    }
+
+    pub(crate) fn keybind_mode(self) -> Result<crate::config::CommandKeybindMode, ()> {
+        match self {
+            Self::Shell | Self::Pane | Self::Popup | Self::PluginAction => {
+                Ok(crate::config::CommandKeybindMode::Normal)
+            }
+            Self::CopyShell | Self::CopyPane | Self::CopyPopup | Self::CopyPluginAction => {
+                Ok(crate::config::CommandKeybindMode::Copy)
+            }
+            Self::Unknown => Err(()),
+        }
+    }
 }
 
 impl From<crate::config::CustomCommandAction> for ClientShellCommandAction {
@@ -988,6 +1032,10 @@ impl TryFrom<ClientShellCommandAction> for crate::config::CustomCommandAction {
             ClientShellCommandAction::Pane => Ok(Self::Pane),
             ClientShellCommandAction::Popup => Ok(Self::Popup),
             ClientShellCommandAction::PluginAction => Ok(Self::PluginAction),
+            ClientShellCommandAction::CopyShell => Ok(Self::Shell),
+            ClientShellCommandAction::CopyPane => Ok(Self::Pane),
+            ClientShellCommandAction::CopyPopup => Ok(Self::Popup),
+            ClientShellCommandAction::CopyPluginAction => Ok(Self::PluginAction),
             ClientShellCommandAction::Unknown => Err(()),
         }
     }

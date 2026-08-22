@@ -9,6 +9,19 @@ impl ClientShellState {
         self.copy_input_queue.clear();
     }
 
+    /// Drops the range tied to a potentially stale pane surface without losing
+    /// the copy-mode cursor and scroll position that the client owns.
+    pub(super) fn clear_copy_mode_selection(&mut self) {
+        if let Some(copy_mode) = self.copy_mode.as_mut() {
+            copy_mode.selection = None;
+        }
+        self.selection = None;
+        self.stop_selection_autoscroll();
+        self.selection_highlight_clear_deadline = None;
+        self.pending_word_selection = None;
+        self.last_pane_click = None;
+    }
+
     pub(super) fn enter_copy_mode(&mut self, outcome: &mut ClientShellInput) -> bool {
         let pane_id = match self.focused_pane_id() {
             Some(pane_id) => pane_id,
@@ -104,6 +117,21 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) {
         if self.route_copy_search_prompt_key(key, outcome) {
+            return;
+        }
+        // Copy-mode commands use a separate registry and intentionally shadow the
+        // built-in motion map. The search prompt above remains the exclusive owner
+        // of text input while it is open.
+        if let Some(binding) = self
+            .config
+            .keybinds
+            .keybinds
+            .copy_mode_commands
+            .iter()
+            .find(|binding| binding.bindings.matches_direct_key(key))
+            .cloned()
+        {
+            self.record_custom_command(binding, crate::config::CommandKeybindMode::Copy, outcome);
             return;
         }
         match key.code {

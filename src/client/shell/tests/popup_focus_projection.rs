@@ -633,6 +633,74 @@ fn popup_command_blocks_underlying_input_until_surface_or_error() {
 }
 
 #[test]
+fn popup_round_trip_restores_copy_mode_at_the_same_scrollback_position() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    let mut pane_surface = surface();
+    pane_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+        offset_from_bottom: 5,
+        max_offset_from_bottom: 20,
+        viewport_rows: 2,
+    });
+    state.set_pane_surface(pane_surface);
+    state.compose(106, 20).expect("composed frame");
+    let mut enter = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
+        &mut enter,
+    );
+    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+        KeyCode::Char('v'),
+        KeyModifiers::empty(),
+    ))]);
+    let before_popup = state.copy_mode.clone().expect("copy mode");
+    assert!(before_popup.selection.is_some());
+
+    let mut popup_surface = surface_with_popup();
+    popup_surface.surface_revision = 2;
+    popup_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+        offset_from_bottom: 5,
+        max_offset_from_bottom: 20,
+        viewport_rows: 2,
+    });
+    state.set_pane_surface(popup_surface);
+    assert_eq!(state.mode, ClientShellMode::Terminal);
+    let during_popup = state.copy_mode.as_ref().expect("retained copy mode");
+    assert_eq!(during_popup.cursor, before_popup.cursor);
+    assert_eq!(during_popup.offset_from_bottom, 5);
+    assert!(during_popup.selection.is_none());
+    assert!(state.selection.is_none());
+
+    // Agent output and metadata can refresh the snapshot while the user writes
+    // a comment. That refresh must not reactivate the underlying Copy mode.
+    let mut refreshed_snapshot = snapshot();
+    refreshed_snapshot.revision = 2;
+    state.set_snapshot(Box::new(refreshed_snapshot));
+    assert_eq!(state.mode, ClientShellMode::Terminal);
+    let popup_input = state.handle_input_bytes(b"c");
+    assert!(matches!(
+        &popup_input.requests[..],
+        [ClientMessage::ClientShellPopupInput { .. }]
+    ));
+    assert!(popup_input.actions.is_empty());
+
+    let mut closed_surface = surface();
+    closed_surface.projection_revision = 2;
+    closed_surface.surface_revision = 3;
+    closed_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+        offset_from_bottom: 5,
+        max_offset_from_bottom: 20,
+        viewport_rows: 2,
+    });
+    state.set_pane_surface(closed_surface);
+    assert_eq!(state.mode, ClientShellMode::Copy);
+    let restored = state.copy_mode.as_ref().expect("restored copy mode");
+    assert_eq!(restored.cursor, before_popup.cursor);
+    assert_eq!(restored.offset_from_bottom, 5);
+    assert!(restored.selection.is_none());
+}
+
+#[test]
 fn shell_refuses_mismatched_projection_and_clears_stale_hits_in_either_order() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));

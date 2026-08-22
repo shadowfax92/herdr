@@ -1,6 +1,90 @@
 use super::*;
 
 #[test]
+fn copy_mode_custom_command_sends_selection_and_yields_text_input_to_search() {
+    let config: Config = toml::from_str(
+        r#"
+[[keys.command]]
+key = "c"
+mode = "copy"
+type = "plugin_action"
+command = "shadowfax.comments.capture"
+description = "Comment on copy-mode selection"
+"#,
+    )
+    .unwrap();
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    let mut projection = snapshot();
+    projection
+        .commands
+        .push(crate::protocol::ClientShellCommand {
+            command_id: "comments-capture".into(),
+            binding_label: "c".into(),
+            binding_labels: vec!["c".into()],
+            action: crate::protocol::ClientShellCommandAction::CopyPluginAction,
+            description: Some("Comment on copy-mode selection".into()),
+        });
+    state.set_snapshot(Box::new(projection));
+    let mut pane_surface = surface();
+    pane_surface.panes[0].content_revision = 42;
+    pane_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+        offset_from_bottom: 0,
+        max_offset_from_bottom: 20,
+        viewport_rows: 2,
+    });
+    state.set_pane_surface(pane_surface);
+    state.compose(106, 20).expect("composed frame");
+
+    let mut enter = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
+        &mut enter,
+    );
+    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+        KeyCode::Char('v'),
+        KeyModifiers::empty(),
+    ))]);
+    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+        KeyCode::Char('h'),
+        KeyModifiers::empty(),
+    ))]);
+    let copy_state = state.copy_mode.clone();
+
+    let invoke = state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+        KeyCode::Char('c'),
+        KeyModifiers::empty(),
+    ))]);
+    let [ClientShellAction::Endpoint { request, .. }] = &invoke.actions[..] else {
+        panic!("copy binding should invoke the endpoint command");
+    };
+    let crate::api::schema::Method::CommandInvoke(params) = &request.method else {
+        panic!("copy binding should use command.invoke");
+    };
+    assert_eq!(params.command_id, "comments-capture");
+    assert!(params.selection.is_some());
+    assert_eq!(state.mode, ClientShellMode::Copy);
+    assert_eq!(state.copy_mode, copy_state);
+
+    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+        KeyCode::Char('/'),
+        KeyModifiers::empty(),
+    ))]);
+    let search = state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+        KeyCode::Char('c'),
+        KeyModifiers::empty(),
+    ))]);
+    assert!(search.actions.is_empty());
+    assert_eq!(
+        state
+            .copy_mode
+            .as_ref()
+            .and_then(|copy_mode| copy_mode.search_prompt.as_ref())
+            .map(|prompt| prompt.query.as_str()),
+        Some("c")
+    );
+}
+
+#[test]
 fn pasted_help_and_copy_queries_strip_control_characters() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.overlay = Some(ClientShellOverlay::Help(ClientHelpOverlay {
