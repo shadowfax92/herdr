@@ -175,6 +175,7 @@ impl ClientShellConfig {
     pub(crate) fn with_keybinding_source(mut self, source: ClientShellKeybindingSource) -> Self {
         self.keybinding_source = source;
         self.keybinds.keybinds.custom_commands.clear();
+        self.keybinds.keybinds.copy_mode_commands.clear();
         self
     }
 
@@ -243,20 +244,20 @@ impl ClientShellConfig {
                 config.keys.command = commands
                     .iter()
                     .filter_map(|command| {
-                        let action_type = match command.action {
-                            crate::protocol::ClientShellCommandAction::Shell => {
+                        let mode = command.action.keybind_mode().ok()?;
+                        let action_type = match command.action.try_into().ok()? {
+                            crate::config::CustomCommandAction::Shell => {
                                 crate::config::CommandKeybindType::Shell
                             }
-                            crate::protocol::ClientShellCommandAction::Pane => {
+                            crate::config::CustomCommandAction::Pane => {
                                 crate::config::CommandKeybindType::Pane
                             }
-                            crate::protocol::ClientShellCommandAction::Popup => {
+                            crate::config::CustomCommandAction::Popup => {
                                 crate::config::CommandKeybindType::Popup
                             }
-                            crate::protocol::ClientShellCommandAction::PluginAction => {
+                            crate::config::CustomCommandAction::PluginAction => {
                                 crate::config::CommandKeybindType::PluginAction
                             }
-                            crate::protocol::ClientShellCommandAction::Unknown => return None,
                         };
                         Some(crate::config::CommandKeybindConfig {
                             key: if command.binding_labels.len() == 1 {
@@ -268,6 +269,7 @@ impl ClientShellConfig {
                             // through the shared config collision resolver.
                             command: command.command_id.clone(),
                             action_type,
+                            mode,
                             description: command.description.clone(),
                             width: None,
                             height: None,
@@ -285,20 +287,26 @@ impl ClientShellConfig {
                 let Ok(action) = command.action.try_into() else {
                     continue;
                 };
-                keybinds
-                    .keybinds
-                    .custom_commands
-                    .push(crate::config::CustomCommandKeybind {
-                        bindings: crate::config::ActionKeybinds::from_labels(
-                            &command.binding_labels,
-                        )?,
-                        label: command.binding_label.clone(),
-                        command: command.command_id.clone(),
-                        action,
-                        description: command.description.clone(),
-                        width: None,
-                        height: None,
-                    });
+                let Ok(mode) = command.action.keybind_mode() else {
+                    continue;
+                };
+                let binding = crate::config::CustomCommandKeybind {
+                    bindings: crate::config::ActionKeybinds::from_labels(&command.binding_labels)?,
+                    label: command.binding_label.clone(),
+                    command: command.command_id.clone(),
+                    action,
+                    description: command.description.clone(),
+                    width: None,
+                    height: None,
+                };
+                match mode {
+                    crate::config::CommandKeybindMode::Normal => {
+                        keybinds.keybinds.custom_commands.push(binding)
+                    }
+                    crate::config::CommandKeybindMode::Copy => {
+                        keybinds.keybinds.copy_mode_commands.push(binding)
+                    }
+                }
             }
         }
         self.keybinds = keybinds;
@@ -323,6 +331,7 @@ impl ClientShellConfig {
                     self.local_keys = config.keys.clone();
                     if self.keybinding_source == ClientShellKeybindingSource::RemoteLocal {
                         keybinds.keybinds.custom_commands.clear();
+                        keybinds.keybinds.copy_mode_commands.clear();
                     }
                     self.keybinds = keybinds;
                     diagnostics.extend(keybind_diagnostics);

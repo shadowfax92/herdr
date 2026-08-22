@@ -118,6 +118,23 @@ pub enum CommandKeybindType {
     PluginAction,
 }
 
+/// Which input mode a `[[keys.command]]` binding is live in. Copy-mode bindings
+/// are resolved against their own registry, so a plain printable key (`c`) can be
+/// bound there without colliding with the normal-mode direct keymap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandKeybindMode {
+    #[default]
+    Normal,
+    Copy,
+}
+
+impl CommandKeybindMode {
+    fn is_normal(&self) -> bool {
+        *self == Self::Normal
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct CommandKeybindConfig {
@@ -128,6 +145,9 @@ pub struct CommandKeybindConfig {
     /// Command execution mode. Default: "shell".
     #[serde(rename = "type")]
     pub action_type: CommandKeybindType,
+    /// Mode where the command binding is active. Default: "normal".
+    #[serde(skip_serializing_if = "CommandKeybindMode::is_normal")]
+    pub mode: CommandKeybindMode,
     /// Optional user-defined description for this custom command.
     pub description: Option<String>,
     /// Optional popup width as cells or a percentage string when type = "popup".
@@ -142,6 +162,7 @@ impl Default for CommandKeybindConfig {
             key: BindingConfig::empty(),
             command: String::new(),
             action_type: CommandKeybindType::Shell,
+            mode: CommandKeybindMode::Normal,
             description: None,
             width: None,
             height: None,
@@ -404,6 +425,8 @@ pub struct Keybinds {
     pub resize_pane_right: ActionKeybinds,
     pub toggle_sidebar: ActionKeybinds,
     pub custom_commands: Vec<CustomCommandKeybind>,
+    /// Custom commands bound with `mode = "copy"`; dispatched only from Copy mode.
+    pub copy_mode_commands: Vec<CustomCommandKeybind>,
 }
 
 impl Default for Keybinds {
@@ -517,6 +540,8 @@ impl Config {
         let mut navigate_registry = BindingRegistry::new(prefix_keys.clone(), prefix_source);
         navigate_registry.reserve_prefix_keys("keys.prefix", prefix_source);
         reserve_navigate_runtime_keys(&mut navigate_registry);
+        let mut copy_mode_registry = BindingRegistry::new(prefix_keys.clone(), prefix_source);
+        copy_mode_registry.reserve_prefix_keys("keys.prefix", prefix_source);
         let prefix = prefix_keys;
 
         macro_rules! empty_action {
@@ -587,6 +612,7 @@ impl Config {
             resize_pane_right: empty_action!(),
             toggle_sidebar: empty_action!(),
             custom_commands: Vec::new(),
+            copy_mode_commands: Vec::new(),
         };
 
         macro_rules! field_source {
@@ -643,6 +669,7 @@ impl Config {
                         &mut navigate_registry,
                         &mut diagnostics,
                         $source,
+                        "navigate",
                     );
                 }
             };
@@ -767,6 +794,7 @@ impl Config {
                     self,
                     &mut keybinds,
                     &mut registry,
+                    &mut copy_mode_registry,
                     &mut diagnostics,
                 );
             }
@@ -802,6 +830,7 @@ fn append_custom_command_bindings(
     config: &Config,
     keybinds: &mut Keybinds,
     registry: &mut BindingRegistry,
+    copy_mode_registry: &mut BindingRegistry,
     diagnostics: &mut Vec<String>,
 ) {
     for (index, command) in config.keys.command.iter().enumerate() {
@@ -815,13 +844,26 @@ fn append_custom_command_bindings(
             continue;
         }
 
-        let bindings = parse_action_bindings(
-            &key_field,
-            &command.key,
-            registry,
-            diagnostics,
-            BindingSource::User,
-        );
+        // Copy mode deliberately lets user commands shadow built-in motions, while
+        // the global prefix and Escape remain lifecycle controls. Reuse the navigate
+        // parser for those constraints, but keep collisions isolated by mode.
+        let bindings = match command.mode {
+            CommandKeybindMode::Normal => parse_action_bindings(
+                &key_field,
+                &command.key,
+                registry,
+                diagnostics,
+                BindingSource::User,
+            ),
+            CommandKeybindMode::Copy => parse_navigate_bindings(
+                &key_field,
+                &command.key,
+                copy_mode_registry,
+                diagnostics,
+                BindingSource::User,
+                "copy-mode",
+            ),
+        };
         if bindings.bindings.is_empty() {
             continue;
         }
@@ -845,7 +887,7 @@ fn append_custom_command_bindings(
             (None, None)
         };
         let label = bindings.label().unwrap_or_else(|| "unset".to_string());
-        keybinds.custom_commands.push(CustomCommandKeybind {
+        let binding = CustomCommandKeybind {
             bindings,
             label,
             command: command.command.clone(),
@@ -853,7 +895,11 @@ fn append_custom_command_bindings(
             description: command.description.clone(),
             width,
             height,
-        });
+        };
+        match command.mode {
+            CommandKeybindMode::Normal => keybinds.custom_commands.push(binding),
+            CommandKeybindMode::Copy => keybinds.copy_mode_commands.push(binding),
+        }
     }
 }
 
@@ -894,11 +940,12 @@ fn parse_action_bindings(
 }
 
 fn parse_navigate_bindings(
-    field: &'static str,
+    field: &str,
     config: &BindingConfig,
     registry: &mut BindingRegistry,
     diagnostics: &mut Vec<String>,
     source: BindingSource,
+    mode_label: &str,
 ) -> ActionKeybinds {
     let mut bindings = Vec::new();
     for raw in config.values() {
@@ -908,7 +955,14 @@ fn parse_navigate_bindings(
         }
         match parse_binding_string(raw) {
             Some(ParsedBinding::Single(binding)) => {
-                if reject_navigate_binding(field, &binding, registry, diagnostics, source) {
+                if reject_navigate_binding(
+                    field,
+                    &binding,
+                    registry,
+                    diagnostics,
+                    source,
+                    mode_label,
+                ) {
                     continue;
                 }
                 registry.register(&binding, field, source);
@@ -1041,10 +1095,11 @@ fn reject_navigate_binding(
     registry: &BindingRegistry,
     diagnostics: &mut Vec<String>,
     source: BindingSource,
+    mode_label: &str,
 ) -> bool {
     if binding.trigger.is_prefix() {
         let diag = format!(
-            "navigate keybinding must not include prefix: {field} = {:?}; disabling binding",
+            "{mode_label} keybinding must not include prefix: {field} = {:?}; disabling binding",
             binding.label
         );
         warn!(message = %diag, "config diagnostic");
@@ -1054,7 +1109,7 @@ fn reject_navigate_binding(
 
     if matches!(normalize_key_combo(binding.trigger.combo()).0, KeyCode::Esc) {
         let diag = format!(
-            "navigate keybinding cannot use esc: {field} = {:?}; disabling binding",
+            "{mode_label} keybinding cannot use esc: {field} = {:?}; disabling binding",
             binding.label
         );
         warn!(message = %diag, "config diagnostic");
@@ -2573,5 +2628,41 @@ width = "80%"
             .collect_diagnostics()
             .iter()
             .any(|diag| diag.contains("popup size on non-popup custom command")));
+    }
+
+    #[test]
+    fn copy_mode_commands_use_their_own_registry() {
+        let config: Config = toml::from_str(
+            r#"
+[[keys.command]]
+key = "alt+c"
+command = "echo normal"
+
+[[keys.command]]
+key = "alt+c"
+mode = "copy"
+type = "plugin_action"
+command = "shadowfax.comments.capture"
+
+[[keys.command]]
+key = "c"
+mode = "copy"
+command = "echo plain-printable"
+"#,
+        )
+        .unwrap();
+
+        let keybinds = config.keybinds();
+        // alt+c is live in both modes, and a bare printable key is legal in copy mode.
+        assert_eq!(keybinds.custom_commands.len(), 1);
+        assert_eq!(keybinds.copy_mode_commands.len(), 2);
+        assert_eq!(
+            keybinds.copy_mode_commands[0].action,
+            CustomCommandAction::PluginAction
+        );
+        assert!(keybinds.copy_mode_commands[1]
+            .bindings
+            .matches_direct_key(&TerminalKey::new(KeyCode::Char('c'), KeyModifiers::empty())));
+        assert!(config.collect_diagnostics().is_empty());
     }
 }

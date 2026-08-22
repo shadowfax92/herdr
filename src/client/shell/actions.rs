@@ -178,93 +178,104 @@ impl ClientShellState {
                 }
                 outcome.actions.push(ClientShellAction::Keybind(action));
             }
-            crate::input::KeybindMatch::Command(command) => {
-                let action = command.action.into();
-                let resolved_labels = command.bindings.labels();
-                let command_id = self.snapshot.as_deref().and_then(|snapshot| {
-                    if let Some(candidate) = snapshot.commands.iter().find(|candidate| {
-                        candidate.command_id == command.command && candidate.action == action
-                    }) {
-                        return Some(candidate.command_id.clone());
-                    }
-                    let mut candidates = snapshot.commands.iter().filter(|candidate| {
-                        candidate.action == action
-                            && !resolved_labels.is_empty()
-                            && resolved_labels
-                                .iter()
-                                .all(|label| candidate.binding_labels.contains(label))
-                    });
-                    let candidate = candidates.next()?;
-                    candidates
-                        .next()
-                        .is_none()
-                        .then(|| candidate.command_id.clone())
-                });
-                let Some(command_id) = command_id else {
-                    self.set_endpoint_error(
-                        "custom command is not available on this endpoint; reload configuration",
-                    );
-                    outcome.repaint = true;
-                    return;
-                };
-                let Some(snapshot) = self.snapshot.as_deref() else {
-                    return;
-                };
-                let selection = (action == crate::protocol::ClientShellCommandAction::PluginAction)
-                    .then(|| {
-                        let selection = self.selection.as_ref()?;
-                        if !selection.is_visible() {
-                            return None;
-                        }
-                        if snapshot.focused_pane_id.as_deref() != Some(selection.pane_id.as_str()) {
-                            return None;
-                        }
-                        let content_revision = self
-                            .pane_surface
-                            .as_ref()?
-                            .panes
-                            .iter()
-                            .find(|pane| pane.pane_id == selection.pane_id)?
-                            .content_revision;
-                        let (anchor, cursor) = selection.ordered_cells();
-                        Some(crate::api::schema::PaneSelectionReadParams {
-                            pane_id: selection.pane_id.clone(),
-                            anchor: crate::api::schema::PaneTextPoint {
-                                row: anchor.0,
-                                col: anchor.1,
-                            },
-                            cursor: crate::api::schema::PaneTextPoint {
-                                row: cursor.0,
-                                col: cursor.1,
-                            },
-                            content_revision: Some(content_revision),
-                        })
-                    })
-                    .flatten();
-                let params = crate::api::schema::CommandInvokeParams {
-                    command_id,
-                    workspace_id: snapshot.focused_workspace_id.clone(),
-                    tab_id: snapshot.focused_tab_id.clone(),
-                    pane_id: snapshot.focused_pane_id.clone(),
-                    selection,
-                };
-                if action == crate::protocol::ClientShellCommandAction::Popup {
-                    self.popup_pending = true;
-                    self.popup_pending_deadline = None;
-                    if !self.push_endpoint_method_with_kind(
-                        crate::api::schema::Method::CommandInvoke(params),
-                        PendingEndpointKind::PopupCommand,
-                        outcome,
-                    ) {
-                        self.popup_pending = false;
-                    }
-                } else {
-                    self.push_endpoint_method(
-                        crate::api::schema::Method::CommandInvoke(params),
-                        outcome,
-                    );
-                }
+            crate::input::KeybindMatch::Command(command) => self.record_custom_command(
+                command,
+                crate::config::CommandKeybindMode::Normal,
+                outcome,
+            ),
+        }
+    }
+
+    /// Resolves a client-side binding back to the opaque command advertised by the endpoint.
+    /// The originating registry supplies `mode` because prefix handling can temporarily replace
+    /// the shell's visible mode before the command reaches this dispatch seam.
+    pub(super) fn record_custom_command(
+        &mut self,
+        command: crate::config::CustomCommandKeybind,
+        mode: crate::config::CommandKeybindMode,
+        outcome: &mut ClientShellInput,
+    ) {
+        let action = crate::protocol::ClientShellCommandAction::from_config(command.action, mode);
+        let resolved_labels = command.bindings.labels();
+        let command_id = self.snapshot.as_deref().and_then(|snapshot| {
+            if let Some(candidate) = snapshot.commands.iter().find(|candidate| {
+                candidate.command_id == command.command && candidate.action == action
+            }) {
+                return Some(candidate.command_id.clone());
             }
+            let mut candidates = snapshot.commands.iter().filter(|candidate| {
+                candidate.action == action
+                    && !resolved_labels.is_empty()
+                    && resolved_labels
+                        .iter()
+                        .all(|label| candidate.binding_labels.contains(label))
+            });
+            let candidate = candidates.next()?;
+            candidates
+                .next()
+                .is_none()
+                .then(|| candidate.command_id.clone())
+        });
+        let Some(command_id) = command_id else {
+            self.set_endpoint_error(
+                "custom command is not available on this endpoint; reload configuration",
+            );
+            outcome.repaint = true;
+            return;
+        };
+        let Some(snapshot) = self.snapshot.as_deref() else {
+            return;
+        };
+        let selection = (command.action == crate::config::CustomCommandAction::PluginAction)
+            .then(|| {
+                let selection = self.selection.as_ref()?;
+                if !selection.is_visible() {
+                    return None;
+                }
+                if snapshot.focused_pane_id.as_deref() != Some(selection.pane_id.as_str()) {
+                    return None;
+                }
+                let content_revision = self
+                    .pane_surface
+                    .as_ref()?
+                    .panes
+                    .iter()
+                    .find(|pane| pane.pane_id == selection.pane_id)?
+                    .content_revision;
+                let (anchor, cursor) = selection.ordered_cells();
+                Some(crate::api::schema::PaneSelectionReadParams {
+                    pane_id: selection.pane_id.clone(),
+                    anchor: crate::api::schema::PaneTextPoint {
+                        row: anchor.0,
+                        col: anchor.1,
+                    },
+                    cursor: crate::api::schema::PaneTextPoint {
+                        row: cursor.0,
+                        col: cursor.1,
+                    },
+                    content_revision: Some(content_revision),
+                })
+            })
+            .flatten();
+        let params = crate::api::schema::CommandInvokeParams {
+            command_id,
+            workspace_id: snapshot.focused_workspace_id.clone(),
+            tab_id: snapshot.focused_tab_id.clone(),
+            pane_id: snapshot.focused_pane_id.clone(),
+            selection,
+        };
+        if command.action == crate::config::CustomCommandAction::Popup {
+            self.popup_pending = true;
+            self.popup_pending_deadline = None;
+            if !self.push_endpoint_method_with_kind(
+                crate::api::schema::Method::CommandInvoke(params),
+                PendingEndpointKind::PopupCommand,
+                outcome,
+            ) {
+                self.popup_pending = false;
+            }
+        } else {
+            self.push_endpoint_method(crate::api::schema::Method::CommandInvoke(params), outcome);
         }
     }
 

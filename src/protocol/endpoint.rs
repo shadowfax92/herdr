@@ -292,6 +292,10 @@ mod tests {
             snapshot.workspaces[0].agent_status,
             crate::api::schema::AgentStatus::Unknown
         );
+        assert_eq!(
+            snapshot.commands[0].action,
+            crate::protocol::ClientShellCommandAction::Shell
+        );
     }
 
     #[test]

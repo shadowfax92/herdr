@@ -1493,7 +1493,9 @@ impl ClientShellState {
                     self.mode = ClientShellMode::Terminal;
                 }
             } else if pane_focused {
-                if self.mode == ClientShellMode::Terminal {
+                // Metadata can refresh while a plugin popup owns input. Keep the
+                // retained Copy state suspended until its popup surface closes.
+                if self.mode == ClientShellMode::Terminal && self.popup_terminal_id.is_none() {
                     self.mode = ClientShellMode::Copy;
                 }
                 if self.selection.is_none() {
@@ -1668,6 +1670,7 @@ impl ClientShellState {
             .as_deref()
             .map(|popup| popup.terminal_id.clone());
         if previous_popup != next_popup {
+            let popup_closed = previous_popup.is_some() && next_popup.is_none();
             if next_popup.is_some() && matches!(self.overlay, Some(ClientShellOverlay::Settings(_)))
             {
                 self.cancel_settings_overlay();
@@ -1687,13 +1690,10 @@ impl ClientShellState {
                     .startup_onboarding
                     .then_some(ClientShellOverlay::Onboarding);
             }
-            self.selection = None;
-            self.last_pane_click = None;
-            self.selection_autoscroll = None;
-            self.selection_autoscroll_deadline = None;
-            self.selection_highlight_clear_deadline = None;
-            self.word_selection_gesture = None;
-            self.copy_mode = None;
+            // Popup rendering temporarily owns input, but Copy mode is client state.
+            // Preserve its cursor/scroll position so selection-driven plugin popups
+            // can return to the same scrollback view after invalidating the range.
+            self.clear_copy_mode_selection();
             self.reset_copy_pipeline();
             self.chrome_drag = None;
             self.workspace_press = None;
@@ -1706,6 +1706,9 @@ impl ClientShellState {
             self.hits.popup = None;
             self.endpoint_error = None;
             self.endpoint_error_deadline = None;
+            if popup_closed {
+                self.mode = self.copy_or_terminal_mode();
+            }
         }
         if next_popup.is_some() {
             self.popup_pending = false;

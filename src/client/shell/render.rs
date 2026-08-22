@@ -191,6 +191,18 @@ pub(super) fn render_mode_bar(
                         (exit_keys.to_owned(), key),
                         (exit_label.to_owned(), base),
                     ]);
+                    for binding in &keybinds.keybinds.copy_mode_commands {
+                        segments.extend([
+                            (format!("  {}", binding.label), key),
+                            (
+                                format!(
+                                    " {}",
+                                    binding.description.as_deref().unwrap_or("custom command")
+                                ),
+                                base,
+                            ),
+                        ]);
+                    }
                 }
             }
             ClientShellMode::Terminal => unreachable!(),

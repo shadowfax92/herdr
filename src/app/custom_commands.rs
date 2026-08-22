@@ -32,13 +32,25 @@ struct EndpointCommand {
 }
 
 impl EndpointCommandRegistry {
-    pub(super) fn new(bindings: &[crate::config::CustomCommandKeybind]) -> Self {
+    /// Builds the opaque endpoint manifest for every client-routable input mode.
+    pub(super) fn new(keybinds: &crate::config::Keybinds) -> Self {
         let namespace = new_command_namespace();
-        let entries = bindings
+        let entries = keybinds
+            .custom_commands
             .iter()
+            .map(|binding| (crate::config::CommandKeybindMode::Normal, binding))
+            .chain(
+                keybinds
+                    .copy_mode_commands
+                    .iter()
+                    .map(|binding| (crate::config::CommandKeybindMode::Copy, binding)),
+            )
             .enumerate()
-            .map(|(index, binding)| EndpointCommand {
-                action: binding.action.into(),
+            .map(|(index, (mode, binding))| EndpointCommand {
+                action: crate::protocol::ClientShellCommandAction::from_config(
+                    binding.action,
+                    mode,
+                ),
                 id: format!("cmd_{namespace}_{index}"),
                 binding: binding.clone(),
             })
@@ -594,7 +606,15 @@ mod tests {
     }
 
     fn install(app: &mut crate::app::App, binding: crate::config::CustomCommandKeybind) {
-        app.endpoint_commands = super::EndpointCommandRegistry::new(&[binding]);
+        app.state.keybinds.custom_commands = vec![binding];
+        app.state.keybinds.copy_mode_commands.clear();
+        app.endpoint_commands = super::EndpointCommandRegistry::new(&app.state.keybinds);
+    }
+
+    fn install_copy_mode(app: &mut crate::app::App, binding: crate::config::CustomCommandKeybind) {
+        app.state.keybinds.custom_commands.clear();
+        app.state.keybinds.copy_mode_commands = vec![binding];
+        app.endpoint_commands = super::EndpointCommandRegistry::new(&app.state.keybinds);
     }
 
     #[test]
@@ -612,6 +632,23 @@ mod tests {
                 .map(|binding| binding.command),
             Some("secret-command --token hidden".into())
         );
+    }
+
+    #[test]
+    fn manifest_preserves_copy_mode_routing_without_exposing_command_text() {
+        let mut app = test_app();
+        install_copy_mode(
+            &mut app,
+            binding(crate::config::CustomCommandAction::PluginAction),
+        );
+
+        let manifest = app.client_shell_command_manifest();
+        assert_eq!(manifest.len(), 1);
+        assert_eq!(
+            manifest[0].action,
+            crate::protocol::ClientShellCommandAction::CopyPluginAction
+        );
+        assert!(!format!("{manifest:?}").contains("secret-command"));
     }
 
     #[test]

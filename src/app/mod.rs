@@ -612,8 +612,7 @@ impl App {
                 .and_then(|ws| ws.focused_pane_id().map(|pane_id| (idx, pane_id)))
         });
         let client_shell_keybindings_profile = config.local_keybindings_profile_toml().ok();
-        let endpoint_commands =
-            custom_commands::EndpointCommandRegistry::new(&state.keybinds.custom_commands);
+        let endpoint_commands = custom_commands::EndpointCommandRegistry::new(&state.keybinds);
 
         let mut app = Self {
             plugin_installation_leases,
@@ -843,7 +842,7 @@ impl App {
             }
         };
         self.endpoint_commands =
-            custom_commands::EndpointCommandRegistry::new(&self.state.keybinds.custom_commands);
+            custom_commands::EndpointCommandRegistry::new(&self.state.keybinds);
         self.sync_toast_deadline(previous_toast);
         report
     }
