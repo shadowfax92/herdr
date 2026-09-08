@@ -1,6 +1,102 @@
 use super::*;
 
 #[test]
+fn copy_mode_line_selection_survives_live_output() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    let mut pane_surface = surface();
+    pane_surface.panes[0].content_revision = 2;
+    pane_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+        offset_from_bottom: 0,
+        max_offset_from_bottom: 0,
+        viewport_rows: 2,
+    });
+    state.set_pane_surface(pane_surface.clone());
+    state.compose(106, 20).expect("composed frame");
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
+        &mut ClientShellInput::default(),
+    );
+
+    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+        KeyCode::Char('V'),
+        KeyModifiers::SHIFT,
+    ))]);
+    let selection = state.copy_mode.as_ref().unwrap().selection;
+    assert!(selection.is_some(), "Shift+V starts a line selection");
+    let selected = state.compose(106, 20).expect("selected frame");
+    let pane = &state.hits.panes[0];
+    let selected_cell = usize::from(pane.inner_rect.y + 1) * 106 + usize::from(pane.inner_rect.x);
+
+    // A working agent redraws its terminal while the user is selecting a line.
+    // Include both conservative (odd) and stable (even) content revisions, as
+    // well as a changed cell inside the selected line, like an agent's spinner.
+    for revision in [3, 4, 6] {
+        pane_surface.surface_revision += 1;
+        pane_surface.panes[0].content_revision = revision;
+        pane_surface.frame.cells[4].symbol = revision.to_string();
+        state.set_snapshot(Box::new(snapshot()));
+        state.set_pane_surface(pane_surface.clone());
+        let updated = state.compose(106, 20).expect("updated frame");
+        assert_eq!(state.mode, ClientShellMode::Copy);
+        assert_eq!(
+            state.copy_mode.as_ref().unwrap().selection,
+            selection,
+            "live output must not discard the line selection"
+        );
+        assert!(state.selection.as_ref().is_some_and(|s| s.is_visible()));
+        assert_eq!(
+            updated.cells[selected_cell].bg,
+            selected.cells[selected_cell].bg
+        );
+    }
+
+    let copy = state.handle_input_bytes(b"y");
+    assert!(
+        copy.actions.iter().any(|action| matches!(
+            action,
+            ClientShellAction::Endpoint { request, .. }
+                if matches!(&request.method, crate::api::schema::Method::PaneSelectionRead(params)
+                    if params.anchor == crate::api::schema::PaneTextPoint { row: 1, col: 0 }
+                        && params.cursor == crate::api::schema::PaneTextPoint { row: 1, col: 3 }
+                        && params.content_revision.is_none())
+        )),
+        "yank must request the whole live selected line"
+    );
+}
+
+#[test]
+fn copy_mode_selection_clears_on_resize_or_terminal_buffer_switch() {
+    for (width, height, alternate_screen_active) in [(5, 2, false), (4, 3, false), (4, 2, true)] {
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        state.set_snapshot(Box::new(snapshot()));
+        let mut pane_surface = surface();
+        pane_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+            offset_from_bottom: 0,
+            max_offset_from_bottom: 0,
+            viewport_rows: 2,
+        });
+        state.set_pane_surface(pane_surface.clone());
+        state.compose(106, 20).expect("composed frame");
+        state.record_binding(
+            crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
+            &mut ClientShellInput::default(),
+        );
+        // Legacy terminals encode Shift+V as an uppercase byte with no modifier.
+        state.handle_input_bytes(b"V");
+        assert!(state.copy_mode.as_ref().unwrap().selection.is_some());
+
+        pane_surface.panes[0].inner_rect.width = width;
+        pane_surface.panes[0].inner_rect.height = height;
+        pane_surface.panes[0].alternate_screen_active = alternate_screen_active;
+        state.set_pane_surface(pane_surface);
+
+        assert!(state.copy_mode.as_ref().unwrap().selection.is_none());
+        assert!(state.selection.is_none());
+    }
+}
+
+#[test]
 fn copy_mode_custom_command_sends_selection_and_yields_text_input_to_search() {
     let config: Config = toml::from_str(
         r#"
@@ -32,7 +128,7 @@ description = "Comment on copy-mode selection"
         max_offset_from_bottom: 20,
         viewport_rows: 2,
     });
-    state.set_pane_surface(pane_surface);
+    state.set_pane_surface(pane_surface.clone());
     state.compose(106, 20).expect("composed frame");
 
     let mut enter = ClientShellInput::default();
@@ -48,6 +144,10 @@ description = "Comment on copy-mode selection"
         KeyCode::Char('h'),
         KeyModifiers::empty(),
     ))]);
+    // Output can arrive between selecting text and pressing the comments binding.
+    pane_surface.surface_revision += 1;
+    pane_surface.panes[0].content_revision = 44;
+    state.set_pane_surface(pane_surface);
     let copy_state = state.copy_mode.clone();
 
     let invoke = state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
