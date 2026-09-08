@@ -1649,8 +1649,12 @@ impl ClientShellState {
             previous.inner_rect.width != next.inner_rect.width
                 || previous.inner_rect.height != next.inner_rect.height
                 || previous.alternate_screen_active != next.alternate_screen_active
-                // Manual mouse selections track a live buffer range, not a content revision.
+                // Explicit keyboard and manual mouse selections track a live buffer
+                // range. A working agent's redraw must not cancel the user's selection.
                 || (self.config.copy_on_select
+                && !self.copy_mode.as_ref().is_some_and(|copy_mode| {
+                    copy_mode.pane_id == selection.pane_id && copy_mode.selection.is_some()
+                })
                 && previous.content_revision != next.content_revision
                 && (!previous.content_revision.is_multiple_of(2)
                     || !next.content_revision.is_multiple_of(2)
@@ -1688,19 +1692,32 @@ impl ClientShellState {
                 .find(|pane| pane.pane_id == copy_mode.pane_id)
             {
                 let geometry = (pane.inner_rect.width, pane.inner_rect.height);
+                let buffer_changed = self.pane_surface.as_ref().is_some_and(|previous| {
+                    previous.panes.iter().any(|previous_pane| {
+                        previous_pane.pane_id == pane.pane_id
+                            && previous_pane.alternate_screen_active != pane.alternate_screen_active
+                    })
+                });
+                // Coordinates survive ordinary output, but not reflow or a switch
+                // between the main and alternate terminal buffers.
+                if copy_mode.geometry != geometry || buffer_changed {
+                    copy_mode.selection = None;
+                    invalidated_copy_pane = Some(copy_mode.pane_id.clone());
+                }
                 if copy_mode.content_revision != pane.content_revision
                     || copy_mode.geometry != geometry
+                    || buffer_changed
                 {
                     copy_mode.content_revision = pane.content_revision;
                     copy_mode.geometry = geometry;
-                    copy_mode.selection = None;
+                    // Search results are content-derived, unlike the user's range;
+                    // keep rejecting stale search and motion replies after output.
                     copy_mode.search_matches.clear();
                     copy_mode.search_total = 0;
                     copy_mode.search_current = None;
                     copy_mode.search_current_global = None;
                     copy_mode.search_generation = copy_mode.search_generation.saturating_add(1);
                     copy_mode.copy_after_search = false;
-                    invalidated_copy_pane = Some(copy_mode.pane_id.clone());
                 }
                 if let Some(scroll) = pane.scroll {
                     let actual_offset =
