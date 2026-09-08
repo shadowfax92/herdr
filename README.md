@@ -40,6 +40,26 @@ https://github.com/user-attachments/assets/043ec09f-4bdd-41d5-aee0-8fda6b83e267
 
 ## install
 
+to install this fork, have Rust and Zig 0.15.2 installed. Cargo builds in release mode by default. Run from any directory to install the latest pushed commit on `master`:
+
+```bash
+cargo install \
+  --git https://github.com/shadowfax92/herdr.git \
+  --branch master \
+  --locked \
+  --bin herdr \
+  --force \
+  herdr
+```
+
+or install from the local `my-herdr-fork` checkout:
+
+```bash
+cargo install --path . --locked --force
+```
+
+or install the upstream release:
+
 ```bash
 curl -fsSL https://herdr.dev/install.sh | sh
 ```
