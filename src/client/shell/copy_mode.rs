@@ -534,18 +534,16 @@ impl ClientShellState {
         }
     }
 
-    fn copy_hit(&self) -> Option<PaneHit> {
-        let pane_id = self.copy_mode.as_ref()?.pane_id.as_str();
-        self.hits
-            .panes
-            .iter()
-            .find(|hit| hit.pane_id == pane_id)
-            .cloned()
+    /// Keyboard copy coordinates belong to the retained copy session, not the
+    /// mouse hit map. Frame/snapshot reconciliation temporarily clears hit targets;
+    /// treating that gap as pane removal would exit Copy and leak keys to the PTY.
+    /// Snapshot and surface installation own actual pane removal/geometry changes.
+    fn copy_geometry(&self) -> Option<(u16, u16)> {
+        self.copy_mode.as_ref().map(|copy_mode| copy_mode.geometry)
     }
 
     fn move_copy_cursor(&mut self, row_delta: i16, col_delta: i16, outcome: &mut ClientShellInput) {
-        let Some(hit) = self.copy_hit() else {
-            self.exit_copy_mode(false, outcome);
+        let Some((width, height)) = self.copy_geometry() else {
             return;
         };
         let Some(copy_mode) = self.copy_mode.as_mut() else {
@@ -561,11 +559,11 @@ impl ClientShellState {
                 .cursor
                 .col
                 .saturating_add(col_delta as u16)
-                .min(hit.inner_rect.width.saturating_sub(1));
+                .min(width.saturating_sub(1));
         }
         let total_rows = copy_mode
             .max_offset_from_bottom
-            .saturating_add(hit.inner_rect.height as usize)
+            .saturating_add(height as usize)
             .max(1);
         if row_delta < 0 {
             copy_mode.cursor.row = copy_mode
@@ -585,10 +583,10 @@ impl ClientShellState {
     }
 
     fn move_copy_page(&mut self, direction: i8, half_page: bool, outcome: &mut ClientShellInput) {
-        let Some(hit) = self.copy_hit() else {
+        let Some((_, height)) = self.copy_geometry() else {
             return;
         };
-        let lines = crate::copy_mode::copy_mode_page_lines(hit.inner_rect.height, half_page);
+        let lines = crate::copy_mode::copy_mode_page_lines(height, half_page);
         let Some((pane_id, next_offset)) = self.copy_mode.as_mut().map(|copy_mode| {
             if direction < 0 {
                 copy_mode.cursor.row = copy_mode.cursor.row.saturating_sub(lines as u32);
@@ -599,7 +597,7 @@ impl ClientShellState {
             } else {
                 let last_row = copy_mode
                     .max_offset_from_bottom
-                    .saturating_add(hit.inner_rect.height as usize)
+                    .saturating_add(height as usize)
                     .saturating_sub(1)
                     .min(u32::MAX as usize) as u32;
                 copy_mode.cursor.row = copy_mode
@@ -619,7 +617,7 @@ impl ClientShellState {
     }
 
     fn move_copy_history(&mut self, top: bool, outcome: &mut ClientShellInput) {
-        let Some(hit) = self.copy_hit() else {
+        let Some((_, height)) = self.copy_geometry() else {
             return;
         };
         let Some((pane_id, offset_from_bottom)) = self.copy_mode.as_mut().map(|copy_mode| {
@@ -629,7 +627,7 @@ impl ClientShellState {
             } else {
                 copy_mode.cursor.row = copy_mode
                     .max_offset_from_bottom
-                    .saturating_add(hit.inner_rect.height as usize)
+                    .saturating_add(height as usize)
                     .saturating_sub(1)
                     .min(u32::MAX as usize) as u32;
                 copy_mode.offset_from_bottom = 0;
@@ -650,17 +648,14 @@ impl ClientShellState {
     }
 
     fn reveal_copy_cursor(&mut self, outcome: &mut ClientShellInput, reserve_mode_bar_row: bool) {
-        let Some(hit) = self.copy_hit() else {
+        let Some((_, height)) = self.copy_geometry() else {
             return;
         };
         let request = self.copy_mode.as_mut().and_then(|copy_mode| {
             let current_top = copy_mode
                 .max_offset_from_bottom
                 .saturating_sub(copy_mode.offset_from_bottom) as u32;
-            let max_cursor_row = hit
-                .inner_rect
-                .height
-                .saturating_sub(if reserve_mode_bar_row { 2 } else { 1 });
+            let max_cursor_row = height.saturating_sub(if reserve_mode_bar_row { 2 } else { 1 });
             let bottom = current_top.saturating_add(u32::from(max_cursor_row));
             let desired_top = if copy_mode.cursor.row < current_top {
                 copy_mode.cursor.row
@@ -688,8 +683,8 @@ impl ClientShellState {
 
     fn begin_copy_selection(&mut self, linewise: bool) {
         let end_col = self
-            .copy_hit()
-            .map_or(0, |hit| hit.inner_rect.width.saturating_sub(1));
+            .copy_geometry()
+            .map_or(0, |(width, _)| width.saturating_sub(1));
         let Some(copy_mode) = self.copy_mode.as_mut() else {
             return;
         };
@@ -734,8 +729,7 @@ impl ClientShellState {
                     copy_mode.pane_id.clone(),
                     anchor_row,
                     copy_mode.cursor.row,
-                    self.copy_hit()
-                        .map_or(0, |hit| hit.inner_rect.width.saturating_sub(1)),
+                    copy_mode.geometry.0.saturating_sub(1),
                 )
             }
         });
