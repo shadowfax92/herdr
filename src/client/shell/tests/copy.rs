@@ -1,5 +1,121 @@
 use super::*;
 
+fn copy_mode_with_scrollback() -> (ClientShellState, PaneSurfaceFrame) {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    let mut pane_surface = surface();
+    pane_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+        offset_from_bottom: 0,
+        max_offset_from_bottom: 20,
+        viewport_rows: 2,
+    });
+    state.set_pane_surface(pane_surface.clone());
+    state.compose(106, 20).expect("composed frame");
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
+        &mut ClientShellInput::default(),
+    );
+    (state, pane_surface)
+}
+
+#[test]
+fn copy_mode_navigation_survives_pending_output_projection() {
+    for (snapshot_first, revision) in [(true, 2), (false, 2), (false, 3)] {
+        let (mut state, mut pane_surface) = copy_mode_with_scrollback();
+        state.handle_input_bytes(b"V");
+
+        // Frames and metadata travel separately; neither arrival order (nor a
+        // skipped revision) may make copy keys fall through to the agent's PTY.
+        pane_surface.projection_revision = revision;
+        pane_surface.surface_revision = 2;
+        let mut updated = snapshot();
+        updated.revision = revision;
+        if snapshot_first {
+            state.set_snapshot(Box::new(updated.clone()));
+        } else {
+            state.set_pane_surface(pane_surface.clone());
+        }
+        assert!(state.compose(106, 20).is_none());
+        let navigation = state.handle_input_bytes(b"kh");
+        assert_eq!(state.mode, ClientShellMode::Copy);
+        assert_eq!(
+            state.copy_mode.as_ref().unwrap().cursor,
+            crate::api::schema::PaneTextPoint { row: 20, col: 0 },
+            "navigation must still work while the next frame is pending"
+        );
+        assert_eq!(
+            state.selection.as_ref().unwrap().ordered_cells(),
+            ((20, 0), (21, 3)),
+            "line selection must retain the pane width"
+        );
+        assert!(
+            navigation.requests.is_empty(),
+            "copy keys must not reach the agent"
+        );
+
+        if snapshot_first {
+            state.set_pane_surface(pane_surface);
+        } else {
+            state.set_snapshot(Box::new(updated));
+        }
+        state.compose(106, 20).expect("updated frame");
+        assert_eq!(state.mode, ClientShellMode::Copy);
+        assert_eq!(
+            state.selection.as_ref().unwrap().ordered_cells(),
+            ((20, 0), (21, 3))
+        );
+    }
+}
+
+#[test]
+fn copy_mode_page_history_and_line_selection_work_between_frames() {
+    for (keys, row, col, offset) in [
+        (b"\x1b[5~".as_slice(), 20, 1, 1), // PageUp
+        (b"g".as_slice(), 0, 1, 20),
+        (b"G".as_slice(), 21, 1, 0),
+        (b"\x1b[A\x1b[D".as_slice(), 20, 0, 0), // Up, Left
+    ] {
+        let (mut state, _) = copy_mode_with_scrollback();
+        let mut updated = snapshot();
+        updated.revision = 2;
+        state.set_snapshot(Box::new(updated));
+        assert!(state.compose(106, 20).is_none());
+        // Starting line selection in the gap must not collapse it to column zero.
+        state.handle_input_bytes(b"V");
+        assert_eq!(
+            state.selection.as_ref().unwrap().ordered_cells(),
+            ((21, 0), (21, 3))
+        );
+        let navigation = state.handle_input_bytes(keys);
+        assert!(navigation.requests.is_empty());
+        assert_eq!(state.mode, ClientShellMode::Copy);
+        let copy_mode = state.copy_mode.as_ref().unwrap();
+        assert_eq!(
+            copy_mode.cursor,
+            crate::api::schema::PaneTextPoint { row, col }
+        );
+        assert_eq!(copy_mode.offset_from_bottom, offset);
+        assert_eq!(
+            state.selection.as_ref().unwrap().ordered_cells(),
+            ((row, 0), (21, 3))
+        );
+    }
+}
+
+#[test]
+fn copy_mode_still_exits_when_its_pane_is_removed() {
+    let (mut state, _) = copy_mode_with_scrollback();
+    state.handle_input_bytes(b"V");
+    let mut updated = snapshot();
+    updated.revision = 2;
+    updated.panes.clear();
+    updated.focused_pane_id = None;
+    state.set_snapshot(Box::new(updated));
+    assert_eq!(state.mode, ClientShellMode::Terminal);
+    assert!(state.copy_mode.is_none());
+    assert!(state.selection.is_none());
+}
+
 #[test]
 fn copy_mode_line_selection_survives_live_output() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
