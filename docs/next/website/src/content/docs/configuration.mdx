@@ -415,6 +415,16 @@ rows = [
 
 `fg` accepts strict `#RGB` or `#RRGGBB`. `bold` and `dim` accept booleans. Omitted fields preserve the token's contextual style; explicit `false` removes that modifier. Styling applies to one occurrence, so the same token may look different in another row or agent override. A foreground override replaces all semantic foregrounds inside that occurrence: for example, styled `git_status` ahead and behind counts use one color instead of their default green and red. Token styles never change separators or row backgrounds.
 
+A token may specify `align = "right"` (or `"left"`, the default). The first
+right-aligned token starts a trailing group on that row. The renderer reserves
+that group's width before truncating the leading title and separates the two
+groups with blank space. Missing custom tokens reserve no width. For example:
+
+```toml
+[ui.sidebar.agents]
+rows = [["terminal_title", { token = "$session_age", align = "right", fg = "#92908a", bold = false, dim = false }]]
+```
+
 Text-valued tokens also accept up to 16 ordered `rules`. Each rule contains exactly one condition—`equals`, `contains`, `starts_with`, `gt`, or `lt`—and optional `fg`, `bold`, and `dim` overrides:
 
 ```toml

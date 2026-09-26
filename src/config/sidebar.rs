@@ -102,6 +102,17 @@ pub struct SidebarTokenStyle {
     pub fg: Option<SidebarTokenColor>,
     pub bold: Option<bool>,
     pub dim: Option<bool>,
+    /// A trailing slot reserves its text width before the leading title is fit.
+    pub align: Option<SidebarTokenAlign>,
+}
+
+/// Optional row placement. Alignment belongs to the client renderer; metadata
+/// remains a plain value shared with clients that use different layouts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SidebarTokenAlign {
+    Left,
+    Right,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,6 +193,8 @@ struct RawStyledSidebarToken {
     dim: Option<bool>,
     #[serde(default)]
     rules: Vec<SidebarTokenRule>,
+    #[serde(default)]
+    align: Option<SidebarTokenAlign>,
 }
 
 #[derive(Deserialize)]
@@ -210,6 +223,7 @@ impl RawSidebarToken {
                         fg: token.fg,
                         bold: token.bold,
                         dim: token.dim,
+                        align: token.align,
                     }),
                     token.rules,
                 ))
@@ -261,6 +275,9 @@ where
     }
     if let Some(dim) = style.dim {
         map.serialize_entry("dim", &dim)?;
+    }
+    if let Some(align) = style.align {
+        map.serialize_entry("align", &align)?;
     }
     if !rules.is_empty() {
         map.serialize_entry("rules", rules)?;

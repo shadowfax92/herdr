@@ -231,6 +231,67 @@ mod tests {
     }
 
     #[test]
+    fn trailing_slot_survives_long_titles_unicode_selection_and_missing_values() {
+        use ratatui::style::{Color, Modifier, Style};
+        let config: AgentsSidebarConfig = toml::from_str(r##"
+rows = [["terminal_title", { token = "$age", fg = "#92908a", bold = false, dim = false, align = "right", rules = [{ equals = "14d", fg = "#92908a" }] }]]
+"##).unwrap();
+        let serialized = toml::to_string(&config).unwrap();
+        let config: AgentsSidebarConfig = toml::from_str(&serialized).unwrap();
+        let mut entry = entry();
+        entry.terminal_title = Some("Long 界界 title with many characters".into());
+        entry.tokens.insert("age".into(), "14d".into());
+        let palette = super::super::Palette::catppuccin();
+        for selected in [false, true] {
+            let theme = if selected {
+                Style::default()
+                    .bg(Color::Blue)
+                    .add_modifier(Modifier::BOLD | Modifier::DIM)
+            } else {
+                Style::default()
+            };
+            for width in [0, 1, 2, 3, 4, 5, 8, 16, 40, 80] {
+                let rows = agent_rows(&config, context(&entry), "idle");
+                let spans = super::super::resolved_token_spans(
+                    &rows[0],
+                    ("*", theme),
+                    theme,
+                    theme,
+                    theme,
+                    theme,
+                    &palette,
+                    width,
+                );
+                let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+                assert!(
+                    super::super::display_width(&text) <= width,
+                    "{width}: {text}"
+                );
+                if width >= 3 {
+                    assert_eq!(super::super::display_width(&text), width);
+                    assert!(text.ends_with("14d"), "{width}: {text}");
+                    let age = spans.last().unwrap();
+                    assert_eq!(age.style.fg, Some(Color::Rgb(146, 144, 138)));
+                    assert!(!age
+                        .style
+                        .add_modifier
+                        .intersects(Modifier::BOLD | Modifier::DIM));
+                    assert_eq!(age.style.bg, theme.bg);
+                }
+            }
+        }
+        entry.tokens.clear();
+        let rows = agent_rows(&config, context(&entry), "working");
+        assert_eq!(rows[0].len(), 1);
+        let plain: AgentsSidebarConfig = toml::from_str("rows = [[\"terminal_title\"]]").unwrap();
+        assert_eq!(rows, agent_rows(&plain, context(&entry), "working"));
+        assert!(toml::from_str::<AgentsSidebarConfig>(
+            "rows = [[{ token = '$age', align = 'sideways' }]]"
+        )
+        .is_err());
+    }
+
+    #[test]
     fn conditional_styles_merge_first_match_and_keep_missing_values_absent() {
         let config: AgentsSidebarConfig = toml::from_str(r##"
 rows = [["state_icon", { token = "machine", fg = "#fff", bold = true, dim = true, rules = [{ equals = "Local", fg = "#f00", bold = false }, { contains = "Loc", fg = "#0f0", dim = false }] }], [{ token = "$missing", rules = [{ equals = "", bold = true }] }]]

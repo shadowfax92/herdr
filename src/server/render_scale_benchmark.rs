@@ -603,6 +603,33 @@ fn print_surface_reuse_profiles() {
     }
 }
 
+fn print_trailing_slot_profiles() {
+    for align in ["left", "right"] {
+        let config: Config = toml::from_str(&format!(
+            "[ui.sidebar.agents]\nrows = [[{{ token = 'workspace' }}, {{ token = 'agent', align = '{align}' }}]]"
+        )).unwrap();
+        let rows = [1, 15].map(|count| {
+            let mut pipeline = RenderPipeline::with_config(active_panes(count), &config);
+            pipeline.app.state.ensure_test_terminals();
+            for terminal in pipeline.app.state.terminals.values_mut() {
+                terminal.detected_agent = Some(crate::detect::Agent::Pi);
+            }
+            pipeline
+                .client
+                .set_snapshot(Box::new(super::client_shell::snapshot(
+                    &pipeline.app,
+                    "bench-boot",
+                    1,
+                    None,
+                    None,
+                )));
+            (count, profile_pipeline(pipeline))
+        });
+        println!("trailing slot: populated agents, align={align}");
+        print_stage("client shell composition", &rows, |stats| stats.client);
+    }
+}
+
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "manual client-rendered pipeline scaling profile"]
 async fn render_scale_profile() {
@@ -613,6 +640,7 @@ async fn render_scale_profile() {
     print_token_rule_profiles();
     print_surface_reuse_profiles();
     print_surface_damage_profiles();
+    print_trailing_slot_profiles();
 }
 
 /// Dirty-row collection while output scrolls a large pane, the host's hot path

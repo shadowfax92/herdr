@@ -113,6 +113,52 @@ pub(crate) fn resolved_token_spans(
     palette: &Palette,
     max_width: usize,
 ) -> Vec<Span<'static>> {
+    // The first right-aligned token begins the trailing group. Resolve missing
+    // tokens before this point, so an absent age reserves no title space. Both
+    // groups use the existing Unicode-aware fitter; only the trailing group
+    // gets its natural width first, with one blank cell separating the groups.
+    if let Some(split) = resolved
+        .iter()
+        .position(|token| token.style.align == Some(crate::config::SidebarTokenAlign::Right))
+    {
+        let mut trailing = resolved[split..].to_vec();
+        for token in &mut trailing {
+            token.style.align = None;
+        }
+        let right = resolved_token_spans(
+            &trailing,
+            state_icon,
+            state_text_style,
+            workspace_style,
+            secondary_style,
+            custom_style,
+            palette,
+            max_width,
+        );
+        let right_width: usize = right.iter().map(|span| display_width(&span.content)).sum();
+        let gap = usize::from(split > 0 && right_width > 0);
+        let left_width = max_width.saturating_sub(right_width + gap);
+        let mut spans = if left_width > 0 {
+            resolved_token_spans(
+                &resolved[..split],
+                state_icon,
+                state_text_style,
+                workspace_style,
+                secondary_style,
+                custom_style,
+                palette,
+                left_width,
+            )
+        } else {
+            Vec::new()
+        };
+        let used: usize = spans.iter().map(|span| display_width(&span.content)).sum();
+        spans.push(Span::raw(
+            " ".repeat(max_width.saturating_sub(used + right_width)),
+        ));
+        spans.extend(right);
+        return spans;
+    }
     let fixed_widths = resolved
         .iter()
         .map(|token| match &token.kind {

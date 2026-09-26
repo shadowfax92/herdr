@@ -99,6 +99,7 @@ impl TryFrom<RawRule> for SidebarTokenRule {
                 fg: raw.fg,
                 bold: raw.bold,
                 dim: raw.dim,
+                align: None,
             },
         })
     }
@@ -187,6 +188,7 @@ pub(super) fn matching_style(
                 fg: rule.style.fg.or(base.fg),
                 bold: rule.style.bold.or(base.bold),
                 dim: rule.style.dim.or(base.dim),
+                align: base.align,
             });
         }
     }
