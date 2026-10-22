@@ -116,7 +116,8 @@ mod unix {
     }
     fn validate_dest(dest: &str) -> io::Result<()> {
         let relative = dest.strip_prefix("~/").unwrap_or(dest);
-        if relative.is_empty()
+        if dest == "~"
+            || relative.is_empty()
             || Path::new(relative).is_absolute()
             || Path::new(relative)
                 .components()
@@ -148,13 +149,14 @@ mod unix {
         Ok(())
     }
 
-    // Home mappings share a user-owned tree. Without an explicit opt-in field in
-    // SyncPath, only a top-level herdr-* directory may be destructively mirrored.
+    // Validated home mappings share a user-owned tree. Only the final herdr-*
+    // directory marks an owned mirror; an ancestor's name grants no ownership.
     fn may_delete(dest: &str) -> bool {
         dest.strip_prefix("~/").is_none_or(|rest| {
-            rest.split('/')
+            rest.trim_end_matches('/')
+                .rsplit('/')
                 .next()
-                .is_some_and(|top| top.starts_with("herdr-"))
+                .is_some_and(|name| name.starts_with("herdr-"))
         })
     }
 
@@ -597,7 +599,7 @@ mod unix {
             if may_delete(&mapping.dest) {
                 rsync.arg("--delete");
             } else {
-                eprintln!("ssh-panes: copying {} without --delete; home destination must start with herdr- to mirror deletions", mapping.dest);
+                eprintln!("ssh-panes: copying {} without --delete; home destination must end in a herdr- directory to mirror deletions", mapping.dest);
             }
             rsync.args([
                 "-a",
@@ -750,9 +752,16 @@ exit "$failed"
                 assert!(validate_remote_root(root).is_ok(), "{root}");
             }
             assert!(may_delete("nvim-plugins/sidekick.nvim"));
-            assert!(may_delete("~/herdr-nvim/config"));
+            for dest in [
+                "~/.config/herdr-sp-nvim",
+                "~/herdr-x",
+                "~/.config/herdr-sp-nvim/",
+            ] {
+                assert!(validate_dest(dest).is_ok(), "{dest}");
+                assert!(may_delete(dest), "{dest}");
+            }
+            assert!(!may_delete("~/herdr-nvim/config"));
             assert!(!may_delete("~/.config/nvim"));
-            assert!(!may_delete("~/.config/herdr-sp-nvim"));
         }
 
         #[test]
@@ -894,7 +903,16 @@ exit "$failed"
 
         #[test]
         fn ssh_panes_sync_rejects_deletion_overlap_and_destination_escape() {
-            for bad in ["", "/etc", "../escape", "~/../escape", "a/../b"] {
+            for bad in [
+                "",
+                "~",
+                "~/",
+                "/etc",
+                "../escape",
+                "~/../escape",
+                "a/../b",
+                "~/.config/herdr-sp-nvim/../nvim",
+            ] {
                 assert!(validate_dest(bad).is_err(), "{bad}");
             }
             let cfg = SshPanesConfig {
