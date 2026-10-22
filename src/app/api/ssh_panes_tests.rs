@@ -1,8 +1,11 @@
 use super::*;
+#[cfg(unix)]
 use crate::{
     api::schema::{Method, Request},
-    config::Config,
     detect::{Agent, AgentState},
+};
+use crate::{
+    config::Config,
     layout::PaneId,
     ssh_panes::api::{AttachParams, RemoteForeground, ReportParams},
 };

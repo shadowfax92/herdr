@@ -345,6 +345,7 @@ mod tests {
                     ("KEEP".into(), "value".into())
                 ]
             );
+            #[cfg(unix)]
             assert_eq!(
                 local_home().unwrap(),
                 PathBuf::from(std::env::var_os("HOME").unwrap())
