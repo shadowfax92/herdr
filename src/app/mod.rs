@@ -429,7 +429,8 @@ impl App {
                 .pane_history
                 .then(crate::persist::load_history)
                 .flatten();
-            let (ws, terminals, terminal_runtimes) = crate::persist::restore(
+            let (ws, terminals, terminal_runtimes) = crate::ssh_panes::restore(
+                &config.ssh_panes,
                 &snap,
                 history.as_ref(),
                 24,
