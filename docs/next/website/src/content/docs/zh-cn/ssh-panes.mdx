@@ -1,0 +1,229 @@
+---
+title: SSH 窗格
+description: 在本地 Herdr 窗格中打开远程 shell，检测远程智能体，并让拆分、标签页和草稿弹窗沿用同一主机。
+---
+
+在任意本地 Herdr 窗格中运行 `herdr ssh <host>`，即可打开远程 shell，并在本地侧边栏中查看远程智能体。拆分沿用源窗格的主机和远程工作目录；未明确指定工作目录的新标签页也会继承。配合支持 SSH 的 scratch 插件，编辑器和 shell 弹窗会在远程路径打开，远程 Neovim 和 sidekick 可通过本地 Herdr API 控制源窗格。只需设置 `[ssh_panes] enabled = true` 即可启用。
+
+## 设置
+
+本地使用 Linux 或 macOS，远程使用可正常 SSH 连接的 Unix 环境。远程需要兼容的载荷二进制、`bash` 和 `rsync`；scratch 弹窗还需要远程 `tmux`，编辑器弹窗需要 `nvim`。智能体程序和认证须预先在远程配置好。
+
+**仅连接你拥有且信任的主机。** 转发套接字使远程账户能够完全控制本地 Herdr 服务器，包括窗格和智能体。`allowed_hosts` 只限制连接目标，不限制获准远程账户通过套接字执行的 API 操作。
+
+先确认普通 SSH 连接可用：
+
+```bash
+ssh studio
+```
+
+在本地 `~/.config/herdr/config.toml` 中添加：
+
+```toml
+[ssh_panes]
+enabled = true
+allowed_hosts = ["studio"]
+```
+
+重载本地服务器，同步载荷，再从本地 Herdr 窗格连接：
+
+```bash
+herdr server reload-config
+herdr ssh sync studio
+herdr ssh studio --cwd '~/code'
+```
+
+保持连接，在另一个本地窗格运行 `herdr ssh doctor studio` 检查完整设置。调试构建使用 `~/.config/herdr-dev/config.toml`；测试时请使用调试二进制和独立的命名会话。
+
+### Scratch 和 Neovim 镜像
+
+下例同步已构建的 scratch 可执行文件、Neovim 配套插件、scratch 配置、sidekick 和独立的 Neovim 配置镜像。请按实际检出位置调整本地源路径。在本地安装或链接支持 SSH 的 scratch 插件，并让 Neovim 配置通过 `HERDR_SCRATCH_NVIM_DIR` 和 `HERDR_SIDEKICK_DIR` 加载两个镜像插件。
+
+```toml
+[ssh_panes]
+enabled = true
+inherit_new_tab = true
+auto_sync = true
+allowed_hosts = ["studio"]
+remote_root = "~/.local/share/herdr-ssh-panes"
+ssh_options = []
+
+[ssh_panes.sync]
+nvim_appname = "herdr-sp-nvim"
+integrations = []
+paths = [
+  { src = "~/code/side-projects/herdr-custom-plugins/my/herdr-scratch/target/release/herdr-scratch", dest = "bin/herdr-scratch" },
+  { src = "~/code/side-projects/herdr-custom-plugins/my/herdr-scratch/nvim", dest = "nvim-plugins/herdr-scratch.nvim", exclude = [".git", ".wt", ".llm", ".claude"] },
+  { src = "~/.config/herdr/plugins/config/shadowfax.scratch", dest = "plugin-config/shadowfax.scratch", exclude = [".git", ".wt", ".llm", ".claude"] },
+  { src = "~/code/hacks/shadowfax-sidekick.nvim", dest = "nvim-plugins/sidekick.nvim", exclude = [".git", ".wt", ".llm", ".claude"] },
+  { src = "~/.config/nvim", dest = "~/.config/herdr-sp-nvim", exclude = [".git", ".wt", ".llm", ".claude"] },
+]
+```
+
+`nvim_appname` 在远程设置 `NVIM_APPNAME=herdr-sp-nvim`。镜像使用独立的 Neovim 配置、数据、状态和缓存目录，与远程原有配置分开。仅当远程存在对应目录时，才会设置 `HERDR_SCRATCH_NVIM_DIR` 和 `HERDR_SIDEKICK_DIR`。首次启动 Neovim 可能需要时间安装插件和工具。
+
+目录映射会复制目录内容，并删除远程目标中源目录已不存在的文件，排除项除外。请使用专用镜像目标。各目标不得互相重叠，也不得与自动同步的 `bin/herdr` 重叠。
+
+## 配置参考
+
+所有设置均可通过 `herdr server reload-config` 热加载。SSH 窗格配置无效时保留上一次有效配置；若在启动时无效，则回退为禁用。未知键会被拒绝。
+
+### `[ssh_panes]`
+
+| 键 | 默认值 | 含义 |
+| --- | --- | --- |
+| `enabled` | `false` | 启用连接、远程报告、智能体检测和继承。 |
+| `inherit_new_tab` | `true` | 新标签页未明确指定 `cwd` 时，继承工作区当前聚焦的 SSH 窗格。 |
+| `auto_sync` | `true` | 远程载荷过期或缺失时，自动同步并重试连接一次。 |
+| `allowed_hosts` | `[]` | 允许 SSH 窗格及相关命令使用的主机字符串，按完全一致匹配。空列表允许所有格式有效的主机。 |
+| `remote_root` | `"~/.local/share/herdr-ssh-panes"` | 存放二进制、清单和相对于根目录的同步目标的远程目录。其末级名称也决定远程状态目录。 |
+| `ssh_options` | `[]` | 传给交互连接和辅助命令的 SSH 参数项，如 `["-o", "ConnectTimeout=10"]`。需要拆分继承的选项应放在这里或 SSH 配置中。 |
+
+### `[ssh_panes.sync]`
+
+| 键 | 默认值 | 含义 |
+| --- | --- | --- |
+| `nvim_appname` | `""` | 远程 `NVIM_APPNAME`。为空时不覆盖；设置后应将配置镜像到对应的 `~/.config/<appname>`。 |
+| `integrations` | `[]` | 在有更改或强制同步后，于远程安装的智能体集成名称。空列表不安装钩子；远程检测不需要钩子。指定后会在远程运行载荷的 `herdr integration install <name>`。 |
+| `paths` | `[]` | 额外的文件或目录映射。当前 Herdr 可执行文件始终包含在内，目标为 `bin/herdr`。 |
+
+`paths` 中每项有以下键：
+
+| 键 | 默认值 | 含义 |
+| --- | --- | --- |
+| `src` | 必填 | 本地文件或目录。`~/` 在本地展开；相对路径以调用命令的工作目录为基准。 |
+| `dest` | 必填 | 相对于 `remote_root` 的远程目标，或以 `~/` 开头的 home 相对路径。不接受绝对路径或 `..`。 |
+| `exclude` | `[]` | 此映射的 rsync 排除模式，如 `[".git", ".wt", ".llm", ".claude"]`。 |
+
+## 命令
+
+### 连接与继承
+
+```text
+herdr ssh <host> [--cwd <remote dir>] [--no-sync] [-- <extra ssh args>]
+```
+
+主机可以使用 `studio` 等 SSH 配置别名。`--cwd` 指定远程目录；请将开头的 `~` 用引号包住，避免本地 shell 展开。`--no-sync` 禁止本次连接自动更新载荷。
+
+拆分已连接窗格时，会连接同一主机，并使用其报告的远程工作目录。拆分时明确传入的 `--cwd` 也是远程路径。仅当 `inherit_new_tab` 为 true 且未提供 `cwd` 时，新标签页才继承；新工作区仍在本地。若要在本地拆分，可为单次请求关闭继承：
+
+```bash
+herdr pane split w1:p1 --direction right --env HERDR_SSH_PANES_INHERIT=0
+```
+
+请换成实际的源窗格 ID。控制变量会在新 shell 启动前移除。刚创建的拆分或标签页，其 API 响应可能在 SSH 链接完成挂接前仍显示本地元数据；再次查询窗格即可读取远程信息。
+
+### 同步
+
+```text
+herdr ssh sync <host> [--force] [--dry-run] [--json]
+```
+
+同步会将可执行文件和配置路径的内容摘要与远程清单比较。无变化时输出 `unchanged`；仅 `touch` 而不改变内容不会触发传输。有变化的映射通过基于校验和的 rsync 传输，最后发布清单。`--force` 跳过清单快捷判断，对所有映射运行 rsync。`--dry-run` 仅检查是否需要同步，不传输载荷，也不逐项列出文件变化。`--json` 返回 `changed`、`dry_run`、`digest` 和逐项的 `transferred`。
+
+### 查看链接与诊断
+
+```bash
+herdr ssh list
+herdr ssh list --json
+herdr ssh doctor studio
+herdr ssh doctor studio --json
+```
+
+`list` 显示选中本地服务器的窗格 ID、主机、链接状态和远程 cwd。JSON 还包含链接元数据。`doctor` 检查载荷摘要、远程 shell 的 `PATH`、私有套接字目录权限、稳定套接字符号链接和 stream-local API 转发。JSON 返回 `ok` 和 `diagnostics`；检查失败时退出码为 1。请保持一个链接在线再运行：全新设置尚无稳定符号链接。
+
+### 运行远程命令
+
+```text
+herdr ssh run <host> [--cwd <dir>] [--env K=V]... [--no-tty] -- <argv...>
+```
+
+`run` 使用已同步的载荷和远程环境，不创建继承窗格。请先同步；若命令需要通过稳定路由访问本地 API，还要保持窗格连接。`--` 后的参数作为参数数组传递。需要 shell 表达式时，明确调用 shell：
+
+```bash
+herdr ssh run studio --cwd '~/code' --no-tty -- git status --short
+herdr ssh run studio --no-tty -- sh -c '"$HERDR_BIN_PATH" pane list'
+```
+
+可重复使用 `--env` 传入环境变量。值中的 `@root` 展开为远程载荷根目录，`@state` 展开为远程状态根目录下的 `plugins` 目录，供工具定位 scratch 配置和状态。
+
+## 工作原理
+
+```text
+local pane: connector -> ssh -R -> remote-attach -> remote shell + watcher
+                          |
+                          +-- /tmp/herdr-sp-<link>.sock -> local API socket
+                                      ^
+                    stable socket symlink (per local server)
+                                      ^
+                    watcher reports / remote scratch tools
+
+watcher reports -> local registry -> remote process probe -> screen detection
+```
+
+连接器注册并维护链接。远程 watcher 通过转发的 API 套接字报告 shell、前台进程、cwd 和智能体身份。本地检测结合远程进程报告和窗格终端输出工作，屏幕清单保持不变。窗格和智能体 API 记录将 `cwd`、`foreground_cwd` 映射为远程路径，并带有可选的 `ssh` 元数据。持久化和工作区操作使用的运行时路径仍是本地路径。
+
+每条连接有独立的转发套接字。稳定符号链接为该本地服务器选择一条有效连接，使远程 scratch 和 sidekick 在源窗格重连后仍有可用路由。服务器键由本地主机名和 API 套接字路径生成。sync 和 run 使用独立的私有 SSH ControlMaster，空闲时保留 10 分钟；交互窗格连接不复用它。
+
+### 远程文件
+
+使用默认 `remote_root` 时，布局如下：
+
+```text
+~/.local/share/herdr-ssh-panes/
+  bin/herdr                         # synced payload executable
+  bin/herdr-scratch                 # configured scratch executable
+  manifest.json                     # completed payload digest
+  nvim-plugins/herdr-scratch.nvim/  # configured companion
+  nvim-plugins/sidekick.nvim/       # configured sidekick mirror
+  plugin-config/shadowfax.scratch/ # configured scratch settings
+~/.local/state/herdr-ssh-panes/
+  s/<server-key>/herdr.sock         # stable symlink; directory mode 0700
+  s/<server-key>/links/<link>.json  # watcher records
+  plugins/shadowfax.scratch/        # persistent contexts and worker state
+~/.config/herdr-sp-nvim/            # configured Neovim mirror
+/tmp/herdr-sp-<link>.sock           # one API forward per connection
+/tmp/hsp-<uid>-<state-hash>/         # private remote scratch tmux sockets
+```
+
+状态位于 `~/.local/state/<basename(remote_root)>`。载荷根目录末级为 `herdr-ssh-panes-dev` 时，状态也放在独立的 `herdr-ssh-panes-dev` 中。当前支持 SSH 的 scratch 构建仅将 tmux 套接字放在 `/tmp/hsp-*`，以避开 Unix 套接字路径长度限制；上下文和清理状态仍在状态根目录下。watcher 清理自身的链接记录和转发，重连时还会回收陈旧记录。
+
+## 禁用
+
+```toml
+[ssh_panes]
+enabled = false
+```
+
+运行 `herdr server reload-config` 应用设置。Herdr 停止接受链接和报告，清除 SSH 元数据及远程智能体检测，后续拆分和标签页回到本地。现有远程 shell 仍以普通 SSH 会话运行。除帮助和内部远程辅助命令外，所有 `herdr ssh` 命令都会返回禁用提示和退出码 2。禁用不会撤销已有转发 API 套接字的访问；要移除访问权限，须关闭相应 SSH 会话。重新启用并重载后，仍运行的连接器会在下一次心跳重新注册。
+
+## 限制
+
+- 远程窗格内的智能体随 SSH 会话结束而退出，目前没有持久远程智能体运行时。Herdr 重启后，继承的 SSH 窗格会重连到 shell，但不会恢复智能体。手动输入 `herdr ssh` 的窗格恢复为本地 shell。
+- 同步原样传输可执行文件，不做交叉编译或平台选择。即使 CPU 架构相同，macOS 载荷也无法在 Linux 运行。Linux 远程需要匹配的 Herdr 和其他原生工具 Linux 构建；自动同步也须来自兼容构建。
+- 不能向 SSH 窗格执行 `herdr agent start`。请在远程 shell 中启动智能体，随后可通过 `agent prompt` 和 `agent send-keys` 操作。
+- 连接命令 `--` 后的额外 SSH 参数不会被拆分或新标签页继承。公共选项应放入 `ssh_options` 或 SSH 配置。
+- 在远程 scratch tmux shell 中直接输入 `herdr`，可能调用远程机器自身的安装。集成工具使用 `HERDR_BIN_PATH`；需要访问转发到的本地服务器时，请明确使用 `"$HERDR_BIN_PATH"`。
+- macOS 远程上的 Claude 可能需要先解锁登录钥匙串，才能通过 SSH 使用已保存的登录凭据。
+
+## 故障排查
+
+### Doctor 报告缺少套接字或符号链接
+
+保持 `herdr ssh studio` 连接，在另一个本地窗格重试 `doctor`。首次连接前，`socket directory: missing or unsafe` 和 `stable symlink: unavailable` 属于预期失败；末尾的 `remote checks failed:` 可能没有详细信息。健康连接会报告当前摘要、载荷可执行文件路径、`0700` 目录权限、有效符号链接和 API 转发。转发失败时，检查主机的 SSH 转发策略和 SSH 错误输出；载荷 `PATH` 不符时，检查远程登录 shell 配置。
+
+### 载荷过期
+
+本地可执行文件、同步配置或文件内容变化都可能使载荷过期。`auto_sync = true` 时，连接器会在载荷过期或缺失后同步并重试一次。禁用自动同步或重试失败后，请明确运行 `herdr ssh sync studio`。若清单看似最新，但远程文件已丢失或被修改，可用 `--force` 修复。确认所有 `src` 存在，且原生二进制匹配远程 OS 和架构。
+
+### 断线或重连提示
+
+`ssh-panes: lost connection to studio (ssh 255)` 表示 SSH 进程失败。继承创建的窗格显示 `[r] reconnect  [enter] close`；输入 `r` 并回车重连。手动连接则返回本地 shell，可再次运行 `herdr ssh studio`。断线后，远程智能体从本地检测中消失。scratch tmux 会话可能在源窗格重连期间保留，但窗格内智能体不会保留。
+
+### Scratch 弹窗失败
+
+确认 scratch 可执行文件、配套插件和配置已同步，远程也安装了 `tmux` 和 `nvim`。当前构建会保持失败弹窗打开，直到确认后才关闭，以便读取错误。旧构建可能只闪现一下弹窗，即使子进程失败，切换操作仍记录为成功。
+
+tmux 的 `File name too long` 表明旧 scratch 构建仍在较长的状态路径下创建套接字。请更新本地载荷为支持短远程套接字的构建，再次同步。当前套接字位于 `/tmp/hsp-<uid>-<state-hash>/`。目录不安全的错误表示该路径是符号链接、所有者不符，或权限不是 `0700`；修改前先检查，因为它可能属于正在使用的会话。
+
+若 scratch 工具连接了错误服务器，请在弹窗中检查 `HERDR_BIN_PATH`、`HERDR_SOCKET_PATH` 和 `HERDR_SSH_PANES`。macOS 上 Claude 报 `Not logged in` 时，请在远程交互式运行 `security unlock-keychain`，或配置智能体支持的 API 密钥登录后重试。
