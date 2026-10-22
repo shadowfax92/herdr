@@ -66,7 +66,7 @@ Sync directory mappings copy their contents and delete remote files absent from 
 
 ## Configuration reference
 
-All settings are live-loaded by `herdr server reload-config`. An invalid SSH panes section keeps the last valid configuration; at startup, the fallback is disabled. Unknown keys are rejected.
+All settings are live-loaded by `herdr server reload-config`. An invalid SSH panes section keeps the last valid configuration; at startup, the fallback is disabled. Unknown keys are reported in diagnostics and ignored.
 
 ### `[ssh_panes]`
 
@@ -111,7 +111,7 @@ Splits of a linked pane open on the same host, using its reported remote working
 herdr pane split w1:p1 --direction right --env HERDR_SSH_PANES_INHERIT=0
 ```
 
-Use your actual source pane ID. The control variable is removed before the new shell starts. Immediately after a split or tab is created, its API response can still show local metadata until the SSH link attaches; query the pane again for its remote metadata.
+Use your actual source pane ID. The control variable is removed before the new shell starts. Split and tab creation responses include the inherited host and remote cwd hint immediately; watcher reports refresh that metadata after the connection starts.
 
 ### Sync
 

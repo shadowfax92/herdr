@@ -66,7 +66,7 @@ paths = [
 
 ## 配置参考
 
-所有设置均可通过 `herdr server reload-config` 热加载。SSH 窗格配置无效时保留上一次有效配置；若在启动时无效，则回退为禁用。未知键会被拒绝。
+所有设置均可通过 `herdr server reload-config` 热加载。SSH 窗格配置无效时保留上一次有效配置；若在启动时无效，则回退为禁用。未知键会显示诊断并被忽略。
 
 ### `[ssh_panes]`
 
@@ -111,7 +111,7 @@ herdr ssh <host> [--cwd <remote dir>] [--no-sync] [-- <extra ssh args>]
 herdr pane split w1:p1 --direction right --env HERDR_SSH_PANES_INHERIT=0
 ```
 
-请换成实际的源窗格 ID。控制变量会在新 shell 启动前移除。刚创建的拆分或标签页，其 API 响应可能在 SSH 链接完成挂接前仍显示本地元数据；再次查询窗格即可读取远程信息。
+请换成实际的源窗格 ID。控制变量会在新 shell 启动前移除。拆分和标签页创建响应会立即包含继承的主机及远程 cwd 提示；连接启动后，由 watcher 报告更新元数据。
 
 ### 同步
 
