@@ -201,6 +201,25 @@ pub(crate) fn remote_side_cwds(
     (cwd(shell_pid), foreground_pgid.and_then(cwd))
 }
 
+/// The cold-restore scope may replace a shell command with its saved connector
+/// before any process is spawned. Outside that synchronous scope, argv/env/cwd
+/// reach the stock backend unchanged. Tests use a socket-only backend here.
+pub(super) fn spawn_with_portable_pty(
+    rows: u16,
+    cols: u16,
+    mut cmd: portable_pty::CommandBuilder,
+) -> std::io::Result<crate::pty::backend::SpawnedPty> {
+    crate::ssh_panes::apply_restore_command(&mut cmd)?;
+    #[cfg(all(test, unix))]
+    {
+        test_support::spawn_with_portable_pty(rows, cols, cmd)
+    }
+    #[cfg(not(all(test, unix)))]
+    {
+        crate::pty::backend::spawn_with_portable_pty(rows, cols, cmd)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,24 +280,6 @@ mod tests {
     }
 }
 
-/// The cold-restore scope may replace a shell command with its saved connector
-/// before any process is spawned. Outside that synchronous scope, argv/env/cwd
-/// reach the stock backend unchanged. Tests use a socket-only backend here.
-pub(super) fn spawn_with_portable_pty(
-    rows: u16,
-    cols: u16,
-    mut cmd: portable_pty::CommandBuilder,
-) -> std::io::Result<crate::pty::backend::SpawnedPty> {
-    crate::ssh_panes::apply_restore_command(&mut cmd)?;
-    #[cfg(all(test, unix))]
-    {
-        test_support::spawn_with_portable_pty(rows, cols, cmd)
-    }
-    #[cfg(not(all(test, unix)))]
-    {
-        crate::pty::backend::spawn_with_portable_pty(rows, cols, cmd)
-    }
-}
 #[cfg(all(test, unix))]
 pub(crate) mod test_support;
 
