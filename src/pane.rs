@@ -1037,26 +1037,26 @@ fn spawn_basic_detection_task(
                 .map_or(local_foreground_pgid, |remote| remote.foreground_pgid());
             let process_group_changed =
                 foreground_group_changed(foreground_pgid, last_foreground_pgid);
-            let should_check_process = pid > 0
-                && (ssh_override.is_some() || {
-                    let process_probe_input = ProcessProbeInput {
-                        current_agent: agent,
-                        suppressed_agent,
-                        foreground_pgid,
-                        last_foreground_pgid,
-                        has_process_probe,
-                        acquisition_age: acquisition_started_at
-                            .map(|started| now.duration_since(started)),
-                        pending_foreground_shell_clear,
-                        pending_restore_probe: false,
-                        elapsed_since_process_check: now.duration_since(last_process_check),
-                    };
-                    should_check_foreground_process(
-                        lifecycle_authority_active,
-                        agent_job.in_background(),
-                        process_probe_input,
-                    )
-                });
+            let should_check_process = pid > 0 && {
+                let process_probe_input = ProcessProbeInput {
+                    current_agent: agent,
+                    suppressed_agent,
+                    foreground_pgid,
+                    last_foreground_pgid,
+                    has_process_probe,
+                    acquisition_age: acquisition_started_at
+                        .map(|started| now.duration_since(started)),
+                    pending_foreground_shell_clear,
+                    pending_restore_probe: false,
+                    elapsed_since_process_check: now.duration_since(last_process_check),
+                };
+                should_check_foreground_process(
+                    lifecycle_authority_active,
+                    agent_job.in_background(),
+                    process_probe_input,
+                )
+            };
+            let should_check_process = should_check_process || (pid > 0 && ssh_override.is_some());
 
             if should_check_process {
                 last_process_check = now;
@@ -3015,18 +3015,19 @@ impl PaneRuntime {
                     }
                     let process_group_changed =
                         foreground_group_changed(foreground_pgid, last_foreground_pgid);
-                    let should_check_process = pid > 0
-                        && (ssh_override.is_some() || {
-                            let process_probe_input = ProcessProbeInput {
-                                foreground_pgid,
-                                ..process_probe_input
-                            };
-                            should_check_foreground_process(
-                                lifecycle_authority_active,
-                                agent_job.in_background(),
-                                process_probe_input,
-                            )
-                        });
+                    let should_check_process = pid > 0 && {
+                        let process_probe_input = ProcessProbeInput {
+                            foreground_pgid,
+                            ..process_probe_input
+                        };
+                        should_check_foreground_process(
+                            lifecycle_authority_active,
+                            agent_job.in_background(),
+                            process_probe_input,
+                        )
+                    };
+                    let should_check_process =
+                        should_check_process || (pid > 0 && ssh_override.is_some());
 
                     let mut agent_changed = false;
                     if should_check_process {

@@ -76,8 +76,11 @@ pub struct LinkInfo {
     pub pane_id: String,
     pub terminal_id: String,
     pub state: SshLinkState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foreground_cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_cwd: Option<String>,
     pub agent: Option<String>,
     pub attached_ms_ago: u64,
@@ -143,5 +146,19 @@ mod tests {
         );
         link.local_cwd = Some("/local".into());
         assert_eq!(serde_json::to_value(link).unwrap()["local_cwd"], "/local");
+    }
+}
+
+#[cfg(test)]
+mod list_tests {
+    #[test]
+    fn ssh_panes_list_omits_unknown_paths_and_reads_older_nulls() {
+        let old = serde_json::json!({"link_id":"one", "host":"studio", "pane_id":"w1:p1", "terminal_id":"t", "state":"live", "cwd":null,"foreground_cwd":null,"local_cwd":null,"agent":null,"attached_ms_ago":0,"last_report_ms_ago":null});
+        let info: super::LinkInfo = serde_json::from_value(old).unwrap();
+        let value = serde_json::to_value(info).unwrap();
+        for field in ["cwd", "foreground_cwd", "local_cwd"] {
+            assert!(value.get(field).is_none(), "{value}");
+        }
+        let _: super::LinkInfo = serde_json::from_value(value).unwrap();
     }
 }

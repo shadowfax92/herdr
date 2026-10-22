@@ -74,3 +74,54 @@ async fn ssh_panes_normal_detection_emits_remote_agent_then_process_exited() {
     let _table = crate::pane::ssh_probe::TEST_TABLE.lock().await;
     detects_then_exits(false).await;
 }
+
+async fn detects_then_watcher_silent(basic: bool) {
+    let (mut runtime, mut events, guard) = if basic {
+        let (mut runtime, _) = PaneRuntime::test_with_channel(80, 24);
+        runtime
+            .child_pid
+            .store(test_support::TEST_PID, Ordering::Release);
+        let events = runtime.test_start_basic_detection();
+        (runtime, events, None)
+    } else {
+        let (runtime, events, guard) = test_support::normal_runtime(PaneId::alloc());
+        (runtime, events, Some(guard))
+    };
+    let pane = runtime.ssh_probe_key();
+    link(pane, 42);
+    test_support::foreground(pane, Some(42));
+    let foreground = RemoteForeground {
+        process_group_id: Some(90),
+        foreground_is_pane_shell: false,
+        agent: Some("claude".into()),
+        process_name: Some("claude".into()),
+    };
+    store(pane, &foreground, Instant::now());
+    wait_for(&mut events, |event| matches!(event, AppEvent::AgentProcessDetected { pane_id, agent: Agent::Claude, .. } if *pane_id == pane)).await;
+    store(
+        pane,
+        &foreground,
+        Instant::now() - crate::ssh_panes::SOFT_LEASE,
+    );
+    heartbeat(pane, Instant::now());
+    assert_eq!(remote_agent(pane), Some(None));
+    wait_for(&mut events, |event| matches!(event, AppEvent::StateChanged { pane_id, agent: None, .. } if *pane_id == pane)).await;
+    unlink(pane);
+    if let Some(handle) = runtime.detect_handle.take() {
+        handle.abort();
+    }
+    drop(runtime);
+    drop(guard);
+}
+
+#[tokio::test]
+async fn ssh_panes_basic_detection_clears_identity_when_watcher_silent_despite_heartbeat() {
+    let _table = TEST_TABLE.lock().await;
+    detects_then_watcher_silent(true).await;
+}
+
+#[tokio::test]
+async fn ssh_panes_normal_detection_clears_identity_when_watcher_silent_despite_heartbeat() {
+    let _table = TEST_TABLE.lock().await;
+    detects_then_watcher_silent(false).await;
+}

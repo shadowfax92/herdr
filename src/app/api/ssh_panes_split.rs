@@ -7,7 +7,8 @@ use crate::{
     api::schema::{EventData, EventEnvelope, EventKind, PaneSplitParams, ResponseResult},
     app::{App, Mode},
     layout::PaneId,
-    ssh_panes::InheritTarget,
+    ssh_panes::{api::AttachParams, AttachInput, InheritTarget},
+    terminal::TerminalId,
 };
 use std::{collections::HashMap, path::PathBuf, time::Instant};
 
@@ -19,6 +20,7 @@ const SPAWNED: &str = "HERDR_SSH_PANES_SPAWNED";
 struct LaunchPlan {
     argv: Option<Vec<String>>,
     env: Vec<(String, String)>,
+    remote: Option<InheritTarget>,
 }
 
 fn launch_plan(
@@ -28,6 +30,10 @@ fn launch_plan(
 ) -> Result<LaunchPlan, (String, String)> {
     let mut env = env.clone();
     let opt_out = env.remove(INHERIT).as_deref() == Some("0");
+    let remote = (!opt_out).then(|| InheritTarget {
+        host: target.host.clone(),
+        cwd: cwd.map(str::to_string).or(target.cwd.clone()),
+    });
     let argv = if opt_out {
         None
     } else {
@@ -43,6 +49,7 @@ fn launch_plan(
     Ok(LaunchPlan {
         argv,
         env: super::env::normalize_launch_env(env)?,
+        remote,
     })
 }
 
@@ -54,6 +61,46 @@ fn local_home() -> Result<PathBuf, std::io::Error> {
 }
 
 impl App {
+    /// Spawn has already assigned the terminal's stable identity and local PID.
+    /// Publish the remote launch intent before any creation event/response; a real
+    /// attach must adopt that same connector, and silence expires it after 30 s.
+    fn provision_ssh_terminal(&mut self, terminal: &TerminalId, remote: Option<InheritTarget>) {
+        let Some(remote) = remote else {
+            return;
+        };
+        let Some(runtime) = self.terminal_runtimes.get(terminal) else {
+            return;
+        };
+        let Some(pid) = runtime.child_pid() else {
+            return;
+        };
+        let pane = runtime.ssh_probe_key();
+        let input = AttachInput {
+            params: AttachParams {
+                pane_id: String::new(),
+                link_id: format!("pending:{terminal}"),
+                host: remote.host,
+                connector_pid: pid,
+                connector_pgid: pid,
+                cwd_hint: remote.cwd,
+                protocol: 1,
+            },
+            pane_id: pane,
+            terminal_id: terminal.clone(),
+            local_cwd: self
+                .state
+                .terminals
+                .get(terminal)
+                .and_then(|t| t.cwd.to_str().map(str::to_string)),
+        };
+        let now = Instant::now();
+        self.refresh_ssh_panes_now(now);
+        if let Err(error) = self.ssh_panes.provision(input, now) {
+            tracing::warn!(?error, %terminal, "could not register spawned SSH connector");
+        }
+        crate::pane::ssh_probe::set_shell_pid(pane, Some(pid));
+    }
+
     // This mirrors the stock creation tail intentionally: one early hook keeps
     // upstream rebase conflicts outside focus/event/layout policy.
     #[allow(clippy::too_many_arguments)]
@@ -189,6 +236,7 @@ impl App {
                 .record_pane_focus_change(previous_focus, ws_idx, new_pane.pane_id);
             self.state.mode = Mode::Terminal;
         }
+        let new_terminal = new_pane.terminal.id.clone();
         self.terminal_runtimes
             .insert(new_pane.terminal.id.clone(), new_pane.runtime);
         self.state
@@ -196,6 +244,7 @@ impl App {
         self.state
             .terminals
             .insert(new_pane.terminal.id.clone(), new_pane.terminal);
+        self.provision_ssh_terminal(&new_terminal, plan.remote);
         self.schedule_session_save();
         let Some(pane) = self.pane_info(ws_idx, new_pane.pane_id) else {
             return Some(encode_error(
@@ -286,6 +335,7 @@ impl App {
                 ))
             }
         };
+        let new_terminal = terminal.id.clone();
         self.terminal_runtimes.insert(terminal.id.clone(), runtime);
         self.state.terminals.insert(terminal.id.clone(), terminal);
         self.state.remove_alias_shadowed_by_new_pane(
@@ -303,6 +353,7 @@ impl App {
             self.state.switch_workspace_tab(ws_idx, tab_idx);
             self.state.mode = Mode::Terminal;
         }
+        self.provision_ssh_terminal(&new_terminal, plan.remote);
         self.schedule_session_save();
         self.emit_tab_created_events(ws_idx, tab_idx);
         Some(match self.tab_created_result(ws_idx, tab_idx) {

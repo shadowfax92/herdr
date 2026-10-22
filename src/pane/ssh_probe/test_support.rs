@@ -16,7 +16,7 @@ use std::{
 use tokio::sync::{mpsc, Notify};
 
 const TEST_COMMAND: &str = "/__herdr_ssh_panes_no_pty__";
-const TEST_PID: u32 = 2_000_000_001;
+pub(crate) const TEST_PID: u32 = 2_000_000_001;
 
 #[derive(Debug)]
 struct SocketChild {
@@ -124,12 +124,7 @@ pub(crate) fn normal_runtime(
 }
 
 pub(crate) fn foreground(pane: PaneId, pgid: Option<u32>) {
-    super::table()
-        .lock()
-        .unwrap()
-        .get_mut(&pane)
-        .unwrap()
-        .test_foreground = Some(pgid);
+    super::test_owner(pane, true, pgid);
 }
 
 pub(crate) fn normal_terminal_runtime(

@@ -34,6 +34,7 @@ fn app_with_pane() -> (App, PaneId, TerminalId) {
 }
 fn attach(app: &mut App, pane: PaneId) -> serde_json::Value {
     let pane_id = app.public_pane_id(0, pane).unwrap();
+    crate::pane::ssh_probe::test_owner(pane, true, Some(42));
     let response = app.handle_ssh_panes(
         "attach".into(),
         SshPanesRequest::Attach(AttachParams {
@@ -383,6 +384,7 @@ async fn ssh_panes_opt_out_spawns_stock_local_shell_and_strips_control_flag() {
 fn ssh_panes_expired_link_does_not_scrub_a_later_local_agent_session() {
     let _table = crate::pane::ssh_probe::TEST_TABLE.blocking_lock();
     let (mut app, pane, terminal) = app_with_pane();
+    crate::pane::ssh_probe::test_owner(pane, true, Some(42));
     let expired = Instant::now() - crate::ssh_panes::HARD_LEASE;
     app.ssh_panes
         .attach(
@@ -420,4 +422,296 @@ fn ssh_panes_expired_link_does_not_scrub_a_later_local_agent_session() {
     let before = serde_json::to_vec(&snapshot).unwrap();
     app.scrub_ssh_pane_snapshot(&mut snapshot);
     assert_eq!(serde_json::to_vec(&snapshot).unwrap(), before);
+}
+
+#[test]
+fn ssh_panes_attach_refuses_a_dead_or_nonforeground_connector() {
+    let _table = crate::pane::ssh_probe::TEST_TABLE.blocking_lock();
+    for (alive, foreground) in [(false, Some(42)), (true, Some(43)), (true, None)] {
+        let (mut app, pane, _) = app_with_pane();
+        crate::pane::ssh_probe::test_owner(pane, alive, foreground);
+        let pane_id = app.public_pane_id(0, pane).unwrap();
+        let response = send(
+            &mut app,
+            SshPanesRequest::Attach(AttachParams {
+                pane_id,
+                link_id: "one".into(),
+                host: "studio".into(),
+                connector_pid: 42,
+                connector_pgid: 42,
+                cwd_hint: None,
+                protocol: 1,
+            }),
+        );
+        assert_eq!(response["error"]["code"], "invalid_ssh_panes_request");
+        assert!(app.pane_metadata(0, pane).unwrap().ssh.is_none());
+        assert_eq!(crate::pane::ssh_probe::entry_count(), 0);
+    }
+}
+
+#[test]
+fn ssh_panes_lease_transitions_emit_one_update_and_dead_links_are_pruned_on_save() {
+    let _table = crate::pane::ssh_probe::TEST_TABLE.blocking_lock();
+    let (mut app, pane, _) = app_with_pane();
+    attach(&mut app, pane);
+    send(&mut app, SshPanesRequest::Report(report(1)));
+    let sequence = app.event_hub.current_sequence();
+    app.ssh_panes
+        .report(&report(2), Instant::now() - crate::ssh_panes::SOFT_LEASE)
+        .unwrap();
+    let now = Instant::now();
+    app.refresh_ssh_panes(now);
+    let events = app.event_hub.events_after(sequence);
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        serde_json::to_value(&events[0].1).unwrap()["data"]["pane"]["ssh"]["state"],
+        "stale"
+    );
+    app.refresh_ssh_panes(now + std::time::Duration::from_secs(1));
+    assert_eq!(app.event_hub.current_sequence(), sequence + 1);
+    crate::pane::ssh_probe::test_owner(pane, false, Some(42));
+    let mut snapshot = crate::persist::capture(
+        &app.state.workspaces,
+        &app.state.terminals,
+        &app.terminal_runtimes,
+        Some(0),
+        0,
+    );
+    app.scrub_ssh_pane_snapshot(&mut snapshot);
+    assert_eq!(app.event_hub.current_sequence(), sequence + 2);
+    assert!(app.pane_metadata(0, pane).unwrap().ssh.is_none());
+    assert_eq!(app.ssh_panes.linked_terminals().count(), 0);
+    assert_eq!(crate::pane::ssh_probe::entry_count(), 0);
+}
+
+#[test]
+fn ssh_panes_dead_link_list_and_host_revocation_publish_local_projection() {
+    let _table = crate::pane::ssh_probe::TEST_TABLE.blocking_lock();
+    for revoke in [false, true] {
+        let (mut app, pane, _) = app_with_pane();
+        attach(&mut app, pane);
+        let sequence = app.event_hub.current_sequence();
+        if revoke {
+            app.apply_ssh_panes_config(&SshPanesConfig {
+                enabled: true,
+                allowed_hosts: vec!["other".into()],
+                ..Default::default()
+            });
+        } else {
+            crate::pane::ssh_probe::test_owner(pane, true, Some(43));
+        }
+        let response = send(
+            &mut app,
+            SshPanesRequest::List(crate::ssh_panes::api::ListParams::default()),
+        );
+        assert_eq!(
+            response["result"]["ssh_panes"]["links"],
+            serde_json::json!([])
+        );
+        assert_eq!(app.event_hub.current_sequence(), sequence + 1);
+        assert_eq!(
+            app.pane_metadata(0, pane).unwrap().cwd.as_deref(),
+            Some("/local")
+        );
+        assert_eq!(crate::pane::ssh_probe::entry_count(), 0);
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn ssh_panes_stock_and_remote_creation_keep_event_and_response_shape() {
+    let _table = crate::pane::ssh_probe::TEST_TABLE.lock().await;
+    use crate::pane::ssh_probe::test_support::{capture_next_spawn, take_spawn};
+    // Compare all stock payload fields, focus/layout effects and event order;
+    // only transport metadata, paths and allocated identities may differ.
+    fn normalize(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(map) => {
+                map.remove("ssh");
+                for (key, value) in map {
+                    if matches!(
+                        key.as_str(),
+                        "pane_id"
+                            | "focused_pane_id"
+                            | "terminal_id"
+                            | "workspace_id"
+                            | "tab_id"
+                            | "cwd"
+                            | "foreground_cwd"
+                            | "name"
+                            | "label"
+                    ) && value.is_string()
+                    {
+                        *value = serde_json::json!("<value>");
+                    } else {
+                        normalize(value);
+                    }
+                }
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(normalize),
+            _ => {}
+        }
+    }
+    for tab in [false, true] {
+        for focus in [false, true] {
+            let mut outcomes = Vec::new();
+            for remote in [false, true] {
+                let (mut app, pane, _) = app_with_pane();
+                // Local stock creation must use a real local cwd even though the
+                // channel-only parent deliberately has an impossible cwd fixture.
+                app.state.default_shell = "/bin/sh".into();
+                if remote {
+                    attach(&mut app, pane);
+                }
+                let sequence = app.event_hub.current_sequence();
+                capture_next_spawn();
+                let response = if tab {
+                    app.handle_tab_create("create".into(), serde_json::from_value(serde_json::json!({"focus":focus,"label":"new tab","env":{"HERDR_SSH_PANES_INHERIT":"1","KEEP":"value"}})).unwrap())
+                } else {
+                    app.handle_pane_split("create".into(), serde_json::from_value(serde_json::json!({"direction":"right","focus":focus,"ratio":0.3,"env":{"HERDR_SSH_PANES_INHERIT":"1","KEEP":"value"},"right_click":"pane"})).unwrap())
+                };
+                let (guard, cmd) = take_spawn();
+                assert!(cmd.get_env("HERDR_SSH_PANES_INHERIT").is_none());
+                assert_eq!(cmd.get_env("KEEP").unwrap(), "value");
+                let mut response: serde_json::Value = serde_json::from_str(&response).unwrap();
+                assert!(response.get("error").is_none(), "{response}");
+                if remote {
+                    // The very first response and direct pane.get have identical
+                    // transport projection before the connector has ever attached.
+                    let created = if tab {
+                        &response["result"]["root_pane"]
+                    } else {
+                        &response["result"]["pane"]
+                    };
+                    assert_eq!(created["ssh"]["host"], "studio", "{response}");
+                    assert_eq!(created["ssh"]["state"], "live");
+                    assert_eq!(created["cwd"], "/hint");
+                    let pane_id = created["pane_id"].as_str().unwrap();
+                    let fetched: serde_json::Value = serde_json::from_str(&app.handle_pane_get(
+                        "get".into(),
+                        crate::api::schema::PaneTarget {
+                            pane_id: pane_id.into(),
+                        },
+                    ))
+                    .unwrap();
+                    assert_eq!(fetched["result"]["pane"]["ssh"], created["ssh"]);
+                    assert_eq!(fetched["result"]["pane"]["cwd"], created["cwd"]);
+                }
+                let mut events = serde_json::to_value(
+                    app.event_hub
+                        .events_after(sequence)
+                        .into_iter()
+                        .map(|(_, event)| event)
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap();
+                normalize(&mut events);
+                normalize(&mut response);
+                outcomes.push((events, response));
+                for (_, runtime) in app.terminal_runtimes.drain() {
+                    runtime.preserve_for_handoff();
+                }
+                drop(guard);
+            }
+            assert_eq!(outcomes[0], outcomes[1], "tab={tab}, focus={focus}");
+        }
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn ssh_panes_declined_hooks_strip_inherit_flag_for_disabled_and_explicit_cwd_paths() {
+    let _table = crate::pane::ssh_probe::TEST_TABLE.lock().await;
+    use crate::pane::ssh_probe::test_support::{capture_next_spawn, take_spawn};
+    for tab in [false, true] {
+        for enabled in [false, true] {
+            let (mut app, pane, _) = app_with_pane();
+            app.state.default_shell = "/bin/sh".into();
+            if enabled {
+                attach(&mut app, pane);
+            } else {
+                app.apply_ssh_panes_config(&SshPanesConfig::default());
+            }
+            capture_next_spawn();
+            let cwd = std::env::temp_dir();
+            let response = if tab {
+                app.handle_tab_create("id".into(), serde_json::from_value(serde_json::json!({"cwd":cwd,"focus":false,"env":{"HERDR_SSH_PANES_INHERIT":"0"}})).unwrap())
+            } else {
+                app.handle_pane_split("id".into(), serde_json::from_value(serde_json::json!({"direction":"down","cwd":cwd,"focus":false,"env":{"HERDR_SSH_PANES_INHERIT":"0"}})).unwrap())
+            };
+            let (guard, cmd) = take_spawn();
+            let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+            assert!(response.get("error").is_none(), "{response}");
+            assert!(cmd.get_env("HERDR_SSH_PANES_INHERIT").is_none());
+            assert!(cmd.get_env("HERDR_SSH_PANES_SPAWNED").is_none());
+            for (_, runtime) in app.terminal_runtimes.drain() {
+                runtime.preserve_for_handoff();
+            }
+            drop(guard);
+        }
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn ssh_panes_provisioning_publishes_other_links_pending_transitions() {
+    let _table = crate::pane::ssh_probe::TEST_TABLE.lock().await;
+    use crate::pane::ssh_probe::test_support::{capture_next_spawn, take_spawn};
+    for tab in [false, true] {
+        let (mut app, pane, _) = app_with_pane();
+        attach(&mut app, pane);
+        // Accepted report time is injected: no wall-clock sleep or scheduled
+        // refresh runs before provisioning discovers the parent's stale state.
+        app.ssh_panes
+            .report(&report(1), Instant::now() - crate::ssh_panes::SOFT_LEASE)
+            .unwrap();
+        let sequence = app.event_hub.current_sequence();
+        capture_next_spawn();
+        let response = if tab {
+            app.ssh_panes_tab_create(
+                "id",
+                0,
+                None,
+                &std::collections::HashMap::new(),
+                false,
+                None,
+            )
+            .unwrap()
+        } else {
+            app.ssh_panes_split(
+                "id",
+                0,
+                pane,
+                &serde_json::from_value(serde_json::json!({"direction":"right","focus":false}))
+                    .unwrap(),
+                24,
+                80,
+            )
+            .unwrap()
+        };
+        let (guard, _) = take_spawn();
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert!(response.get("error").is_none(), "{response}");
+        let updates = app
+            .event_hub
+            .events_after(sequence)
+            .into_iter()
+            .filter_map(|(_, event)| {
+                if let crate::api::schema::EventData::PaneUpdated { pane } = event.data {
+                    Some(pane)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].ssh.as_ref().unwrap().state, SshLinkState::Stale);
+        let sequence = app.event_hub.current_sequence();
+        app.refresh_ssh_panes(Instant::now());
+        assert_eq!(app.event_hub.current_sequence(), sequence);
+        for (_, runtime) in app.terminal_runtimes.drain() {
+            runtime.preserve_for_handoff();
+        }
+        drop(guard);
+    }
 }

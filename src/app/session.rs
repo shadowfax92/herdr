@@ -37,7 +37,7 @@ impl App {
         }
     }
 
-    fn capture_session_save_job(&self) -> SessionSaveJob {
+    fn capture_session_save_job(&mut self) -> SessionSaveJob {
         if self.state.workspaces.is_empty() {
             SessionSaveJob::Clear
         } else {
