@@ -585,16 +585,24 @@ mod unix {
             }
         }
     }
+    /// Return the tty to local output without rewinding the remote transcript.
+    /// Save on the active screen first: on main this refreshes a stale cursor
+    /// slot; on alternate it leaves main's 1049h return position intact. 1047l
+    /// copies the alternate cursor onto main, so restore main's safe slot before
+    /// CRLF separates remote output from the next connector message/local prompt.
+    fn reset_terminal(mut output: impl Write) -> io::Result<()> {
+        output.write_all(
+            b"\x1b7\x1b[?1047l\x1b8\x1b[<u\x1b[?1000;1002;1003;1006l\x1b[?2004l\x1b[?25h\r\n",
+        )?;
+        output.flush()
+    }
+
     impl Drop for SignalGuard {
         fn drop(&mut self) {
             self.restore_tty();
             // A dead SSH child cannot undo remote fullscreen/input modes. Reset
             // before any detach error, sync message, reconnect or local prompt.
-            use std::io::Write;
-            let mut output = std::io::stdout().lock();
-            let _ = output
-                .write_all(b"\x1b[?1049l\x1b[<u\x1b[?1000;1002;1003;1006l\x1b[?2004l\x1b[?25h");
-            let _ = output.flush();
+            let _ = reset_terminal(std::io::stdout().lock());
             for (signal, old) in &self.old {
                 unsafe {
                     libc::sigaction(*signal, old, std::ptr::null_mut());
@@ -605,6 +613,61 @@ mod unix {
     #[cfg(test)]
     mod output_tests {
         use super::*;
+
+        #[test]
+        fn ssh_panes_reset_avoids_1049_and_preserves_input_cleanup() {
+            let mut output = Vec::new();
+            reset_terminal(&mut output).unwrap();
+            assert!(!output.windows(8).any(|bytes| bytes == b"\x1b[?1049l"));
+            for mode in [
+                &b"\x1b[?1047l"[..],
+                &b"\x1b[<u"[..],
+                &b"\x1b[?1000;1002;1003;1006l"[..],
+                &b"\x1b[?2004l"[..],
+                &b"\x1b[?25h"[..],
+            ] {
+                assert!(output.windows(mode.len()).any(|bytes| bytes == mode));
+            }
+            assert!(output.ends_with(b"\r\n"));
+        }
+
+        #[test]
+        fn ssh_panes_reset_preserves_transcript_before_local_output() {
+            let mut reset = Vec::new();
+            reset_terminal(&mut reset).unwrap();
+            for alternate in [false, true] {
+                let mut terminal = crate::ghostty::Terminal::new(100, 12, 1024).unwrap();
+                // A shell may save its cursor before any remote output. Leaving
+                // an already inactive alt screen must not restore that stale row.
+                terminal.write(b"connecting to studio...\r\n\x1b7");
+                terminal.write(b"REMOTE-MARKER-1\r\nREMOTE-MARKER-2\r\nremote> ");
+                if alternate {
+                    terminal.write(b"\x1b[?1049h\x1b[Hfullscreen app\x1b[?2004h\x1b[?25l");
+                }
+                terminal.write(&reset);
+                terminal.write(b"ssh-panes: lost connection to studio (ssh 255)\r\nlocal> ");
+                let rows: Vec<String> = terminal
+                    .screen_text_rows()
+                    .unwrap()
+                    .iter()
+                    .map(|row| {
+                        row.cells
+                            .iter()
+                            .flat_map(|cell| cell.graphemes.iter().copied())
+                            .filter_map(char::from_u32)
+                            .collect::<String>()
+                            .trim_end()
+                            .to_string()
+                    })
+                    .collect();
+                assert_eq!(rows[1], "REMOTE-MARKER-1", "{rows:?}");
+                assert_eq!(rows[2], "REMOTE-MARKER-2", "{rows:?}");
+                assert_eq!(rows[3], "remote>", "{rows:?}");
+                assert_eq!(rows[4], "ssh-panes: lost connection to studio (ssh 255)");
+                assert_eq!(rows[5], "local>");
+            }
+        }
+
         struct ByteReader(std::io::Cursor<Vec<u8>>);
         impl Read for ByteReader {
             fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
