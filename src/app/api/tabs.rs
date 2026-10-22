@@ -62,6 +62,11 @@ impl App {
         } else {
             return encode_error(id, "workspace_not_found", "no active workspace");
         };
+        if let Some(response) =
+            self.ssh_panes_tab_create(&id, ws_idx, cwd.as_deref(), &env, focus, label.as_deref())
+        {
+            return response;
+        }
         let cwd = cwd.map(PathBuf::from).unwrap_or_else(|| {
             self.resolve_new_terminal_cwd(self.focused_pane_cwd_in_workspace(ws_idx))
         });

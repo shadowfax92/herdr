@@ -447,6 +447,9 @@ pub struct PaneReleaseAgentParams {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PaneInfo {
+    /// Remote transport metadata; absent fields preserve stock local-pane JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh: Option<crate::ssh_panes::api::PaneSshInfo>,
     pub pane_id: String,
     pub terminal_id: String,
     pub workspace_id: String,

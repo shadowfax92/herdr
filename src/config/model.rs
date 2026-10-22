@@ -323,6 +323,7 @@ pub struct Config {
     pub advanced: AdvancedConfig,
     pub experimental: ExperimentalConfig,
     pub remote: RemoteConfig,
+    pub ssh_panes: crate::ssh_panes::config::SshPanesConfig,
 }
 
 #[derive(Debug)]

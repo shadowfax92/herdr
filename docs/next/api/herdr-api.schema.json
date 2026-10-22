@@ -829,6 +829,17 @@
                 }
               ]
             },
+            "ssh": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/event/$defs/PaneSshInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Remote transport metadata; absent fields preserve stock local-pane JSON."
+            },
             "state_labels": {
               "additionalProperties": {
                 "type": "string"
@@ -1028,10 +1039,43 @@
           ],
           "type": "object"
         },
+        "PaneSshInfo": {
+          "properties": {
+            "host": {
+              "type": "string"
+            },
+            "link_id": {
+              "type": "string"
+            },
+            "local_cwd": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "state": {
+              "$ref": "#/schemas/event/$defs/SshLinkState"
+            }
+          },
+          "required": [
+            "host",
+            "link_id",
+            "state"
+          ],
+          "type": "object"
+        },
         "SplitDirection": {
           "enum": [
             "right",
             "down"
+          ],
+          "type": "string"
+        },
+        "SshLinkState": {
+          "enum": [
+            "live",
+            "stale",
+            "unknown"
           ],
           "type": "string"
         },
@@ -1695,6 +1739,50 @@
           ],
           "type": "object"
         },
+        "AttachParams": {
+          "properties": {
+            "connector_pgid": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "connector_pid": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "cwd_hint": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "host": {
+              "type": "string"
+            },
+            "link_id": {
+              "type": "string"
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "protocol": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "pane_id",
+            "link_id",
+            "host",
+            "connector_pid",
+            "connector_pgid",
+            "protocol"
+          ],
+          "type": "object"
+        },
         "ClientShellSurfaceSetParams": {
           "description": "Updates whether the requesting client shell receives and controls pane presentation.",
           "properties": {
@@ -1756,6 +1844,25 @@
           },
           "required": [
             "command_id"
+          ],
+          "type": "object"
+        },
+        "DetachParams": {
+          "properties": {
+            "exit_code": {
+              "default": null,
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "link_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "link_id"
           ],
           "type": "object"
         },
@@ -2352,6 +2459,18 @@
             "path",
             "ratio"
           ],
+          "type": "object"
+        },
+        "ListParams": {
+          "properties": {
+            "pane_id": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
           "type": "object"
         },
         "NotificationShowParams": {
@@ -3856,6 +3975,82 @@
           ],
           "type": "object"
         },
+        "RemoteForeground": {
+          "properties": {
+            "agent": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "foreground_is_pane_shell": {
+              "type": "boolean"
+            },
+            "process_group_id": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "process_name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "foreground_is_pane_shell"
+          ],
+          "type": "object"
+        },
+        "ReportParams": {
+          "properties": {
+            "cwd": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "foreground": {
+              "$ref": "#/schemas/request/$defs/RemoteForeground"
+            },
+            "foreground_cwd": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "link_id": {
+              "type": "string"
+            },
+            "seq": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "shell_name": {
+              "type": "string"
+            },
+            "shell_pid": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "link_id",
+            "seq",
+            "shell_pid",
+            "shell_name",
+            "foreground"
+          ],
+          "type": "object"
+        },
         "ServerLiveHandoffParams": {
           "properties": {
             "expected_protocol": {
@@ -3899,6 +4094,62 @@
             "down"
           ],
           "type": "string"
+        },
+        "SshPanesRequest": {
+          "oneOf": [
+            {
+              "$ref": "#/schemas/request/$defs/AttachParams",
+              "properties": {
+                "op": {
+                  "const": "attach",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/schemas/request/$defs/ReportParams",
+              "properties": {
+                "op": {
+                  "const": "report",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/schemas/request/$defs/DetachParams",
+              "properties": {
+                "op": {
+                  "const": "detach",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/schemas/request/$defs/ListParams",
+              "properties": {
+                "op": {
+                  "const": "list",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ]
         },
         "Subscription": {
           "oneOf": [
@@ -4689,6 +4940,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/PingParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "ssh_panes",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/SshPanesRequest"
             }
           },
           "required": [
@@ -6614,6 +6881,17 @@
             "screen_detection_skipped": {
               "type": "boolean"
             },
+            "ssh": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/PaneSshInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Copied from the pane's API projection, never from local process cwd."
+            },
             "state_change_seq": {
               "default": 0,
               "format": "uint64",
@@ -7774,6 +8052,71 @@
             }
           ]
         },
+        "LinkInfo": {
+          "properties": {
+            "agent": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "attached_ms_ago": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "cwd": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "foreground_cwd": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "host": {
+              "type": "string"
+            },
+            "last_report_ms_ago": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "link_id": {
+              "type": "string"
+            },
+            "local_cwd": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "state": {
+              "$ref": "#/schemas/success_response/$defs/SshLinkState"
+            },
+            "terminal_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "link_id",
+            "host",
+            "pane_id",
+            "terminal_id",
+            "state",
+            "attached_ms_ago"
+          ],
+          "type": "object"
+        },
         "NotificationShowReason": {
           "enum": [
             "shown",
@@ -7936,6 +8279,17 @@
                   "type": "null"
                 }
               ]
+            },
+            "ssh": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/PaneSshInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Remote transport metadata; absent fields preserve stock local-pane JSON."
             },
             "state_labels": {
               "additionalProperties": {
@@ -8444,6 +8798,31 @@
             "offset_from_bottom",
             "max_offset_from_bottom",
             "viewport_rows"
+          ],
+          "type": "object"
+        },
+        "PaneSshInfo": {
+          "properties": {
+            "host": {
+              "type": "string"
+            },
+            "link_id": {
+              "type": "string"
+            },
+            "local_cwd": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "state": {
+              "$ref": "#/schemas/success_response/$defs/SshLinkState"
+            }
+          },
+          "required": [
+            "host",
+            "link_id",
+            "state"
           ],
           "type": "object"
         },
@@ -10406,6 +10785,22 @@
             },
             {
               "properties": {
+                "ssh_panes": {
+                  "$ref": "#/schemas/success_response/$defs/SshPanesResult"
+                },
+                "type": {
+                  "const": "ssh_panes",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "ssh_panes"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
                 "type": {
                   "const": "ok",
                   "type": "string"
@@ -10533,6 +10928,91 @@
             "down"
           ],
           "type": "string"
+        },
+        "SshLinkState": {
+          "enum": [
+            "live",
+            "stale",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        "SshPanesResult": {
+          "oneOf": [
+            {
+              "properties": {
+                "lease_ms": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "link": {
+                  "$ref": "#/schemas/success_response/$defs/LinkInfo"
+                },
+                "result": {
+                  "const": "attached",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "result",
+                "link",
+                "lease_ms"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "accepted": {
+                  "type": "boolean"
+                },
+                "result": {
+                  "const": "reported",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "result",
+                "accepted"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "result": {
+                  "const": "detached",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "result"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "links": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/LinkInfo"
+                  },
+                  "type": "array"
+                },
+                "result": {
+                  "const": "links",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "result",
+                "enabled",
+                "links"
+              ],
+              "type": "object"
+            }
+          ]
         },
         "TabInfo": {
           "properties": {

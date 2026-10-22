@@ -47,6 +47,8 @@ pub struct Request {
 pub enum Method {
     #[serde(rename = "ping")]
     Ping(PingParams),
+    #[serde(rename = "ssh_panes")]
+    SshPanes(crate::ssh_panes::api::SshPanesRequest),
     #[serde(rename = "server.stop")]
     ServerStop(EmptyParams),
     #[serde(rename = "server.live_handoff")]

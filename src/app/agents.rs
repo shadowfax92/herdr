@@ -380,6 +380,7 @@ impl App {
         }
         let pane = self.pane_metadata(ws_idx, pane_id)?;
         Some(crate::api::schema::AgentInfo {
+            ssh: pane.ssh,
             terminal_id: pane.terminal_id,
             name: terminal.agent_name.clone(),
             agent: pane.agent,
@@ -440,6 +441,9 @@ pub(super) fn runtime_hosts_agent(
 }
 
 fn live_runtime_agent(runtime: &crate::terminal::TerminalRuntime) -> Option<crate::detect::Agent> {
+    if let Some(remote) = crate::pane::ssh_probe_remote_agent(runtime.ssh_probe_key()) {
+        return remote;
+    }
     let job = crate::detect::foreground_job(runtime.child_pid()?)?;
     crate::detect::identify_agent_in_job(&job)
         .map(|(agent, _)| agent)

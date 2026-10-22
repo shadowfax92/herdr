@@ -337,7 +337,8 @@ impl App {
                 .focused_pane_id()
                 .is_some_and(|focused| focused == pane_id);
         let presentation = terminal.effective_presentation();
-        Some(crate::api::schema::PaneInfo {
+        let mut info = crate::api::schema::PaneInfo {
+            ssh: None,
             pane_id: self.public_pane_id(ws_idx, pane_id)?,
             terminal_id: terminal.id.to_string(),
             workspace_id: self.public_workspace_id(ws_idx),
@@ -362,7 +363,9 @@ impl App {
             agent_session: terminal_agent_session_info(terminal),
             scroll: None,
             revision: terminal.revision,
-        })
+        };
+        self.project_ssh_pane_info(&terminal.id, &mut info);
+        Some(info)
     }
 
     pub(super) fn lookup_runtime(

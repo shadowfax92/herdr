@@ -30,6 +30,8 @@ mod cursor;
 mod input;
 mod kitty_keyboard;
 mod osc;
+pub(crate) mod ssh_probe;
+pub(crate) use ssh_probe::remote_agent as ssh_probe_remote_agent;
 mod state;
 mod terminal;
 mod xtgettcap;
@@ -1025,36 +1027,45 @@ fn spawn_basic_detection_task(
                 pane_id,
             )
             .await;
-            let foreground_pgid = (pid > 0)
+            let local_foreground_pgid = (pid > 0)
                 .then(|| crate::detect::foreground_process_group_id(pid))
                 .flatten();
+            // The remote observation replaces only process identity; screen detection stays local.
+            let ssh_override = ssh_probe::override_for(pane_id, local_foreground_pgid);
+            let foreground_pgid = ssh_override
+                .as_ref()
+                .map_or(local_foreground_pgid, |remote| remote.foreground_pgid());
             let process_group_changed =
                 foreground_group_changed(foreground_pgid, last_foreground_pgid);
-            let should_check_process = pid > 0 && {
-                let process_probe_input = ProcessProbeInput {
-                    current_agent: agent,
-                    suppressed_agent,
-                    foreground_pgid,
-                    last_foreground_pgid,
-                    has_process_probe,
-                    acquisition_age: acquisition_started_at
-                        .map(|started| now.duration_since(started)),
-                    pending_foreground_shell_clear,
-                    pending_restore_probe: false,
-                    elapsed_since_process_check: now.duration_since(last_process_check),
-                };
-                should_check_foreground_process(
-                    lifecycle_authority_active,
-                    agent_job.in_background(),
-                    process_probe_input,
-                )
-            };
+            let should_check_process = pid > 0
+                && (ssh_override.is_some() || {
+                    let process_probe_input = ProcessProbeInput {
+                        current_agent: agent,
+                        suppressed_agent,
+                        foreground_pgid,
+                        last_foreground_pgid,
+                        has_process_probe,
+                        acquisition_age: acquisition_started_at
+                            .map(|started| now.duration_since(started)),
+                        pending_foreground_shell_clear,
+                        pending_restore_probe: false,
+                        elapsed_since_process_check: now.duration_since(last_process_check),
+                    };
+                    should_check_foreground_process(
+                        lifecycle_authority_active,
+                        agent_job.in_background(),
+                        process_probe_input,
+                    )
+                });
 
             if should_check_process {
                 last_process_check = now;
                 let had_process_probe = has_process_probe;
                 has_process_probe = true;
-                let probe = probe_foreground_process(pid, foreground_pgid);
+                let probe = match &ssh_override {
+                    Some(remote) => remote.probe_result(),
+                    None => probe_foreground_process(pid, foreground_pgid),
+                };
                 let process_group_id = probe.process_group_id;
                 let tracked_process_group_id =
                     process_group_for_change_tracking(foreground_pgid, process_group_id);
@@ -2986,11 +2997,16 @@ impl PaneRuntime {
                     );
                     #[cfg(not(windows))]
                     let foreground_observation_due = true;
-                    let foreground_pgid = match (pid, foreground_observation_due) {
+                    let local_foreground_pgid = match (pid, foreground_observation_due) {
                         (0, _) => None,
                         (_, true) => detect::foreground_process_group_id(pid),
                         _ => last_foreground_pgid,
                     };
+                    // Normal and handoff detection must use the same source of identity.
+                    let ssh_override = ssh_probe::override_for(pane_id, local_foreground_pgid);
+                    let foreground_pgid = ssh_override
+                        .as_ref()
+                        .map_or(local_foreground_pgid, |remote| remote.foreground_pgid());
                     #[cfg(windows)]
                     if pid > 0 && foreground_observation_due {
                         let retry =
@@ -2999,17 +3015,18 @@ impl PaneRuntime {
                     }
                     let process_group_changed =
                         foreground_group_changed(foreground_pgid, last_foreground_pgid);
-                    let should_check_process = pid > 0 && {
-                        let process_probe_input = ProcessProbeInput {
-                            foreground_pgid,
-                            ..process_probe_input
-                        };
-                        should_check_foreground_process(
-                            lifecycle_authority_active,
-                            agent_job.in_background(),
-                            process_probe_input,
-                        )
-                    };
+                    let should_check_process = pid > 0
+                        && (ssh_override.is_some() || {
+                            let process_probe_input = ProcessProbeInput {
+                                foreground_pgid,
+                                ..process_probe_input
+                            };
+                            should_check_foreground_process(
+                                lifecycle_authority_active,
+                                agent_job.in_background(),
+                                process_probe_input,
+                            )
+                        });
 
                     let mut agent_changed = false;
                     if should_check_process {
@@ -3017,7 +3034,10 @@ impl PaneRuntime {
                         let had_process_probe = has_process_probe;
                         has_process_probe = true;
                         if pid > 0 {
-                            let probe = probe_foreground_process(pid, foreground_pgid);
+                            let probe = match &ssh_override {
+                                Some(remote) => remote.probe_result(),
+                                None => probe_foreground_process(pid, foreground_pgid),
+                            };
                             let process_name = probe.process_name;
                             let process_group_id = probe.process_group_id;
                             let tracked_process_group_id = process_group_for_change_tracking(

@@ -819,6 +819,7 @@ fn worktree_request_and_response_round_trip() {
                 agent_status: AgentStatus::Unknown,
             },
             root_pane: PaneInfo {
+                ssh: None,
                 pane_id: "w_1-1".into(),
                 terminal_id: "term_1".into(),
                 workspace_id: "w_1".into(),
@@ -1248,6 +1249,7 @@ fn create_response_round_trips_with_root_pane() {
                 agent_status: AgentStatus::Unknown,
             },
             root_pane: PaneInfo {
+                ssh: None,
                 pane_id: "w_1-3".into(),
                 terminal_id: "term_example".into(),
                 workspace_id: "w_1".into(),

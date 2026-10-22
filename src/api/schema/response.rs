@@ -277,6 +277,9 @@ pub enum ResponseResult {
         active: bool,
         projection_revision: u64,
     },
+    SshPanes {
+        ssh_panes: crate::ssh_panes::api::SshPanesResult,
+    },
     Ok {},
 }
 

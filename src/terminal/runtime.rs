@@ -17,6 +17,10 @@ use crate::layout::PaneId;
 pub struct TerminalRuntime(crate::pane::PaneRuntime);
 
 impl TerminalRuntime {
+    pub(crate) fn ssh_probe_key(&self) -> crate::layout::PaneId {
+        self.0.ssh_probe_key()
+    }
+
     pub fn shutdown(self) {
         self.0.shutdown();
     }

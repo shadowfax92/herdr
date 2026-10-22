@@ -104,6 +104,7 @@ impl AppPolicy {
 
 pub struct App {
     pub state: AppState,
+    pub(crate) ssh_panes: crate::ssh_panes::Registry,
     pub(crate) pixel_mouse_available: bool,
     pub(crate) terminal_runtimes: crate::terminal::TerminalRuntimeRegistry,
     pub event_tx: mpsc::Sender<AppEvent>,
@@ -615,6 +616,7 @@ impl App {
         let endpoint_commands = custom_commands::EndpointCommandRegistry::new(&state.keybinds);
 
         let mut app = Self {
+            ssh_panes: crate::ssh_panes::Registry::new(&config.ssh_panes),
             plugin_installation_leases,
             plugin_installation_cleanup_allowed,
             config_diagnostic_deadline: None,
@@ -857,6 +859,10 @@ impl App {
         let mut diagnostics = load_diagnostics.to_vec();
         let invalid_section =
             |section: &str| invalid_sections.iter().any(|invalid| invalid == section);
+
+        if !invalid_section("ssh_panes") {
+            self.apply_ssh_panes_config(&config.ssh_panes);
+        }
 
         if !invalid_section("keys") {
             match config.live_keybinds_with_diagnostics() {

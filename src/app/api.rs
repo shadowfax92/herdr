@@ -9,6 +9,8 @@ mod panes;
 pub(crate) mod plugins;
 pub(super) mod responses;
 mod session;
+mod ssh_panes;
+mod ssh_panes_split;
 mod tabs;
 mod workspaces;
 mod worktrees;
@@ -1189,6 +1191,7 @@ impl App {
             Method::PaneReportAgent(params) => {
                 return self.handle_pane_report_agent(request.id, params);
             }
+            Method::SshPanes(params) => return self.handle_ssh_panes(request.id, params),
             Method::PaneReportAgentSession(params) => {
                 return self.handle_pane_report_agent_session(request.id, params);
             }
