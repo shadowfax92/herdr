@@ -1,0 +1,229 @@
+---
+title: SSH panes
+description: Open remote shells in local Herdr panes, detect remote agents, and carry splits, tabs, and scratch popups onto the same host.
+---
+
+Run `herdr ssh <host>` in any local Herdr pane to open a remote shell while keeping your agents in the local sidebar. Splits follow that pane's host and remote working directory; new tabs do too when no explicit working directory is given. With the SSH-aware scratch plugin, editor and shell popups open on the remote path, and remote Neovim and sidekick can control the source pane through the local Herdr API. One flag, `[ssh_panes] enabled = true`, enables the feature.
+
+## Setup
+
+Use a Linux or macOS local client and a Unix remote with working SSH access. The remote needs a compatible payload binary, `bash`, and `rsync`; scratch popups also need remote `tmux`, and editor popups need remote `nvim`. Agent executables and their authentication must already be available remotely.
+
+**Only use hosts you own and trust.** The forwarded socket gives the remote account full control of your local Herdr server, including its panes and agents. `allowed_hosts` restricts connection targets; it does not restrict what an allowed remote can do through that socket.
+
+First verify ordinary SSH access:
+
+```bash
+ssh studio
+```
+
+Add the following to your local `~/.config/herdr/config.toml`:
+
+```toml
+[ssh_panes]
+enabled = true
+allowed_hosts = ["studio"]
+```
+
+Reload the local server, sync the payload, then connect from a local Herdr pane:
+
+```bash
+herdr server reload-config
+herdr ssh sync studio
+herdr ssh studio --cwd '~/code'
+```
+
+Keep that connection open and run `herdr ssh doctor studio` in another local pane to check the complete setup. Debug builds use `~/.config/herdr-dev/config.toml`; when testing, use the debug binary and an isolated named session.
+
+### Scratch and Neovim mirror
+
+This example syncs a built scratch executable, its Neovim companion, the scratch plugin configuration, sidekick, and a separate Neovim config mirror. Adjust the local source paths to your checkouts. Install or link the SSH-aware scratch plugin locally, and use a Neovim config that honors `HERDR_SCRATCH_NVIM_DIR` and `HERDR_SIDEKICK_DIR` for the two mirrored plugins.
+
+```toml
+[ssh_panes]
+enabled = true
+inherit_new_tab = true
+auto_sync = true
+allowed_hosts = ["studio"]
+remote_root = "~/.local/share/herdr-ssh-panes"
+ssh_options = []
+
+[ssh_panes.sync]
+nvim_appname = "herdr-sp-nvim"
+integrations = []
+paths = [
+  { src = "~/code/side-projects/herdr-custom-plugins/my/herdr-scratch/target/release/herdr-scratch", dest = "bin/herdr-scratch" },
+  { src = "~/code/side-projects/herdr-custom-plugins/my/herdr-scratch/nvim", dest = "nvim-plugins/herdr-scratch.nvim", exclude = [".git", ".wt", ".llm", ".claude"] },
+  { src = "~/.config/herdr/plugins/config/shadowfax.scratch", dest = "plugin-config/shadowfax.scratch", exclude = [".git", ".wt", ".llm", ".claude"] },
+  { src = "~/code/hacks/shadowfax-sidekick.nvim", dest = "nvim-plugins/sidekick.nvim", exclude = [".git", ".wt", ".llm", ".claude"] },
+  { src = "~/.config/nvim", dest = "~/.config/herdr-sp-nvim", exclude = [".git", ".wt", ".llm", ".claude"] },
+]
+```
+
+`nvim_appname` exports `NVIM_APPNAME=herdr-sp-nvim` remotely. The mirror uses its own Neovim config, data, state, and cache directories, leaving the remote's normal Neovim configuration separate. The companion directories export `HERDR_SCRATCH_NVIM_DIR` and `HERDR_SIDEKICK_DIR` only when present on the remote. The first Neovim launch may need time to install plugins and tools.
+
+Sync directory mappings copy their contents and delete remote files absent from the source, except excluded entries. Use dedicated mirror destinations. Destinations must not overlap each other or the automatically synced `bin/herdr` payload.
+
+## Configuration reference
+
+All settings are live-loaded by `herdr server reload-config`. An invalid SSH panes section keeps the last valid configuration; at startup, the fallback is disabled. Unknown keys are reported in diagnostics and ignored.
+
+### `[ssh_panes]`
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Enable connections, remote reports, agent detection, and inheritance. |
+| `inherit_new_tab` | `true` | New tabs inherit the workspace's focused SSH pane when the tab request has no explicit `cwd`. |
+| `auto_sync` | `true` | On a stale or missing remote payload, sync and retry the connection once. |
+| `allowed_hosts` | `[]` | Exact host strings permitted for SSH panes and their commands. An empty list permits any otherwise valid host. |
+| `remote_root` | `"~/.local/share/herdr-ssh-panes"` | Remote payload directory for the binary, manifest, and root-relative sync destinations. Its basename also selects the remote state directory. |
+| `ssh_options` | `[]` | SSH argument tokens applied to interactive connections and side commands, for example `["-o", "ConnectTimeout=10"]`. Prefer these or SSH config for options that splits must inherit. |
+
+### `[ssh_panes.sync]`
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `nvim_appname` | `""` | Remote `NVIM_APPNAME`. Empty means no override; set it and mirror the config to the matching `~/.config/<appname>` directory. |
+| `integrations` | `[]` | Agent integration names to install remotely after a changed or forced sync. Empty installs no hooks; remote agent detection does not require hooks. Opting in runs the payload's `herdr integration install <name>` remotely. |
+| `paths` | `[]` | Additional file or directory mappings. The current Herdr executable is always included as `bin/herdr`. |
+
+Each entry in `paths` has these keys:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `src` | Required | Local file or directory. `~/` expands locally; relative paths use the invoking command's working directory. |
+| `dest` | Required | Remote destination relative to `remote_root`, or home-relative with `~/`. Absolute paths and `..` are rejected. |
+| `exclude` | `[]` | Rsync exclusion patterns for this mapping, such as `[".git", ".wt", ".llm", ".claude"]`. |
+
+## Commands
+
+### Connect and inherit
+
+```text
+herdr ssh <host> [--cwd <remote dir>] [--no-sync] [-- <extra ssh args>]
+```
+
+The host can be an SSH config alias such as `studio`. `--cwd` selects a remote directory; quote a leading `~` so the local shell does not expand it. `--no-sync` prevents the automatic payload update for that connection.
+
+Splits of a linked pane open on the same host, using its reported remote working directory. An explicit split `--cwd` is also a remote path. New tabs inherit when `inherit_new_tab` is true and no explicit `cwd` was supplied; new workspaces stay local. For a local split, opt out per request:
+
+```bash
+herdr pane split w1:p1 --direction right --env HERDR_SSH_PANES_INHERIT=0
+```
+
+Use your actual source pane ID. The control variable is removed before the new shell starts. Split and tab creation responses include the inherited host and remote cwd hint immediately; watcher reports refresh that metadata after the connection starts.
+
+### Sync
+
+```text
+herdr ssh sync <host> [--force] [--dry-run] [--json]
+```
+
+Sync compares a content digest of the executable and configured paths with the remote manifest. An unchanged payload prints `unchanged`; touching a file without changing its content does not require a transfer. Changed mappings use checksum-based rsync, and the manifest is published last. `--force` bypasses the manifest shortcut and runs rsync for every mapping. `--dry-run` checks whether sync is needed without transferring payload files; it does not list individual file changes. `--json` includes `changed`, `dry_run`, `digest`, and itemized `transferred` entries.
+
+### Inspect links and diagnose
+
+```bash
+herdr ssh list
+herdr ssh list --json
+herdr ssh doctor studio
+herdr ssh doctor studio --json
+```
+
+`list` shows the pane ID, host, link state, and remote cwd for the selected local server. JSON includes link metadata. `doctor` checks the payload digest, payload on the remote shell's `PATH`, private socket directory permissions, stable socket symlink, and stream-local API forwarding. JSON returns `ok` and `diagnostics`; a failed check exits with status 1. Run it while a link is connected: a fresh setup has no stable symlink yet.
+
+### Run a remote command
+
+```text
+herdr ssh run <host> [--cwd <dir>] [--env K=V]... [--no-tty] -- <argv...>
+```
+
+`run` uses the synced payload and remote environment without opening an inherited pane. Sync first; keep a pane connected if the command needs the stable route to the local API. Arguments after `--` are passed as an argument vector. Request a shell explicitly for shell expressions:
+
+```bash
+herdr ssh run studio --cwd '~/code' --no-tty -- git status --short
+herdr ssh run studio --no-tty -- sh -c '"$HERDR_BIN_PATH" pane list'
+```
+
+Repeat `--env` to pass environment values. In those values, `@root` expands to the remote payload root and `@state` to the remote state root's `plugins` directory. Tools use this for scratch config and state paths.
+
+## How it works
+
+```text
+local pane: connector -> ssh -R -> remote-attach -> remote shell + watcher
+                          |
+                          +-- /tmp/herdr-sp-<link>.sock -> local API socket
+                                      ^
+                    stable socket symlink (per local server)
+                                      ^
+                    watcher reports / remote scratch tools
+
+watcher reports -> local registry -> remote process probe -> screen detection
+```
+
+The connector registers the link and maintains its attachment. The remote watcher reports the shell, foreground process, cwd, and agent identity through the forwarded API socket. Local detection uses that remote process report with the pane's terminal output; screen manifests are unchanged. API pane and agent records expose remote `cwd` and `foreground_cwd` with optional `ssh` metadata. Local runtime paths remain local for persistence and workspace operations.
+
+Each connection has a distinct forwarded socket. A stable symlink chooses a live connection for that local server, so remote scratch and sidekick can keep their route across a parent reconnect. The server key derives from the local hostname and API socket path. Sync and run use a separate private SSH ControlMaster with a 10-minute idle persistence; interactive pane connections do not reuse it.
+
+### Remote files
+
+With the default `remote_root`, the layout is:
+
+```text
+~/.local/share/herdr-ssh-panes/
+  bin/herdr                         # synced payload executable
+  bin/herdr-scratch                 # configured scratch executable
+  manifest.json                     # completed payload digest
+  nvim-plugins/herdr-scratch.nvim/  # configured companion
+  nvim-plugins/sidekick.nvim/       # configured sidekick mirror
+  plugin-config/shadowfax.scratch/ # configured scratch settings
+~/.local/state/herdr-ssh-panes/
+  s/<server-key>/herdr.sock         # stable symlink; directory mode 0700
+  s/<server-key>/links/<link>.json  # watcher records
+  plugins/shadowfax.scratch/        # persistent contexts and worker state
+~/.config/herdr-sp-nvim/            # configured Neovim mirror
+/tmp/herdr-sp-<link>.sock           # one API forward per connection
+/tmp/hsp-<uid>-<state-hash>/         # private remote scratch tmux sockets
+```
+
+State lives at `~/.local/state/<basename(remote_root)>`; a payload root ending in `herdr-ssh-panes-dev` therefore has separate `herdr-ssh-panes-dev` state. Current SSH-aware scratch builds put only their tmux sockets under `/tmp/hsp-*` to avoid Unix socket path limits. Context and cleanup state remain under the state root. Watchers clean up their own link records and forwards, and reconnect sweeps stale records.
+
+## Disable
+
+```toml
+[ssh_panes]
+enabled = false
+```
+
+Apply it with `herdr server reload-config`. Herdr stops accepting links and reports, clears SSH metadata and remote agent detection, and makes subsequent splits and tabs local. Existing remote shells keep running as plain SSH sessions. Every `herdr ssh` command other than help and internal remote helpers refuses new work with a disabled hint and exit status 2. Disabling does not revoke an existing forwarded API socket; close those SSH sessions to remove their access. Re-enabling and reloading lets still-running connectors register again on their next heartbeat.
+
+## Limitations
+
+- Remote pane agents die with their SSH session; there is no persistent remote agent runtime yet. After a Herdr restart, inherited SSH panes reconnect to shells without resuming agents. A pane where you typed `herdr ssh` restores as a local shell.
+- Sync ships executable bytes as-is. There is no cross-compilation or platform selection: a macOS payload cannot run on Linux, even with the same CPU architecture. Linux remotes need matching Linux builds for Herdr and any synced native tools; automatic sync must come from a compatible build.
+- `herdr agent start` into an SSH pane is refused. Start the agent in its remote shell; `agent prompt` and `agent send-keys` can then address it.
+- Extra SSH arguments after the connect command's `--` are not inherited by splits or new tabs. Put shared options in `ssh_options` or your SSH config.
+- A bare `herdr` typed inside a remote scratch tmux shell may resolve to that host's own installation. Integrated tools use `HERDR_BIN_PATH`; use `"$HERDR_BIN_PATH"` explicitly when you need the forwarded local server.
+- Claude on a macOS remote may need its login keychain unlocked before its stored login works over SSH.
+
+## Troubleshooting
+
+### Doctor reports a missing socket or symlink
+
+Connect with `herdr ssh studio`, leave it running, and retry `doctor` from another local pane. Before the first connection, `socket directory: missing or unsafe` and `stable symlink: unavailable` are expected failures; the trailing `remote checks failed:` diagnostic may have no detail. A healthy live connection reports a current digest, the payload executable path, directory mode `0700`, a live symlink, and live API forwarding. If forwarding fails, check the host's SSH forwarding policy and SSH error output. For an unexpected payload `PATH`, inspect the remote login shell configuration.
+
+### Payload stale
+
+A changed local executable, sync configuration, or file content can make the payload stale. With `auto_sync = true`, the connector syncs and retries once after a stale or missing payload. With automatic sync disabled, or after a failed retry, run `herdr ssh sync studio` explicitly. Use `--force` to repair missing or changed remote files when the manifest still appears current. Check every configured `src` exists and that synced native binaries match the remote OS and architecture.
+
+### Lost connection or reconnect prompt
+
+`ssh-panes: lost connection to studio (ssh 255)` means the SSH process failed. A pane created by inheritance offers `[r] reconnect  [enter] close`; type `r` and Enter to reconnect. A manually typed connection returns to the local shell, where you can run `herdr ssh studio` again. Remote agents disappear from local detection after disconnect. Scratch tmux sessions can survive a parent reconnect, but remote pane agents do not.
+
+### Scratch popup fails
+
+Check that the scratch executable, companion, and configuration were synced, and that `tmux` and `nvim` are installed remotely. Current scratch builds keep a failed popup open until acknowledged so its error can be read. An older build may only flash a popup and record a successful toggle action even though its child failed.
+
+`File name too long` from tmux indicates an older scratch build using a socket under the long state path. Update the local scratch payload to a build with short remote sockets, then sync again. Current sockets live under `/tmp/hsp-<uid>-<state-hash>/`. An unsafe-directory error means that path is a symlink, has the wrong owner, or is not mode `0700`; inspect it before changing anything, since it may belong to an active session.
+
+For a scratch tool reaching the wrong server, inspect `HERDR_BIN_PATH`, `HERDR_SOCKET_PATH`, and `HERDR_SSH_PANES` inside the popup. For Claude's `Not logged in` error on macOS, unlock the remote login keychain interactively with `security unlock-keychain`, or configure the agent's supported API-key login, then retry.

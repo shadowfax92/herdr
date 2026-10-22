@@ -1,0 +1,229 @@
+---
+title: SSH ペイン
+description: ローカルの Herdr ペインでリモートシェルを開き、エージェント検出、分割、タブ、スクラッチを同じホストで利用します。
+---
+
+ローカルの Herdr ペインで `herdr ssh <host>` を実行すると、リモートシェルを開き、リモートのエージェントをローカルのサイドバーに表示できます。分割は元のペインのホストとリモート作業ディレクトリを引き継ぎ、作業ディレクトリを明示しない新規タブも同様です。SSH 対応スクラッチプラグインでは、エディターとシェルのポップアップがリモートのパスで開き、リモートの Neovim と sidekick からローカル Herdr API 経由で元のペインを操作できます。`[ssh_panes] enabled = true` の 1 つのフラグで有効になります。
+
+## セットアップ
+
+ローカルは Linux または macOS、リモートは SSH 接続できる Unix 環境を使います。リモートには互換性のあるペイロードバイナリ、`bash`、`rsync` が必要です。スクラッチにはリモートの `tmux`、エディターには `nvim` も必要です。エージェント本体と認証はリモートで準備してください。
+
+**自分が所有し、信頼できるホストだけを使ってください。** 転送ソケットを通じて、リモートアカウントはペインやエージェントを含むローカル Herdr サーバー全体を操作できます。`allowed_hosts` は接続先を制限しますが、許可したリモートからの API 操作は制限しません。
+
+まず通常の SSH 接続を確認します。
+
+```bash
+ssh studio
+```
+
+ローカルの `~/.config/herdr/config.toml` に追加します。
+
+```toml
+[ssh_panes]
+enabled = true
+allowed_hosts = ["studio"]
+```
+
+ローカルサーバーを再読み込みし、同期後にローカルの Herdr ペインから接続します。
+
+```bash
+herdr server reload-config
+herdr ssh sync studio
+herdr ssh studio --cwd '~/code'
+```
+
+接続を維持し、別のローカルペインで `herdr ssh doctor studio` を実行して確認します。デバッグビルドの設定は `~/.config/herdr-dev/config.toml` です。テストにはデバッグバイナリと専用の名前付きセッションを使ってください。
+
+### スクラッチと Neovim のミラー
+
+次の例は、ビルド済みスクラッチ実行ファイル、Neovim コンパニオン、プラグイン設定、sidekick、独立した Neovim 設定を同期します。`src` を自分のチェックアウトに合わせてください。ローカルに SSH 対応スクラッチプラグインをインストールまたはリンクし、ミラーした 2 つのプラグインのパスに `HERDR_SCRATCH_NVIM_DIR` と `HERDR_SIDEKICK_DIR` を使う Neovim 設定を用意します。
+
+```toml
+[ssh_panes]
+enabled = true
+inherit_new_tab = true
+auto_sync = true
+allowed_hosts = ["studio"]
+remote_root = "~/.local/share/herdr-ssh-panes"
+ssh_options = []
+
+[ssh_panes.sync]
+nvim_appname = "herdr-sp-nvim"
+integrations = []
+paths = [
+  { src = "~/code/side-projects/herdr-custom-plugins/my/herdr-scratch/target/release/herdr-scratch", dest = "bin/herdr-scratch" },
+  { src = "~/code/side-projects/herdr-custom-plugins/my/herdr-scratch/nvim", dest = "nvim-plugins/herdr-scratch.nvim", exclude = [".git", ".wt", ".llm", ".claude"] },
+  { src = "~/.config/herdr/plugins/config/shadowfax.scratch", dest = "plugin-config/shadowfax.scratch", exclude = [".git", ".wt", ".llm", ".claude"] },
+  { src = "~/code/hacks/shadowfax-sidekick.nvim", dest = "nvim-plugins/sidekick.nvim", exclude = [".git", ".wt", ".llm", ".claude"] },
+  { src = "~/.config/nvim", dest = "~/.config/herdr-sp-nvim", exclude = [".git", ".wt", ".llm", ".claude"] },
+]
+```
+
+`nvim_appname` はリモートに `NVIM_APPNAME=herdr-sp-nvim` を設定します。ミラーは専用の設定、データ、状態、キャッシュを使い、リモートの通常の Neovim 設定と分離されます。`HERDR_SCRATCH_NVIM_DIR` と `HERDR_SIDEKICK_DIR` は対応するディレクトリがリモートに存在する場合だけ設定されます。初回起動ではプラグインやツールのインストールに時間がかかることがあります。
+
+ディレクトリ同期は中身をコピーし、除外対象を除いて、コピー元にないリモートファイルを削除します。専用のミラー先を使ってください。同期先同士や、自動同期される `bin/herdr` とパスを重複させることはできません。
+
+## 設定リファレンス
+
+すべての設定は `herdr server reload-config` で反映できます。SSH ペインの設定が不正な場合は直前の有効な設定を維持し、起動時なら無効に戻ります。未知のキーは診断に表示され、無視されます。
+
+### `[ssh_panes]`
+
+| キー | デフォルト | 意味 |
+| --- | --- | --- |
+| `enabled` | `false` | 接続、リモートレポート、エージェント検出、継承を有効にします。 |
+| `inherit_new_tab` | `true` | `cwd` を明示しない新規タブで、ワークスペース内のフォーカス中 SSH ペインを引き継ぎます。 |
+| `auto_sync` | `true` | リモートペイロードが古い、または存在しない場合、同期して接続を 1 回再試行します。 |
+| `allowed_hosts` | `[]` | SSH ペインと関連コマンドで許可するホスト文字列の完全一致リスト。空なら、有効な形式の全ホストを許可します。 |
+| `remote_root` | `"~/.local/share/herdr-ssh-panes"` | バイナリ、マニフェスト、ルート相対の同期先を置くリモートディレクトリ。末尾の名前はリモート状態ディレクトリにも使われます。 |
+| `ssh_options` | `[]` | 対話接続と補助コマンドに渡す SSH 引数。例: `["-o", "ConnectTimeout=10"]`。分割に引き継ぐオプションはここか SSH config に設定します。 |
+
+### `[ssh_panes.sync]`
+
+| キー | デフォルト | 意味 |
+| --- | --- | --- |
+| `nvim_appname` | `""` | リモートの `NVIM_APPNAME`。空なら上書きしません。指定時は対応する `~/.config/<appname>` に設定をミラーします。 |
+| `integrations` | `[]` | 変更あり、または強制同期の後にリモートへインストールするエージェント連携名。空ならフックを入れません。リモート検出にフックは不要です。指定するとリモートでペイロードの `herdr integration install <name>` を実行します。 |
+| `paths` | `[]` | 追加のファイルまたはディレクトリ対応。現在の Herdr 実行ファイルは必ず `bin/herdr` として含まれます。 |
+
+`paths` の各要素には次のキーがあります。
+
+| キー | デフォルト | 意味 |
+| --- | --- | --- |
+| `src` | 必須 | ローカルのファイルまたはディレクトリ。`~/` はローカルで展開し、相対パスはコマンド実行時の作業ディレクトリを基準にします。 |
+| `dest` | 必須 | `remote_root` 相対、または `~/` で始まるホーム相対のリモートパス。絶対パスと `..` は拒否されます。 |
+| `exclude` | `[]` | この対応に適用する rsync 除外パターン。例: `[".git", ".wt", ".llm", ".claude"]`。 |
+
+## コマンド
+
+### 接続と継承
+
+```text
+herdr ssh <host> [--cwd <remote dir>] [--no-sync] [-- <extra ssh args>]
+```
+
+ホストには `studio` などの SSH config エイリアスを使えます。`--cwd` はリモートディレクトリです。先頭の `~` がローカルで展開されないよう引用符で囲んでください。`--no-sync` はその接続の自動ペイロード更新を止めます。
+
+接続中ペインの分割は同じホストに開き、報告されたリモート作業ディレクトリを使います。分割時に指定する `--cwd` もリモートパスです。新規タブは `inherit_new_tab` が true で `cwd` 未指定なら継承します。新規ワークスペースはローカルのままです。ローカルに分割する場合はリクエストごとに継承を無効にします。
+
+```bash
+herdr pane split w1:p1 --direction right --env HERDR_SSH_PANES_INHERIT=0
+```
+
+実際の元ペイン ID に置き換えてください。この制御変数は新しいシェルの起動前に除去されます。分割とタブの作成応答には、継承したホストとリモート cwd のヒントが即座に含まれます。接続開始後はウォッチャーの報告で更新されます。
+
+### 同期
+
+```text
+herdr ssh sync <host> [--force] [--dry-run] [--json]
+```
+
+実行ファイルと設定されたパスの内容ダイジェストをリモートマニフェストと比較します。変更がなければ `unchanged` を表示します。内容を変えない `touch` では転送しません。変更した対応だけをチェックサム付き rsync で転送し、最後にマニフェストを公開します。`--force` はマニフェストによる省略をせず、全対応で rsync を実行します。`--dry-run` は転送せずに同期の要否を確認し、個々の変更ファイルは列挙しません。`--json` は `changed`、`dry_run`、`digest`、転送項目の `transferred` を返します。
+
+### リンクの確認と診断
+
+```bash
+herdr ssh list
+herdr ssh list --json
+herdr ssh doctor studio
+herdr ssh doctor studio --json
+```
+
+`list` は選択中のローカルサーバーについて、ペイン ID、ホスト、リンク状態、リモート cwd を表示します。JSON にはリンクのメタデータも含まれます。`doctor` はペイロードのダイジェスト、リモートシェルの `PATH`、専用ソケットディレクトリの権限、安定ソケットのシンボリックリンク、stream-local API 転送を確認します。JSON は `ok` と `diagnostics` を返し、失敗時は終了コード 1 です。新規環境にはまだ安定シンボリックリンクがないため、接続を維持した状態で実行してください。
+
+### リモートコマンドの実行
+
+```text
+herdr ssh run <host> [--cwd <dir>] [--env K=V]... [--no-tty] -- <argv...>
+```
+
+`run` は継承ペインを作らず、同期済みペイロードとリモート環境を使います。事前に同期し、安定ルート経由でローカル API を使う場合はペインの接続も維持します。`--` 以降は引数配列として渡します。シェル式を使う場合はシェルを明示します。
+
+```bash
+herdr ssh run studio --cwd '~/code' --no-tty -- git status --short
+herdr ssh run studio --no-tty -- sh -c '"$HERDR_BIN_PATH" pane list'
+```
+
+環境変数は `--env` を繰り返して渡します。その値の `@root` はリモートペイロードルート、`@state` はリモート状態ルートの `plugins` ディレクトリに展開されます。スクラッチの設定と状態パスに使われます。
+
+## 仕組み
+
+```text
+local pane: connector -> ssh -R -> remote-attach -> remote shell + watcher
+                          |
+                          +-- /tmp/herdr-sp-<link>.sock -> local API socket
+                                      ^
+                    stable socket symlink (per local server)
+                                      ^
+                    watcher reports / remote scratch tools
+
+watcher reports -> local registry -> remote process probe -> screen detection
+```
+
+コネクターがリンクを登録・維持します。リモートウォッチャーは転送 API ソケットを通じてシェル、前景プロセス、cwd、エージェント識別情報を報告します。ローカル検出はそのプロセス情報とペインの端末出力を使い、画面マニフェストは変更しません。API のペインとエージェント情報では `cwd` と `foreground_cwd` をリモートパスとして公開し、任意の `ssh` メタデータを付けます。永続化やワークスペース操作の実行時パスはローカルのままです。
+
+接続ごとに専用の転送ソケットがあります。安定シンボリックリンクがそのローカルサーバーの有効な接続を選び、元ペインの再接続後もリモートのスクラッチと sidekick がルートを維持できます。サーバーキーはローカルホスト名と API ソケットパスから生成します。同期と run はアイドル時に 10 分間保持する専用 SSH ControlMaster を使い、対話ペインはそれを再利用しません。
+
+### リモートのファイル
+
+デフォルトの `remote_root` では次の配置になります。
+
+```text
+~/.local/share/herdr-ssh-panes/
+  bin/herdr                         # synced payload executable
+  bin/herdr-scratch                 # configured scratch executable
+  manifest.json                     # completed payload digest
+  nvim-plugins/herdr-scratch.nvim/  # configured companion
+  nvim-plugins/sidekick.nvim/       # configured sidekick mirror
+  plugin-config/shadowfax.scratch/ # configured scratch settings
+~/.local/state/herdr-ssh-panes/
+  s/<server-key>/herdr.sock         # stable symlink; directory mode 0700
+  s/<server-key>/links/<link>.json  # watcher records
+  plugins/shadowfax.scratch/        # persistent contexts and worker state
+~/.config/herdr-sp-nvim/            # configured Neovim mirror
+/tmp/herdr-sp-<link>.sock           # one API forward per connection
+/tmp/hsp-<uid>-<state-hash>/         # private remote scratch tmux sockets
+```
+
+状態は `~/.local/state/<basename(remote_root)>` に置かれます。ペイロードルート末尾が `herdr-ssh-panes-dev` なら、状態も別の `herdr-ssh-panes-dev` になります。現在の SSH 対応スクラッチは Unix ソケットのパス長制限を避けるため、tmux ソケットだけを `/tmp/hsp-*` に置きます。コンテキストとクリーンアップ状態は状態ルートに残ります。ウォッチャーは自身のリンク記録と転送を片付け、再接続時は古い記録を回収します。
+
+## 無効にする
+
+```toml
+[ssh_panes]
+enabled = false
+```
+
+`herdr server reload-config` で反映します。新規リンクとレポートを受け付けなくなり、SSH メタデータとリモートエージェント検出を消去し、以後の分割とタブをローカルにします。既存のリモートシェルは通常の SSH として動き続けます。help と内部リモートヘルパー以外の `herdr ssh` コマンドは無効化の案内と終了コード 2 を返します。既存の転送 API ソケットへのアクセスは取り消されないため、アクセスをなくすには SSH セッションを閉じてください。再度有効化して再読み込みすると、動作中のコネクターは次のハートビートで再登録できます。
+
+## 制限事項
+
+- リモートペインのエージェントは SSH セッション終了とともに終了します。永続的なリモートエージェント実行環境は未対応です。Herdr 再起動後、継承ペインはシェルに再接続しますが、エージェントは再開しません。`herdr ssh` を手入力したペインはローカルシェルとして復元します。
+- 同期は実行ファイルをそのまま送ります。クロスコンパイルやプラットフォーム選択はなく、CPU アーキテクチャが同じでも macOS バイナリは Linux では動きません。Linux リモートには Herdr と同期するネイティブツールの適切な Linux ビルドが必要で、自動同期にも互換ビルドを使います。
+- SSH ペインへの `herdr agent start` は拒否されます。リモートシェルでエージェントを起動した後は、`agent prompt` と `agent send-keys` で操作できます。
+- 接続コマンドの `--` 以降に渡した追加 SSH 引数は、分割や新規タブには継承しません。共通オプションは `ssh_options` または SSH config に置きます。
+- リモートのスクラッチ tmux シェルで単に `herdr` と入力すると、リモート自身のインストールが使われる場合があります。連携ツールは `HERDR_BIN_PATH` を使います。転送先のローカルサーバーが必要なら `"$HERDR_BIN_PATH"` を明示してください。
+- macOS リモートの Claude は、保存済みログインを SSH 経由で使う前にログインキーチェーンのロック解除が必要な場合があります。
+
+## トラブルシューティング
+
+### Doctor がソケットやシンボリックリンクの不足を報告する
+
+`herdr ssh studio` を接続したまま、別のローカルペインで `doctor` を再実行します。初回接続前の `socket directory: missing or unsafe` と `stable symlink: unavailable` は想定される失敗で、末尾の `remote checks failed:` に詳細がないこともあります。正常時は最新ダイジェスト、ペイロードの実行パス、`0700` のディレクトリ、利用可能なリンクと API 転送を報告します。転送に失敗する場合はホストの SSH 転送ポリシーと SSH エラー出力を確認します。予期しないペイロードの `PATH` はリモートのログインシェル設定を調べてください。
+
+### ペイロードが古い
+
+ローカル実行ファイル、同期設定、ファイル内容の変更でペイロードが古くなることがあります。`auto_sync = true` では古い、または不足したペイロードを同期し、接続を 1 回再試行します。自動同期を無効にしている場合や再試行に失敗した場合は `herdr ssh sync studio` を実行します。マニフェストが最新に見えてもリモートファイルが欠損・変更していれば `--force` で修復します。全 `src` の存在と、ネイティブバイナリの OS・アーキテクチャを確認してください。
+
+### 接続切断と再接続プロンプト
+
+`ssh-panes: lost connection to studio (ssh 255)` は SSH プロセスの失敗です。継承ペインでは `[r] reconnect  [enter] close` が表示され、`r` と Enter で再接続します。手入力した接続はローカルシェルに戻るので `herdr ssh studio` を再実行します。切断後はリモートエージェントがローカル検出から消えます。スクラッチの tmux セッションは元ペインの再接続をまたいで残る場合がありますが、ペインのエージェントは残りません。
+
+### スクラッチポップアップが失敗する
+
+スクラッチ実行ファイル、コンパニオン、設定の同期と、リモートの `tmux`、`nvim` を確認します。現在のビルドは失敗したポップアップを確認操作まで開いたままにし、エラーを読めるようにします。古いビルドではポップアップが一瞬だけ表示され、子プロセスが失敗しても切り替え操作だけが成功として記録される場合があります。
+
+tmux の `File name too long` は、長い状態パスにソケットを置く古いビルドを示します。短いリモートソケット対応のスクラッチをローカルで用意して再同期してください。現在のソケットは `/tmp/hsp-<uid>-<state-hash>/` にあります。安全でないディレクトリというエラーは、シンボリックリンク、所有者の違い、または `0700` 以外の権限を示します。使用中のセッションに属する場合があるため、変更前に調べてください。
+
+スクラッチが別サーバーに接続する場合は、ポップアップ内の `HERDR_BIN_PATH`、`HERDR_SOCKET_PATH`、`HERDR_SSH_PANES` を確認します。macOS の Claude が `Not logged in` を返す場合は、リモートで対話的に `security unlock-keychain` を実行するか、対応する API キーログインを設定して再試行してください。
