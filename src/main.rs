@@ -617,6 +617,7 @@ fn main() -> io::Result<()> {
         println!("       herdr update [--handoff]");
         println!("       herdr channel set <stable|preview>");
         println!("       herdr machine <subcommand> ...");
+        println!("       herdr ssh <host|sync|run|list|doctor> ...");
         println!("       herdr server stop");
         println!("       herdr server reload-config");
         println!("       herdr api <subcommand> ...");

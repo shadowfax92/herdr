@@ -207,6 +207,20 @@ fn run_inner(args: &[String]) -> io::Result<i32> {
     } else {
         crate::config::Config::load().config.ssh_panes
     };
+    if !hidden && !cfg.enabled && args.first().is_some_and(|s| s == "list") {
+        let Command::List { json } = parse(args)? else {
+            unreachable!()
+        };
+        println!(
+            "{}",
+            if json {
+                r#"{"enabled":false,"links":[]}"#
+            } else {
+                "SSH panes are disabled"
+            }
+        );
+        return Ok(0);
+    }
     if !hidden && !cfg.enabled {
         eprintln!("{}", super::disabled_message());
         return Ok(2);

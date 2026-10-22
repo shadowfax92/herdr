@@ -99,9 +99,9 @@ fn unsupported() -> io::Result<i32> {
     ))
 }
 
-pub(crate) fn server_key(hostname: &str, socket: &Path) -> String {
+pub(crate) fn server_key(server_id: &str, socket: &Path) -> String {
     let mut digest = Sha256::new();
-    digest.update(hostname.as_bytes());
+    digest.update(server_id.as_bytes());
     digest.update(b"\0");
     digest.update(socket.as_os_str().as_encoded_bytes());
     format!("{:x}", digest.finalize())[..16].to_string()
@@ -145,7 +145,7 @@ mod tests {
 mod unix {
     use super::*;
     use crate::ssh_panes::{
-        api::{ReportParams, SshPanesRequest},
+        api::{RemoteForeground, ReportParams, SshPanesRequest},
         connector,
     };
     use std::{
@@ -233,7 +233,8 @@ mod unix {
     }
 
     // A short filesystem lock serializes symlink selection with simultaneous
-    // attach/exit in another pane. No lock spans a shell lifetime or API request.
+    // attach/exit in another pane. Selection may make bounded API probes, but no
+    // lock spans a shell lifetime.
     struct LinkLock(fs::File);
     impl LinkLock {
         fn acquire(dir: &Path) -> io::Result<Self> {
@@ -290,41 +291,46 @@ mod unix {
         Ok(records)
     }
     fn repoint(dir: &Path) -> io::Result<()> {
-        for (path, record) in records(dir)? {
-            if alive(record.shell_pid) && UnixStream::connect(&record.socket).is_ok() {
+        let mut links = records(dir)?;
+        links.sort_by(|a, b| {
+            b.1.started_at
+                .cmp(&a.1.started_at)
+                .then_with(|| b.0.cmp(&a.0))
+        });
+        for (_, record) in links {
+            // A sleeping/disconnected sshd may still accept connect(). Require
+            // an answer from the local API before routing persistent clients.
+            if alive(record.shell_pid)
+                && connector::rpc(
+                    Path::new(&record.socket),
+                    SshPanesRequest::List(Default::default()),
+                )
+                .is_ok()
+            {
                 return point_at(dir, Path::new(&record.socket));
-            }
-            if !alive(record.shell_pid) {
-                remove_file(&path)?;
             }
         }
         remove_file(&dir.join("herdr.sock"))
     }
-    fn sweep_sockets() -> io::Result<()> {
-        for entry in fs::read_dir("/tmp")? {
-            let entry = entry?;
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if !name.starts_with("herdr-sp-") || !name.ends_with(".sock") {
-                continue;
-            }
-            let Ok(meta) = fs::symlink_metadata(entry.path()) else {
-                continue;
-            };
-            if meta.uid() != unsafe { libc::geteuid() } || !meta.file_type().is_socket() {
-                continue;
-            }
-            if UnixStream::connect(entry.path())
-                .is_err_and(|e| e.raw_os_error() == Some(libc::ECONNREFUSED))
-            {
-                let _ = remove_file(&entry.path());
-            }
-        }
-        Ok(())
-    }
+
     fn sweep_records(dir: &Path) -> io::Result<()> {
         for (path, record) in records(dir)? {
             if !alive(record.shell_pid) {
+                // A single ECONNREFUSED is also a full backlog/bind-listen race.
+                // Only our record's dead shell authorizes removing its socket;
+                // unrecorded sockets in /tmp belong to someone else or are new.
+                let socket = Path::new(&record.socket);
+                if socket.parent() == Some(Path::new("/tmp"))
+                    && socket
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with("herdr-sp-") && n.ends_with(".sock"))
+                    && fs::symlink_metadata(socket).is_ok_and(|m| {
+                        m.uid() == unsafe { libc::geteuid() } && m.file_type().is_socket()
+                    })
+                {
+                    remove_file(socket)?;
+                }
                 remove_file(&path)?;
             }
         }
@@ -438,10 +444,16 @@ mod unix {
         Ok(())
     }
 
+    fn emit_status(link: &str, event: &str) -> io::Result<()> {
+        use std::io::Write;
+        let mut output = std::io::stdout().lock();
+        write!(output, "\x1b]777;herdr-sp-{link};{event}\x07")?;
+        output.flush()
+    }
+
     pub fn remote_attach(hex: &str) -> io::Result<i32> {
         let spec = RemoteSpec::decode(hex)?;
         validate(&spec, true)?;
-        sweep_sockets()?;
         let dir = server_dir(&spec.server_key)?;
         let root = root()?;
         // The last-published manifest is the commit marker. A partial upload must
@@ -451,6 +463,7 @@ mod unix {
             .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
             .and_then(|v| v["digest"].as_str().map(str::to_string));
         if digest.as_deref() != Some(&spec.payload_digest) {
+            emit_status(&spec.link, "stale")?;
             return Ok(3);
         }
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -470,7 +483,7 @@ mod unix {
                 started_at: SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
-                    .as_secs(),
+                    .as_millis() as u64,
             };
             fs::write(
                 dir.join("links").join(format!("{}.json", spec.link)),
@@ -478,6 +491,26 @@ mod unix {
             )?;
             point_at(&dir, Path::new(&spec.socket))?;
         }
+        // Accept a shell-start observation before exec. Even an immediate
+        // typo+exit must be distinguishable from pre-exec payload exit 3/127;
+        // the detached watcher may not get scheduled before that shell exits.
+        let _ = connector::rpc(
+            Path::new(&spec.socket),
+            SshPanesRequest::Report(ReportParams {
+                link_id: spec.link.clone(),
+                seq: 1,
+                shell_pid: std::process::id(),
+                shell_name: std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into()),
+                foreground: RemoteForeground {
+                    process_group_id: None,
+                    foreground_is_pane_shell: true,
+                    agent: None,
+                    process_name: None,
+                },
+                cwd: spec.cwd.clone(),
+                foreground_cwd: None,
+            }),
+        );
         let mut watch = Command::new(root.join("bin/herdr"));
         watch
             .args([
@@ -521,6 +554,7 @@ mod unix {
             ]);
         }
         apply_env(&mut command, &spec, &root)?;
+        emit_status(&spec.link, "ready")?;
         let error = command.exec();
         cleanup(&dir, &spec.link, &spec.socket)?;
         Err(error)
@@ -558,7 +592,7 @@ mod unix {
             .unwrap_or_else(|| "sh".into());
         let mut previous = None;
         let mut sent = Instant::now() - Duration::from_secs(5);
-        let mut seq = 0;
+        let mut seq = 1;
         while alive(args.shell_pid) {
             let foreground = crate::pane::ssh_probe::remote_side_probe(args.shell_pid);
             let (cwd, foreground_cwd) = crate::pane::ssh_probe::remote_side_cwds(
@@ -580,11 +614,19 @@ mod unix {
                 let accepted =
                     connector::rpc(Path::new(&args.socket), SshPanesRequest::Report(report))
                         .is_ok_and(|r| r["accepted"] == true);
+                if accepted && fs::symlink_metadata(dir.join("herdr.sock")).is_err() {
+                    // A handoff/stall can make every repoint probe fail. Once
+                    // reports work again, repair routing for persistent clients.
+                    let _lock = LinkLock::acquire(&dir)?;
+                    repoint(&dir)?;
+                }
                 previous = Some(observation);
                 sent = Instant::now();
                 if !accepted {
-                    // Still check shell liveness at 500 ms while reports back off.
-                    for _ in 0..60 {
+                    previous = None;
+                    // Retry within four seconds (including handoff/UnknownLink),
+                    // and still observe shell death every 500 ms while backed off.
+                    for _ in 0..8 {
                         if !alive(args.shell_pid) {
                             break;
                         }
@@ -628,7 +670,101 @@ mod unix {
     #[cfg(test)]
     mod lifecycle_tests {
         use super::*;
+        use std::io::{BufRead, BufReader, Write};
         use std::os::unix::net::UnixListener;
+        fn api_peer(path: &Path) -> std::thread::JoinHandle<()> {
+            let listener = UnixListener::bind(path).unwrap();
+            std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .unwrap();
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(request["method"], "ssh_panes");
+                writeln!(stream, "{}", serde_json::json!({"id":request["id"],"result":{"type":"ssh_panes","ssh_panes":{"enabled":true,"links":[]}}})).unwrap();
+            })
+        }
+
+        #[test]
+        fn ssh_panes_repoint_prefers_newest_api_peer_and_preserves_refused_live_socket() {
+            let dir = std::env::temp_dir()
+                .join(format!("herdr-sp-test-{}", connector::new_link().unwrap()));
+            private_dir(&dir.join("links")).unwrap();
+            let old = dir.join("old.sock");
+            let new = dir.join("new.sock");
+            let refused = PathBuf::from(format!(
+                "/tmp/herdr-sp-{}.sock",
+                connector::new_link().unwrap()
+            ));
+            drop(UnixListener::bind(&refused).unwrap());
+            let old_listener = UnixListener::bind(&old).unwrap();
+            let peer = api_peer(&new);
+            for (id, socket, started_at) in [
+                ("old", &old, 10),
+                ("new", &new, 20),
+                ("refused", &refused, 30),
+            ] {
+                let record = LinkRecord {
+                    socket: socket.display().to_string(),
+                    shell_pid: std::process::id(),
+                    started_at,
+                };
+                fs::write(
+                    dir.join("links").join(format!("{id}.json")),
+                    serde_json::to_vec(&record).unwrap(),
+                )
+                .unwrap();
+            }
+            sweep_records(&dir).unwrap();
+            assert!(refused.exists(), "a live record must survive ECONNREFUSED");
+            repoint(&dir).unwrap();
+            peer.join().unwrap();
+            assert_eq!(fs::read_link(dir.join("herdr.sock")).unwrap(), new);
+            // Make only the refused record dead; dead-shell authority permits cleanup.
+            let record = LinkRecord {
+                socket: refused.display().to_string(),
+                shell_pid: 0,
+                started_at: 30,
+            };
+            fs::write(
+                dir.join("links/refused.json"),
+                serde_json::to_vec(&record).unwrap(),
+            )
+            .unwrap();
+            sweep_records(&dir).unwrap();
+            assert!(!refused.exists());
+            drop(old_listener);
+            fs::remove_dir_all(dir).unwrap();
+        }
+
+        #[test]
+        fn ssh_panes_bare_accept_without_api_reply_is_not_a_live_forward() {
+            let dir = std::env::temp_dir()
+                .join(format!("herdr-sp-test-{}", connector::new_link().unwrap()));
+            private_dir(&dir.join("links")).unwrap();
+            let socket = dir.join("zombie.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let peer = std::thread::spawn(move || {
+                let _ = listener.accept().unwrap();
+            });
+            let record = LinkRecord {
+                socket: socket.display().to_string(),
+                shell_pid: std::process::id(),
+                started_at: 1,
+            };
+            fs::write(
+                dir.join("links/zombie.json"),
+                serde_json::to_vec(&record).unwrap(),
+            )
+            .unwrap();
+            point_at(&dir, &socket).unwrap();
+            repoint(&dir).unwrap();
+            peer.join().unwrap();
+            assert!(fs::symlink_metadata(dir.join("herdr.sock")).is_err());
+            assert!(socket.exists());
+            fs::remove_dir_all(dir).unwrap();
+        }
 
         #[test]
         fn ssh_panes_exiting_link_repoints_only_its_server_socket() {
@@ -639,7 +775,7 @@ mod unix {
             let first = dir.join("a.sock");
             let second = dir.join("b.sock");
             let _a = UnixListener::bind(&first).unwrap();
-            let _b = UnixListener::bind(&second).unwrap();
+            let peer = api_peer(&second);
             for (id, socket) in [("a", &first), ("b", &second)] {
                 let record = LinkRecord {
                     socket: socket.display().to_string(),
@@ -655,7 +791,7 @@ mod unix {
             point_at(&dir, &first).unwrap();
             cleanup(&dir, "a", first.to_str().unwrap()).unwrap();
             assert_eq!(fs::read_link(dir.join("herdr.sock")).unwrap(), second);
-            assert!(UnixStream::connect(dir.join("herdr.sock")).is_ok());
+            peer.join().unwrap();
             assert_eq!(
                 fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
                 0o700
