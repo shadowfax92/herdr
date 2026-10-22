@@ -89,6 +89,8 @@ pub struct PaneSshInfo {
     pub host: String,
     pub link_id: String,
     pub state: SshLinkState,
+    // Unknown local paths are absent: plugin consumers cannot use JSON null as a path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_cwd: Option<String>,
 }
 
@@ -120,5 +122,26 @@ mod tests {
             serde_json::from_str::<SshLinkState>("\"future\"").unwrap(),
             SshLinkState::Unknown
         );
+    }
+
+    #[test]
+    fn ssh_panes_unknown_local_cwd_is_omitted_from_pane_link_json() {
+        let mut link = PaneSshInfo {
+            host: "studio".into(),
+            link_id: "one".into(),
+            state: SshLinkState::Live,
+            local_cwd: None,
+        };
+        let unknown = serde_json::to_value(&link).unwrap();
+        assert_eq!(
+            unknown,
+            serde_json::json!({"host":"studio","link_id":"one","state":"live"})
+        );
+        assert_eq!(
+            serde_json::from_value::<PaneSshInfo>(unknown).unwrap(),
+            link
+        );
+        link.local_cwd = Some("/local".into());
+        assert_eq!(serde_json::to_value(link).unwrap()["local_cwd"], "/local");
     }
 }
