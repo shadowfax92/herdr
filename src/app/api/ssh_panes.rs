@@ -18,6 +18,7 @@ use std::{collections::HashSet, time::Instant};
 impl App {
     pub(super) fn handle_ssh_panes(&mut self, id: String, params: SshPanesRequest) -> String {
         let now = Instant::now();
+        self.refresh_ssh_panes_now(now);
         if let SshPanesRequest::List(params) = params {
             if !self.ssh_panes.enabled() {
                 return encode_success(
@@ -81,6 +82,14 @@ impl App {
                 let runtime = self.terminal_runtimes.get(&terminal_id);
                 let runtime_key = runtime.map_or(pane_id, |r| r.ssh_probe_key());
                 let shell_pid = runtime.and_then(|r| r.child_pid());
+                // Only a connector actually holding this local terminal may
+                // claim it; a forwarded API caller cannot attach another pane.
+                if !crate::pane::ssh_probe::connector_alive(runtime_key, params.connector_pid)
+                    || crate::pane::ssh_probe::local_foreground(runtime_key, shell_pid)
+                        != Some(params.connector_pgid)
+                {
+                    return ssh_error(id, SshPanesError::InvalidRequest);
+                }
                 if let Err(error) = self.ssh_panes.attach(
                     AttachInput {
                         params,
@@ -159,21 +168,39 @@ impl App {
             terminal_id: link.terminal_id.to_string(),
             state: api_state(state),
             cwd: link.cwd.clone().or_else(|| link.cwd_hint.clone()),
-            foreground_cwd: link.foreground_cwd.clone(),
+            foreground_cwd: (state == LinkState::Live)
+                .then(|| link.foreground_cwd.clone())
+                .flatten(),
             local_cwd: pane.ssh.and_then(|ssh| ssh.local_cwd),
-            agent: link.agent_label.clone(),
+            agent: (state == LinkState::Live)
+                .then(|| link.agent_label.clone())
+                .flatten(),
             attached_ms_ago: elapsed_ms(now, link.attached_at),
             last_report_ms_ago: link.last_report_at.map(|at| elapsed_ms(now, at)),
         })
     }
 
     pub(crate) fn apply_ssh_panes_config(&mut self, cfg: &SshPanesConfig) {
-        let affected: Vec<_> = self.ssh_panes.linked_terminals().cloned().collect();
-        if self.ssh_panes.set_config(cfg).disabled_now {
-            for terminal in affected {
-                if let Ok(target) = self.resolve_terminal_target(terminal.as_str()) {
-                    self.emit_pane_updated(target.ws_idx, target.pane_id);
-                }
+        let change = self.ssh_panes.set_config(cfg);
+        self.emit_ssh_panes_updates(change.affected);
+    }
+
+    /// Run from the server's existing 250 ms wakeup, never from render. Registry
+    /// maintenance is bounded by links, and an empty registry does no OS work.
+    pub(crate) fn refresh_ssh_panes(&mut self, now: Instant) {
+        let changed = self.ssh_panes.refresh_due(now);
+        self.emit_ssh_panes_updates(changed);
+    }
+
+    pub(super) fn refresh_ssh_panes_now(&mut self, now: Instant) {
+        let changed = self.ssh_panes.refresh(now);
+        self.emit_ssh_panes_updates(changed);
+    }
+
+    fn emit_ssh_panes_updates(&mut self, terminals: Vec<TerminalId>) {
+        for terminal in terminals {
+            if let Ok(target) = self.resolve_terminal_target(terminal.as_str()) {
+                self.emit_pane_updated(target.ws_idx, target.pane_id);
             }
         }
     }
@@ -189,10 +216,13 @@ impl App {
             local_cwd: info.cwd.clone(),
         });
         info.cwd = view.link.cwd.clone().or_else(|| view.link.cwd_hint.clone());
-        info.foreground_cwd = view.link.foreground_cwd.clone();
+        info.foreground_cwd = (view.state == LinkState::Live)
+            .then(|| view.link.foreground_cwd.clone())
+            .flatten();
     }
 
-    pub(crate) fn scrub_ssh_pane_snapshot(&self, snapshot: &mut SessionSnapshot) {
+    pub(crate) fn scrub_ssh_pane_snapshot(&mut self, snapshot: &mut SessionSnapshot) {
+        self.refresh_ssh_panes_now(Instant::now());
         let linked: HashSet<_> = self
             .ssh_panes
             .links(Instant::now())

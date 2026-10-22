@@ -25,6 +25,7 @@ use std::{
 };
 
 pub(crate) const SOFT_LEASE: Duration = Duration::from_secs(15);
+pub(crate) const PROVISIONAL_LEASE: Duration = Duration::from_secs(30);
 pub(crate) const HARD_LEASE: Duration = Duration::from_secs(120);
 
 pub(crate) fn disabled_message() -> String {
@@ -32,11 +33,13 @@ pub(crate) fn disabled_message() -> String {
 }
 pub(crate) const NOT_IMPLEMENTED_MESSAGE: &str = "ssh panes: not implemented yet";
 
-/// Owns link leases on the app thread; detection tasks read only the probe table.
-/// Times are supplied by callers so expiry and sequence ordering need no processes.
+/// Owns link leases and semantic transitions on the app thread. Detection tasks
+/// share local ownership facts through the probe table; callers supply time and
+/// tests inject process observations to exercise expiry without PTYs.
 pub(crate) struct Registry {
     config: config::SshPanesConfig,
     links: HashMap<String, Link>,
+    next_refresh: Option<Instant>,
 }
 
 impl Registry {
@@ -44,18 +47,58 @@ impl Registry {
         Self {
             config: cfg.clone(),
             links: HashMap::new(),
+            next_refresh: None,
         }
     }
 
     pub fn set_config(&mut self, cfg: &config::SshPanesConfig) -> ConfigChange {
         let disabled_now = self.enabled() && !cfg.enabled;
         self.config = cfg.clone();
-        if disabled_now {
-            self.links.clear();
-            // A disable takes effect on the next detection tick without touching SSH.
-            ssh_probe::clear_all();
+        let revoked: Vec<_> = self
+            .links
+            .values()
+            .filter(|link| {
+                !cfg.enabled
+                    || (!cfg.allowed_hosts.is_empty() && !cfg.allowed_hosts.contains(&link.host))
+            })
+            .map(|link| link.link_id.clone())
+            .collect();
+        let affected = revoked
+            .into_iter()
+            .filter_map(|id| self.detach(&id).map(|link| link.terminal_id))
+            .collect();
+        ConfigChange {
+            disabled_now,
+            affected,
         }
-        ConfigChange { disabled_now }
+    }
+
+    /// App-loop maintenance is per linked pane at most once per 300 ms, independent
+    /// of render/client fanout. Explicit API mutations/save use refresh directly.
+    pub fn refresh_due(&mut self, now: Instant) -> Vec<TerminalId> {
+        if self.links.is_empty() || self.next_refresh.is_some_and(|at| now < at) {
+            return Vec::new();
+        }
+        self.next_refresh = Some(now + Duration::from_millis(300));
+        self.refresh(now)
+    }
+
+    pub fn refresh(&mut self, now: Instant) -> Vec<TerminalId> {
+        let mut changed = Vec::new();
+        self.links.retain(|_, link| {
+            let state = link.state(now);
+            if state != link.observed_state {
+                changed.push(link.terminal_id.clone());
+                link.observed_state = state;
+            }
+            if state == LinkState::Gone {
+                ssh_probe::unlink(link.pane_id);
+                false
+            } else {
+                true
+            }
+        });
+        changed
     }
 
     pub fn enabled(&self) -> bool {
@@ -64,6 +107,7 @@ impl Registry {
 
     pub fn attach(&mut self, a: AttachInput, now: Instant) -> Result<&Link, SshPanesError> {
         self.require_enabled()?;
+        self.refresh(now);
         let p = &a.params;
         if p.protocol != 1
             || p.connector_pid == 0
@@ -90,6 +134,21 @@ impl Registry {
                 return Err(SshPanesError::InvalidRequest);
             }
         }
+        let provisional = self
+            .links
+            .values()
+            .find(|link| link.provisional && link.terminal_id == a.terminal_id);
+        if let Some(link) = provisional {
+            if link.host != p.host
+                || link.pane_id != a.pane_id
+                || link.connector_pid != p.connector_pid
+                || link.connector_pgid != p.connector_pgid
+            {
+                return Err(SshPanesError::InvalidRequest);
+            }
+            let id = link.link_id.clone();
+            self.detach(&id);
+        }
         if self.links.values().any(|link| {
             link.link_id != p.link_id
                 && (link.terminal_id == a.terminal_id || link.pane_id == a.pane_id)
@@ -111,6 +170,7 @@ impl Registry {
         }
         let link = self.links.entry(p.link_id.clone()).or_insert_with(|| {
             ssh_probe::link_at(a.pane_id, p.connector_pgid, now);
+            ssh_probe::set_connector_pid(a.pane_id, p.connector_pid);
             Link {
                 link_id: p.link_id.clone(),
                 host: p.host.clone(),
@@ -127,11 +187,25 @@ impl Registry {
                 attached_at: now,
                 last_seen_at: now,
                 last_report_at: None,
+                provisional: false,
+                observed_state: LinkState::Live,
             }
         });
         link.last_seen_at = now;
         ssh_probe::heartbeat(link.pane_id, now);
         Ok(link)
+    }
+
+    /// Register before emitting PaneCreated/TabCreated so immediate consumers see
+    /// the remote launch cwd. The connector's attach replaces this temporary ID.
+    pub fn provision(&mut self, input: AttachInput, now: Instant) -> Result<(), SshPanesError> {
+        let link = self.attach(input, now)?;
+        let id = link.link_id.clone();
+        if let Some(link) = self.links.get_mut(&id) {
+            link.provisional = true;
+            link.cwd = link.cwd_hint.clone();
+        }
+        Ok(())
     }
 
     pub fn report(
@@ -143,7 +217,7 @@ impl Registry {
         let link = self
             .links
             .get_mut(&r.link_id)
-            .filter(|l| l.state(now) != LinkState::Gone)
+            .filter(|l| !l.provisional && l.state(now) != LinkState::Gone)
             .ok_or(SshPanesError::UnknownLink)?;
         // Ignored/replayed reports cannot extend the lease or overwrite newer state.
         if link.last_report_at.is_some() && r.seq <= link.last_seq {
@@ -161,6 +235,7 @@ impl Registry {
         link.agent_label = r.foreground.agent.clone();
         link.last_seq = r.seq;
         link.last_report_at = Some(now);
+        link.observed_state = LinkState::Live;
         link.last_seen_at = now;
         ssh_probe::store(link.pane_id, &r.foreground, now);
         Ok(ReportOutcome {
@@ -192,10 +267,9 @@ impl Registry {
         let view = self.link_for_terminal(t, now)?;
         Some(InheritTarget {
             host: view.link.host.clone(),
-            cwd: view
-                .link
-                .foreground_cwd
-                .clone()
+            cwd: (view.state == LinkState::Live)
+                .then(|| view.link.foreground_cwd.clone())
+                .flatten()
                 .or_else(|| view.link.cwd.clone())
                 .or_else(|| view.link.cwd_hint.clone()),
         })
@@ -248,6 +322,7 @@ impl Drop for Registry {
 
 pub(crate) struct ConfigChange {
     pub disabled_now: bool,
+    pub affected: Vec<TerminalId>,
 }
 
 /// Public IDs are resolved to the terminal and its runtime identity by the app.
@@ -276,11 +351,27 @@ pub(crate) struct Link {
     pub attached_at: Instant,
     pub last_seen_at: Instant,
     pub last_report_at: Option<Instant>,
+    provisional: bool,
+    observed_state: LinkState,
 }
 
 impl Link {
     pub fn state(&self, now: Instant) -> LinkState {
-        LinkState::at(self.last_seen_at, now)
+        if !ssh_probe::owner_is_live(self.pane_id)
+            || now.saturating_duration_since(self.last_seen_at) >= HARD_LEASE
+            || (self.provisional
+                && now.saturating_duration_since(self.attached_at) >= PROVISIONAL_LEASE)
+        {
+            LinkState::Gone
+        } else if self.provisional {
+            LinkState::Live
+        } else if now.saturating_duration_since(self.last_report_at.unwrap_or(self.attached_at))
+            >= SOFT_LEASE
+        {
+            LinkState::Stale
+        } else {
+            LinkState::Live
+        }
     }
 }
 
@@ -490,6 +581,7 @@ mod tests {
         let now = Instant::now();
         let terminal = TerminalId::alloc();
         let pane = PaneId::alloc();
+        ssh_probe::test_owner(pane, true, Some(42));
         let attach = || AttachInput {
             params: api::AttachParams {
                 pane_id: "w1:p1".into(),

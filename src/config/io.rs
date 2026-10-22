@@ -150,6 +150,7 @@ impl Config {
             }
         };
 
+        let (content, ssh_diagnostic) = crate::ssh_panes::config::startup_content(content);
         match deserialize_with_ignored::<Config, _>(toml::Deserializer::new(&content)) {
             Ok((config, ignored_keys)) => {
                 let (unknown_sections, mut diagnostics) =
@@ -164,6 +165,7 @@ impl Config {
                     None,
                 ));
                 diagnostics.extend(config.collect_diagnostics());
+                diagnostics.extend(ssh_diagnostic);
                 LoadedConfig {
                     config,
                     diagnostics,
