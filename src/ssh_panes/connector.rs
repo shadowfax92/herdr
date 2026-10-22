@@ -68,19 +68,19 @@ mod unix {
         schema::{Method, Request},
     };
     use crate::ssh_panes::{
-        api::{AttachParams, DetachParams, SshPanesRequest},
+        api::{AttachParams, DetachParams, ListParams, SshPanesRequest},
         remote::{self, RemoteSpec},
         sync,
     };
     use std::{
         fs,
-        io::Read,
+        io::{Read, Write},
         os::unix::{
             fs::PermissionsExt,
             process::{CommandExt, ExitStatusExt},
         },
         path::Path,
-        process::{Command, ExitStatus},
+        process::{Command, ExitStatus, Stdio},
         sync::atomic::{AtomicI32, Ordering},
         time::{Duration, Instant},
     };
@@ -119,13 +119,13 @@ mod unix {
         cwd: Option<String>,
         link: String,
         digest: String,
-    ) -> RemoteSpec {
-        RemoteSpec {
+    ) -> io::Result<RemoteSpec> {
+        Ok(RemoteSpec {
             v: 1,
             socket: format!("/tmp/herdr-sp-{link}.sock"),
             link,
             server_key: remote::server_key(
-                &crate::platform::hostname().unwrap_or_default(),
+                &server_id(&crate::config::config_dir().join("ssh-panes"))?,
                 &crate::api::socket_path(),
             ),
             host: host.into(),
@@ -135,6 +135,148 @@ mod unix {
             cwd,
             payload_digest: digest,
             env: BTreeMap::from([("NVIM_APPNAME".into(), cfg.sync.nvim_appname.clone())]),
+        })
+    }
+
+    /// The seed belongs to this local installation, not its DHCP hostname. The
+    /// socket is hashed separately so named servers still own distinct scratch.
+    pub(crate) fn server_id(dir: &Path) -> io::Result<String> {
+        use std::os::fd::AsRawFd;
+        remote::private_dir(dir)?;
+        let lock = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(dir.join("server-id.lock"))?;
+        if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let path = dir.join("server-id");
+        match fs::read_to_string(&path) {
+            Ok(id) if id.len() == 24 && id.bytes().all(|b| b.is_ascii_hexdigit()) => Ok(id),
+            Ok(_) => Err(io::Error::other("invalid ssh-panes/server-id")),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                let id = new_link()?;
+                let temp = dir.join(format!(".server-id-{id}"));
+                fs::write(&temp, &id)?;
+                fs::set_permissions(&temp, fs::Permissions::from_mode(0o600))?;
+                let result = fs::rename(&temp, path);
+                let _ = fs::remove_file(temp);
+                result?;
+                Ok(id)
+            }
+            Err(e) => Err(e),
+        }
+        // Closing the file releases flock on every return/error path.
+    }
+
+    /// Side-channel SSH/rsync must remain interruptible even if their caller has
+    /// inherited ignored terminal signals. The interactive owner is scoped below.
+    pub(crate) fn reset_child_signals(command: &mut Command) {
+        unsafe {
+            command.pre_exec(|| {
+                for signal in [libc::SIGINT, libc::SIGQUIT, libc::SIGTERM, libc::SIGHUP] {
+                    libc::signal(signal, libc::SIG_DFL);
+                }
+                Ok(())
+            });
+        }
+    }
+
+    fn initial_attach(socket: &Path, attach: &SshPanesRequest, spawned: bool) -> io::Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut delay = Duration::from_millis(100);
+        loop {
+            match rpc(socket, attach.clone()) {
+                Ok(_) => return Ok(()),
+                Err(error) if !spawned || Instant::now() >= deadline => return Err(error),
+                Err(_) => {
+                    // Restored connectors start inside App::try_new, before the
+                    // API loop can answer. Keep launch_argv alive through startup.
+                    std::thread::sleep(
+                        delay.min(deadline.saturating_duration_since(Instant::now())),
+                    );
+                    delay = (delay * 2).min(Duration::from_secs(1));
+                }
+            }
+        }
+    }
+
+    fn link_reported(socket: &Path, link: &str) -> Option<bool> {
+        let result = rpc(socket, SshPanesRequest::List(ListParams::default())).ok()?;
+        let link = result["links"]
+            .as_array()?
+            .iter()
+            .find(|v| v["link_id"] == link)?;
+        Some(link["last_report_ms_ago"].as_u64().is_some())
+    }
+
+    /// Only these per-link control records are consumed from SSH stdout. Every
+    /// other byte is forwarded immediately, including prompts without newlines.
+    /// Completion is emitted by a remote /bin/sh supervisor after the login shell
+    /// exits; a broken SSH transport cannot emit that completion record.
+    #[derive(Default)]
+    struct ShellEvidence {
+        ready: bool,
+        stale: bool,
+        completed: Option<i32>,
+    }
+    fn relay_output(
+        mut input: impl Read,
+        link: &str,
+        mut output: impl Write,
+    ) -> io::Result<ShellEvidence> {
+        let prefix = format!("\x1b]777;herdr-sp-{link};").into_bytes();
+        let mut pending = Vec::new();
+        let mut evidence = ShellEvidence::default();
+        let mut buffer = [0u8; 8192];
+        loop {
+            let count = input.read(&mut buffer)?;
+            if count == 0 {
+                output.write_all(&pending)?;
+                output.flush()?;
+                return Ok(evidence);
+            }
+            pending.extend_from_slice(&buffer[..count]);
+            loop {
+                if let Some(index) = pending.windows(prefix.len()).position(|w| w == prefix) {
+                    output.write_all(&pending[..index])?;
+                    pending.drain(..index);
+                    if let Some(end) = pending.iter().position(|b| *b == 7) {
+                        let event = &pending[prefix.len()..end];
+                        match event {
+                            b"ready" => evidence.ready = true,
+                            b"stale" | b"missing" => evidence.stale = true,
+                            _ => {
+                                let code = std::str::from_utf8(event)
+                                    .ok()
+                                    .and_then(|s| s.strip_prefix("done;"))
+                                    .and_then(|s| s.parse().ok());
+                                if code.is_some() {
+                                    evidence.completed = code;
+                                } else {
+                                    output.write_all(&pending[..=end])?;
+                                }
+                            }
+                        }
+                        pending.drain(..=end);
+                    } else if pending.len() <= prefix.len() + 32 {
+                        break;
+                    } else {
+                        output.write_all(&pending[..1])?;
+                        pending.drain(..1);
+                    }
+                } else {
+                    let keep = (1..prefix.len())
+                        .rev()
+                        .find(|n| pending.ends_with(&prefix[..*n]))
+                        .unwrap_or(0);
+                    output.write_all(&pending[..pending.len() - keep])?;
+                    pending.drain(..pending.len() - keep);
+                    break;
+                }
+            }
+            output.flush()?;
         }
     }
 
@@ -145,11 +287,18 @@ mod unix {
         verb: &str,
         spec: &RemoteSpec,
     ) -> io::Result<String> {
-        Ok(format!(
-            "{}/bin/herdr ssh {verb} --spec {}",
-            remote_path(&cfg.remote_root)?,
-            spec.encode()?
-        ))
+        sync::validate_remote_root(&cfg.remote_root)?;
+        let payload = format!("{}/bin/herdr", remote_path(&cfg.remote_root)?);
+        let command = format!("{payload} ssh {verb} --spec {}", spec.encode()?);
+        if verb != "remote-attach" {
+            return Ok(command);
+        }
+        // POSIX sh owns only exit reporting; fish still owns the interactive tty
+        // and watcher shell PID. Markers use the random link id, never user data.
+        let prefix = format!("\\033]777;herdr-sp-{};", spec.link);
+        Ok(format!("/bin/sh -c {}", quote(&format!(
+            "if test -x {payload}; then {command}; status=$?; else printf '{prefix}missing\\007'; status=127; fi; printf '{prefix}done;%s\\007' \"$status\"; exit \"$status\""
+        ))))
     }
 
     pub(crate) fn quote(value: &str) -> String {
@@ -229,6 +378,7 @@ mod unix {
             .current_dir(crate::config::config_dir())
             .args(side_channel_opts(cfg)?)
             .arg(host);
+        reset_child_signals(&mut command);
         Ok(command)
     }
 
@@ -252,7 +402,7 @@ mod unix {
             opts.cwd,
             std::env::var("HERDR_SSH_PANES_LINK").unwrap_or(new_link()?),
             String::new(),
-        );
+        )?;
         spec.env.extend(opts.env);
         // Keep argv in the hex data rather than reconstructing shell command text.
         spec.env.insert(
@@ -269,6 +419,7 @@ mod unix {
         command
             .arg(&opts.host)
             .arg(remote_command(cfg, "remote-run", &spec)?);
+        reset_child_signals(&mut command);
         Ok(status_code(command.status()?))
     }
 
@@ -281,11 +432,10 @@ mod unix {
         }
         eprintln!("connecting to {}…", opts.host);
         let socket = crate::api::socket_path();
-        let signals = SignalGuard::install()?;
         let mut retried_sync = false;
         loop {
             let digest = sync::local_manifest(cfg)?.digest;
-            let spec = spec(&opts.host, cfg, opts.cwd.clone(), new_link()?, digest);
+            let spec = spec(&opts.host, cfg, opts.cwd.clone(), new_link()?, digest)?;
             let attach = SshPanesRequest::Attach(AttachParams {
                 pane_id: pane.clone(),
                 link_id: spec.link.clone(),
@@ -295,21 +445,28 @@ mod unix {
                 cwd_hint: opts.cwd.clone(),
                 protocol: 1,
             });
-            rpc(&socket, attach.clone())?;
+            initial_attach(
+                &socket,
+                &attach,
+                std::env::var("HERDR_SSH_PANES_SPAWNED").as_deref() == Ok("1"),
+            )?;
             let mut command = Command::new("ssh");
-            command.args(ssh_argv(&opts, cfg, &spec, &socket)?);
-            // Parent catches termination for detach; child restores normal SSH
-            // signal handling. No setpgid: SIGWINCH/job control reach both.
-            unsafe {
-                command.pre_exec(|| {
-                    for signal in [libc::SIGINT, libc::SIGQUIT, libc::SIGTERM, libc::SIGHUP] {
-                        libc::signal(signal, libc::SIG_DFL);
-                    }
-                    Ok(())
-                });
-            }
-            let result: io::Result<i32> = (|| {
+            command
+                .args(ssh_argv(&opts, cfg, &spec, &socket)?)
+                .stdout(Stdio::piped());
+            reset_child_signals(&mut command);
+            let result: io::Result<(i32, ShellEvidence)> = (|| {
+                // Only interactive SSH owns Ctrl-C/Ctrl-\. Outside this scope,
+                // connect retries, hashing, sync and authentication are cancellable.
+                let _signals = SignalGuard::install()?;
                 let mut child = command.spawn()?;
+                let stdout = child
+                    .stdout
+                    .take()
+                    .ok_or_else(|| io::Error::other("missing SSH stdout"))?;
+                let link = spec.link.clone();
+                let output =
+                    std::thread::spawn(move || relay_output(stdout, &link, std::io::stdout()));
                 let mut heartbeat = Instant::now();
                 loop {
                     let signal = SIGNAL.swap(0, Ordering::Relaxed);
@@ -319,7 +476,10 @@ mod unix {
                         }
                     }
                     if let Some(status) = child.try_wait()? {
-                        return Ok(status_code(status));
+                        let evidence = output
+                            .join()
+                            .map_err(|_| io::Error::other("SSH output relay panicked"))??;
+                        return Ok((status_code(status), evidence));
                     }
                     if heartbeat.elapsed() >= Duration::from_secs(10) {
                         let _ = rpc(&socket, attach.clone());
@@ -328,7 +488,11 @@ mod unix {
                     std::thread::sleep(Duration::from_millis(100));
                 }
             })();
-            let code = result.as_ref().ok().copied();
+            // Query before detach destroys the evidence. Once the remote shell
+            // reported, its last command's status (including 3/127/255) is user
+            // output, not a payload/setup signal. Old payloads still use exit 3.
+            let reported = link_reported(&socket, &spec.link);
+            let code = result.as_ref().ok().map(|(code, _)| *code);
             let _ = rpc(
                 &socket,
                 SshPanesRequest::Detach(DetachParams {
@@ -336,8 +500,11 @@ mod unix {
                     exit_code: code,
                 }),
             );
-            let code = result?;
-            if matches!(code, 3 | 127) {
+            let (code, evidence) = result?;
+            let setup_failed = !evidence.ready
+                && reported != Some(true)
+                && (evidence.stale || reported == Some(false));
+            if setup_failed && matches!(code, 3 | 127) {
                 if cfg.auto_sync && !opts.no_sync && !retried_sync {
                     eprintln!(
                         "ssh-panes: remote payload on {} is stale; syncing…",
@@ -355,10 +522,9 @@ mod unix {
                     opts.host
                 );
             }
-            if code == 255 {
+            if code == 255 && evidence.completed != Some(255) {
                 eprintln!("ssh-panes: lost connection to {} (ssh 255)", opts.host);
                 if std::env::var("HERDR_SSH_PANES_SPAWNED").as_deref() == Ok("1") {
-                    signals.restore_tty();
                     eprintln!("[r] reconnect  [enter] close");
                     let mut answer = String::new();
                     std::io::stdin().read_line(&mut answer)?;
@@ -422,11 +588,54 @@ mod unix {
     impl Drop for SignalGuard {
         fn drop(&mut self) {
             self.restore_tty();
+            // A dead SSH child cannot undo remote fullscreen/input modes. Reset
+            // before any detach error, sync message, reconnect or local prompt.
+            use std::io::Write;
+            let mut output = std::io::stdout().lock();
+            let _ = output
+                .write_all(b"\x1b[?1049l\x1b[<u\x1b[?1000;1002;1003;1006l\x1b[?2004l\x1b[?25h");
+            let _ = output.flush();
             for (signal, old) in &self.old {
                 unsafe {
                     libc::sigaction(*signal, old, std::ptr::null_mut());
                 }
             }
+        }
+    }
+    #[cfg(test)]
+    mod output_tests {
+        use super::*;
+        struct ByteReader(std::io::Cursor<Vec<u8>>);
+        impl Read for ByteReader {
+            fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+                self.0.read(&mut bytes[..1])
+            }
+        }
+        #[test]
+        fn ssh_panes_relay_preserves_bytes_and_consumes_fragmented_shell_markers() {
+            let link = "0123456789abcdef01234567";
+            let input = format!("prompt> \x1b]777;herdr-sp-{link};ready\x07bytes\r\n\x1b]777;herdr-sp-{link};done;255\x07");
+            let mut output = Vec::new();
+            let evidence = relay_output(
+                ByteReader(std::io::Cursor::new(input.into_bytes())),
+                link,
+                &mut output,
+            )
+            .unwrap();
+            assert_eq!(output, b"prompt> bytes\r\n");
+            assert!(evidence.ready);
+            assert!(!evidence.stale);
+            assert_eq!(evidence.completed, Some(255));
+        }
+        #[test]
+        fn ssh_panes_relay_preserves_other_osc_and_partial_records_at_eof() {
+            let input =
+                b"\x1b]title;abc\x07prompt> \x1b]777;herdr-sp-x;unknown\x07end\x1b]777;herdr-sp-x;";
+            let mut output = Vec::new();
+            let evidence = relay_output(&input[..], "x", &mut output).unwrap();
+            assert_eq!(output, input);
+            assert!(!evidence.ready);
+            assert_eq!(evidence.completed, None);
         }
     }
 }
@@ -486,15 +695,26 @@ mod tests {
         );
         let command = args.last().unwrap();
         assert!(!command.contains("$("));
-        assert_eq!(
-            RemoteSpec::decode(command.split_whitespace().last().unwrap()).unwrap(),
-            spec
-        );
+        assert!(command.contains(&spec.encode().unwrap()));
         let a = new_link().unwrap();
         let b = new_link().unwrap();
         assert_eq!(a.len(), 24);
         assert!(a.bytes().all(|b| b.is_ascii_hexdigit()));
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn ssh_panes_server_seed_is_persistent_and_named_sessions_remain_distinct() {
+        let dir = std::env::temp_dir().join(format!("herdr-sp-test-{}", new_link().unwrap()));
+        let one = server_id(&dir).unwrap();
+        assert_eq!(one, server_id(&dir).unwrap());
+        assert_eq!(std::fs::read_to_string(dir.join("server-id")).unwrap(), one);
+        let a = crate::ssh_panes::remote::server_key(&one, Path::new("/session-a.sock"));
+        let b = crate::ssh_panes::remote::server_key(&one, Path::new("/session-b.sock"));
+        assert_ne!(a, b);
+        std::fs::write(dir.join("server-id"), "corrupt").unwrap();
+        assert!(server_id(&dir).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -1,12 +1,13 @@
 //! Digest-gated publication of the current executable and configured payload paths.
 //! Rsync replaces files by rename; manifest.json is published last as the commit
 //! marker, so an interrupted transfer cannot authorize a mixed remote payload.
+//! Process-boundary regression harness: `python3 tests/ssh_panes_sync.py target/debug/herdr`.
 
 use super::config::SshPanesConfig;
 use serde::{Deserialize, Serialize};
 use std::io;
 
-/// Published payload identity, including permissions and symlinks as well as bytes.
+/// Published payload identity, including permissions and followed symlink targets.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct Manifest {
     pub version: u32,
@@ -53,10 +54,12 @@ mod unix {
         collections::BTreeMap,
         fs,
         io::{Read, Write},
-        os::{fd::AsRawFd, unix::fs::PermissionsExt},
+        os::{
+            fd::AsRawFd,
+            unix::fs::{MetadataExt, PermissionsExt},
+        },
         path::{Component, Path, PathBuf},
         process::{Command, Stdio},
-        time::UNIX_EPOCH,
     };
 
     #[derive(Clone)]
@@ -66,6 +69,7 @@ mod unix {
         exclude: Vec<String>,
     }
     fn mappings(cfg: &SshPanesConfig, executable: &Path) -> io::Result<Vec<Mapping>> {
+        validate_remote_root(&cfg.remote_root)?;
         let mut result = Vec::new();
         for SyncPath { src, dest, exclude } in &cfg.sync.paths {
             validate_dest(dest)?;
@@ -78,7 +82,7 @@ mod unix {
                         std::env::current_dir()?.join(source)
                     };
                     // A trailing-slash directory transfer follows a source-root
-                    // symlink. Hash the same tree; nested symlinks remain links.
+                    // symlink. Nested links follow targets as rsync --copy-links does.
                     if source.is_dir() {
                         fs::canonicalize(source)?
                     } else {
@@ -126,6 +130,49 @@ mod unix {
         }
         Ok(())
     }
+    pub(crate) fn validate_remote_root(root: &str) -> io::Result<()> {
+        let path = Path::new(root.strip_prefix("~/").unwrap_or(root));
+        let valid_prefix = root.starts_with("~/") || path.is_absolute();
+        if !valid_prefix
+            || root.contains(['\0', '\n', '\r'])
+            || !path.components().any(|c| matches!(c, Component::Normal(_)))
+            || path
+                .components()
+                .any(|c| !matches!(c, Component::RootDir | Component::Normal(_)))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "remote_root must be ~/<non-empty path> or an absolute non-root path without ..",
+            ));
+        }
+        Ok(())
+    }
+
+    // Home mappings share a user-owned tree. Without an explicit opt-in field in
+    // SyncPath, only a top-level herdr-* directory may be destructively mirrored.
+    fn may_delete(dest: &str) -> bool {
+        dest.strip_prefix("~/").is_none_or(|rest| {
+            rest.split('/')
+                .next()
+                .is_some_and(|top| top.starts_with("herdr-"))
+        })
+    }
+
+    fn cache_key(src: &Path, meta: &fs::Metadata) -> String {
+        // ctime/inode detect replacements and edits preserving size + mtime.
+        format!(
+            "{}\0{}:{}:{}:{}:{}:{}:{}",
+            src.display(),
+            meta.dev(),
+            meta.ino(),
+            meta.len(),
+            meta.mtime(),
+            meta.mtime_nsec(),
+            meta.ctime(),
+            meta.ctime_nsec()
+        )
+    }
+
     fn hex_hash(bytes: &[u8]) -> String {
         format!("{:x}", Sha256::digest(bytes))
     }
@@ -166,21 +213,32 @@ mod unix {
         }
         Ok(false)
     }
+    /// A scan borrows the last cache while collecting only currently visited keys.
+    struct HashScan<'a> {
+        previous: HashCache,
+        current: &'a mut HashCache,
+    }
     fn walk(
         src: &Path,
         dest: &str,
         relative: &str,
         patterns: &[String],
-        cache: &mut HashCache,
+        cache: &mut HashScan<'_>,
+        ancestors: &mut Vec<(u64, u64)>,
         files: &mut Vec<ManifestFile>,
     ) -> io::Result<()> {
-        let meta = fs::symlink_metadata(src)?;
+        // Hash the dereferenced tree that rsync sends. A cyclic directory link
+        // is an error instead of recursion until stack exhaustion.
+        // Basename exclusions must work even for dangling links, like rsync.
+        let entry = fs::symlink_metadata(src)?;
+        if !relative.is_empty() && excluded(relative, entry.is_dir(), patterns)? {
+            return Ok(());
+        }
+        let meta = fs::metadata(src)?;
         if !relative.is_empty() && excluded(relative, meta.is_dir(), patterns)? {
             return Ok(());
         }
-        let kind = if meta.file_type().is_symlink() {
-            "symlink"
-        } else if meta.is_dir() {
+        let kind = if meta.is_dir() {
             "dir"
         } else if meta.is_file() {
             "file"
@@ -197,15 +255,10 @@ mod unix {
         };
         let sha256 = match kind {
             "dir" => String::new(),
-            "symlink" => hex_hash(fs::read_link(src)?.as_os_str().as_encoded_bytes()),
             _ => {
-                let modified = meta
-                    .modified()?
-                    .duration_since(UNIX_EPOCH)
-                    .map_err(io::Error::other)?
-                    .as_nanos();
-                let key = format!("{}\0{}\0{modified}", src.display(), meta.len());
-                if let Some(hash) = cache.get(&key) {
+                let key = cache_key(src, &meta);
+                if let Some(hash) = cache.previous.get(&key) {
+                    cache.current.insert(key, hash.clone());
                     hash.clone()
                 } else {
                     let mut input = fs::File::open(src)?;
@@ -219,14 +272,14 @@ mod unix {
                         hash.update(&buffer[..count]);
                     }
                     let after = input.metadata()?;
-                    if after.len() != meta.len() || after.modified()? != meta.modified()? {
+                    if cache_key(src, &after) != key || cache_key(src, &fs::metadata(src)?) != key {
                         return Err(io::Error::other(format!(
                             "payload changed while hashing: {}",
                             src.display()
                         )));
                     }
                     let hash = format!("{:x}", hash.finalize());
-                    cache.insert(key, hash.clone());
+                    cache.current.insert(key, hash.clone());
                     hash
                 }
             }
@@ -239,6 +292,14 @@ mod unix {
             mode: meta.permissions().mode() & 0o7777,
         });
         if meta.is_dir() {
+            let identity = (meta.dev(), meta.ino());
+            if ancestors.contains(&identity) {
+                return Err(io::Error::other(format!(
+                    "cyclic payload symlink: {}",
+                    src.display()
+                )));
+            }
+            ancestors.push(identity);
             let mut children = fs::read_dir(src)?.collect::<io::Result<Vec<_>>>()?;
             children.sort_by_key(|e| e.file_name());
             for child in children {
@@ -253,12 +314,27 @@ mod unix {
                 } else {
                     format!("{relative}/{name}")
                 };
-                walk(&child.path(), dest, &relative, patterns, cache, files)?;
+                walk(
+                    &child.path(),
+                    dest,
+                    &relative,
+                    patterns,
+                    cache,
+                    ancestors,
+                    files,
+                )?;
             }
+            ancestors.pop();
         }
         Ok(())
     }
     fn manifest_for(mappings: &[Mapping], cache: &mut HashCache) -> io::Result<Manifest> {
+        // Publish only keys visited in this scan. Removed files and old stat
+        // signatures must not accumulate on every connect.
+        let mut cache = HashScan {
+            previous: std::mem::take(cache),
+            current: cache,
+        };
         let mut files = Vec::new();
         for mapping in mappings {
             walk(
@@ -266,7 +342,8 @@ mod unix {
                 &mapping.dest,
                 "",
                 &mapping.exclude,
-                cache,
+                &mut cache,
+                &mut Vec::new(),
                 &mut files,
             )?;
         }
@@ -516,9 +593,15 @@ mod unix {
             rsync
                 .env("RSYNC_OLD_ARGS", "1")
                 .env("RSYNC_PROTECT_ARGS", "0");
+            connector::reset_child_signals(&mut rsync);
+            if may_delete(&mapping.dest) {
+                rsync.arg("--delete");
+            } else {
+                eprintln!("ssh-panes: copying {} without --delete; home destination must start with herdr- to mirror deletions", mapping.dest);
+            }
             rsync.args([
                 "-a",
-                "--delete",
+                "--copy-links",
                 "--checksum",
                 "--itemize-changes",
                 "-e",
@@ -579,7 +662,7 @@ mod unix {
             .1
             .as_ref()
             .is_some_and(|m| m.digest == local.digest);
-        let mut spec = connector::spec(host, cfg, None, connector::new_link()?, local.digest);
+        let mut spec = connector::spec(host, cfg, None, connector::new_link()?, local.digest)?;
         let script = format!(
             r#"failed=0
 if test "$(basename "$SHELL")" = fish; then
@@ -590,8 +673,8 @@ fi
 if test "$resolved" = "$HERDR_BIN_PATH"; then echo "payload PATH: $resolved"; else echo "payload PATH: unexpected $resolved"; failed=1; fi
 dir=$(dirname "$HERDR_SOCKET_PATH")
 if test "$(uname)" = Darwin; then perms=$(stat -f %Lp "$dir" 2>/dev/null); else perms=$(stat -c %a "$dir" 2>/dev/null); fi
-if test "$perms" = 700; then echo 'socket directory: 0700'; else echo "socket directory: missing or unsafe ($perms)"; failed=1; fi
-if test -L "$HERDR_SOCKET_PATH" && "$HERDR_BIN_PATH" pane list >/dev/null 2>&1; then echo 'stable symlink: live'; else echo 'stable symlink: unavailable'; failed=1; fi
+if ! test -e "$dir"; then echo 'socket directory: no link yet (informational)'; elif test "$perms" = 700; then echo 'socket directory: 0700'; else echo "socket directory: missing or unsafe ($perms)"; failed=1; fi
+if ! test -L "$HERDR_SOCKET_PATH" && ! test -e "$HERDR_SOCKET_PATH"; then echo 'stable symlink: no link yet (informational)'; elif test -L "$HERDR_SOCKET_PATH" && "$HERDR_BIN_PATH" pane list >/dev/null 2>&1; then echo 'stable symlink: live'; else echo 'stable symlink: unavailable'; failed=1; fi
 if HERDR_SOCKET_PATH={} "$HERDR_BIN_PATH" pane list >/dev/null 2>&1; then echo 'stream-local forwarding: live API'; else echo 'stream-local forwarding: unavailable'; failed=1; fi
 exit "$failed"
 "#,
@@ -623,6 +706,7 @@ exit "$failed"
             .args(&cfg.ssh_options)
             .arg(host)
             .arg(connector::remote_command(cfg, "remote-run", &spec)?);
+        connector::reset_child_signals(&mut command);
         let output = command.output()?;
         let _ = bash(host, cfg, &format!("rm -f {}\n", bash_quote(&spec.socket)));
         let mut diagnostics = vec![format!(
@@ -635,10 +719,12 @@ exit "$failed"
                 .map(str::to_string),
         );
         if !output.status.success() {
-            diagnostics.push(format!(
-                "remote checks failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            ));
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            diagnostics.push(if stderr.trim().is_empty() {
+                format!("remote checks failed ({})", output.status)
+            } else {
+                format!("remote checks failed: {}", stderr.trim())
+            });
         }
         Ok(DoctorReport {
             ok: digest_ok && output.status.success(),
@@ -650,17 +736,96 @@ exit "$failed"
         use super::*;
 
         #[test]
+        fn ssh_panes_sync_root_and_home_delete_policy() {
+            for root in [
+                "", "~", "~/", "/", "/../", "relative", "~/x/../y", "/x/../y",
+            ] {
+                assert!(validate_remote_root(root).is_err(), "{root}");
+            }
+            for root in [
+                "~/herdr-dev",
+                "~/.local/share/herdr-ssh-panes",
+                "/tmp/herdr-dev/",
+            ] {
+                assert!(validate_remote_root(root).is_ok(), "{root}");
+            }
+            assert!(may_delete("nvim-plugins/sidekick.nvim"));
+            assert!(may_delete("~/herdr-nvim/config"));
+            assert!(!may_delete("~/.config/nvim"));
+            assert!(!may_delete("~/.config/herdr-sp-nvim"));
+        }
+
+        #[test]
+        fn ssh_panes_hash_cache_tracks_preserved_mtime_and_prunes_removed_files() {
+            let dir = std::env::temp_dir()
+                .join(format!("herdr-sp-test-{}", connector::new_link().unwrap()));
+            fs::create_dir_all(&dir).unwrap();
+            let file = dir.join("a");
+            fs::write(&file, "one").unwrap();
+            let mapping = Mapping {
+                src: dir.clone(),
+                dest: "config".into(),
+                exclude: vec![],
+            };
+            let mut cache = HashCache::new();
+            let first = manifest_for(std::slice::from_ref(&mapping), &mut cache).unwrap();
+            let mtime = fs::metadata(&file).unwrap().modified().unwrap();
+            fs::write(&file, "two").unwrap();
+            fs::File::open(&file).unwrap().set_modified(mtime).unwrap();
+            let second = manifest_for(std::slice::from_ref(&mapping), &mut cache).unwrap();
+            assert_ne!(first.digest, second.digest);
+            assert_eq!(cache.len(), 1);
+            fs::remove_file(file).unwrap();
+            manifest_for(&[mapping], &mut cache).unwrap();
+            assert!(cache.is_empty());
+            fs::remove_dir_all(dir).unwrap();
+        }
+
+        #[test]
+        fn ssh_panes_nested_links_hash_targets_and_directory_cycles_fail() {
+            let dir = std::env::temp_dir()
+                .join(format!("herdr-sp-test-{}", connector::new_link().unwrap()));
+            fs::create_dir_all(dir.join("source")).unwrap();
+            fs::create_dir_all(dir.join("outside")).unwrap();
+            fs::write(dir.join("outside/file"), "bytes").unwrap();
+            std::os::unix::fs::symlink("../outside", dir.join("source/linked-dir")).unwrap();
+            std::os::unix::fs::symlink("../outside/file", dir.join("source/linked-file")).unwrap();
+            let mapping = Mapping {
+                src: dir.join("source"),
+                dest: "config".into(),
+                exclude: vec![],
+            };
+            let manifest =
+                manifest_for(std::slice::from_ref(&mapping), &mut HashCache::new()).unwrap();
+            assert!(manifest
+                .files
+                .iter()
+                .any(|f| f.path == "config/linked-dir/file" && f.kind == "file"));
+            assert!(manifest
+                .files
+                .iter()
+                .any(|f| f.path == "config/linked-file" && f.sha256 == hex_hash(b"bytes")));
+            std::os::unix::fs::symlink(".", dir.join("source/cycle")).unwrap();
+            assert!(manifest_for(&[mapping], &mut HashCache::new())
+                .unwrap_err()
+                .to_string()
+                .contains("cyclic payload symlink"));
+            fs::remove_dir_all(dir).unwrap();
+        }
+
+        #[test]
         fn ssh_panes_manifest_tracks_bytes_deletes_modes_links_and_exclusions() {
             let dir = std::env::temp_dir()
                 .join(format!("herdr-sp-test-{}", connector::new_link().unwrap()));
             fs::create_dir_all(dir.join(".git")).unwrap();
             fs::write(dir.join(".git/ignored"), "not payload").unwrap();
+            std::os::unix::fs::symlink("missing", dir.join("ignored-link")).unwrap();
             fs::write(dir.join("a"), "first").unwrap();
             std::os::unix::fs::symlink("a", dir.join("link")).unwrap();
             let mapping = Mapping {
                 src: dir.clone(),
                 dest: "config".into(),
-                exclude: vec![".git".into()],
+                exclude: vec![".git".into(), "ignored-link".into()],
             };
             let mut cache = HashCache::new();
             let one = manifest_for(std::slice::from_ref(&mapping), &mut cache).unwrap();
@@ -687,6 +852,7 @@ exit "$failed"
             fs::write(dir.join("a"), "second").unwrap();
             let changed = manifest_for(std::slice::from_ref(&mapping), &mut cache).unwrap();
             assert_ne!(changed.digest, one.digest);
+            fs::remove_file(dir.join("link")).unwrap();
             fs::remove_file(dir.join("a")).unwrap();
             assert_ne!(
                 manifest_for(std::slice::from_ref(&mapping), &mut cache)
