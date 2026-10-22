@@ -118,8 +118,8 @@ paths = [{{src = "{root / 'alias'}", dest = "first"}}, {{src = "{second}", dest 
     assert (payload / "first/a").read_text() == "A"
     assert (payload / "second/b").read_text() == "A"
     assert (payload / "manifest.json").exists()
-    # Home-relative mappings may copy into existing user directories but never
-    # erase their unrelated files. Root-relative mappings still mirror deletions.
+    # The final directory marks ownership: only herdr-* home destinations mirror
+    # deletions. User directories retain unrelated files and emit a warning.
     home_config = remote_home / ".config/nvim"
     home_config.mkdir(parents=True)
     (home_config / "keep").write_text("remote only")
@@ -128,6 +128,22 @@ paths = [{{src = "{root / 'alias'}", dest = "first"}}, {{src = "{second}", dest 
     result = invoke("sync", "fixture", "--json")
     assert result.returncode == 0 and "without --delete" in result.stderr
     assert (home_config / "keep").read_text() == "remote only"
+    for dest in ["~/.config/herdr-sp-nvim", "~/herdr-x"]:
+        config.write_text(original_config.replace('dest = "first"', f'dest = "{dest}"'))
+        result = invoke("sync", "fixture", "--json")
+        assert result.returncode == 0 and "without --delete" not in result.stderr
+        mirror = remote_home / dest.removeprefix("~/")
+        assert (mirror / "a").read_text() == "A"
+        (mirror / "obsolete-plugin").write_text("removed spec")
+        (first / "a").unlink()
+        result = invoke("sync", "fixture", "--json")
+        assert result.returncode == 0 and "without --delete" not in result.stderr
+        assert not (mirror / "a").exists() and not (mirror / "obsolete-plugin").exists()
+        (first / "a").write_text("A")
+    for dest in ["~", "~/", "~/.config/herdr-sp-nvim/../nvim"]:
+        config.write_text(original_config.replace('dest = "first"', f'dest = "{dest}"'))
+        result = invoke("sync", "fixture", "--json")
+        assert result.returncode != 0 and "sync destination" in result.stderr
     config.write_text(original_config)
     for bad_root in ["", "~", "~/", "/", "relative", "/tmp/../"]:
         config.write_text(original_config.replace('~/.local/share/herdr-ssh-panes-dev', bad_root))
