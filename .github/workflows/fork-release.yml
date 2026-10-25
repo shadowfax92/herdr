@@ -90,15 +90,10 @@ jobs:
             name: herdr-macos-aarch64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
-    env:
-      HERDR_BUILD_CHANNEL: fork
-      HERDR_BUILD_COMMIT: ${{ github.sha }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-      - name: Set fork build identity
-        run: echo "HERDR_BUILD_ID=${GITHUB_REF_NAME##*-}" >> "$GITHUB_ENV"
       - name: Install Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # v1
         with:
@@ -207,7 +202,8 @@ jobs:
           curl -fsSL https://github.com/shadowfax92/herdr/releases/latest/download/install.sh | sh
           version="$("$HERDR_INSTALL_DIR/herdr" --version)"
           base="${GITHUB_REF_NAME#fork-v}"
-          expected="herdr ${base%-*}-fork.${base##*-}"
+          # Preserve Cargo's version identity, used by existing remote bootstrap.
+          expected="herdr ${base%-*}"
           test "$version" = "$expected"
           echo "$version"
           if "$HERDR_INSTALL_DIR/herdr" update > update.txt 2>&1; then
