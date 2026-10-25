@@ -1,7 +1,7 @@
 //! Self-update mechanism.
 //!
-//! Checks the hosted herdr.dev update manifest for newer versions.
-//! Manual `herdr update` downloads and installs the binary.
+//! Upstream update machinery is retained for rebases, but disabled in this fork.
+//! Fork installs update only through the checksum-verified GitHub release installer.
 //! Background checks only surface availability and release notes.
 //! Uses `curl` as a subprocess for HTTP — no additional Rust HTTP dependencies.
 //! JSON parsing uses serde_json (already in deps for persistence).
@@ -33,6 +33,11 @@ const MISE_INSTALLS_DIR_ENV: &str = "MISE_INSTALLS_DIR";
 const FAKE_UPDATE_VERSION_ENV: &str = "HERDR_FAKE_UPDATE_VERSION";
 const FAKE_UPDATE_NOTES_VERSION_ENV: &str = "HERDR_FAKE_UPDATE_NOTES_VERSION";
 const DEFAULT_FAKE_UPDATE_NOTES_VERSION: &str = "0.3.0";
+// This is fork policy, not a user setting: stable/preview manifests and package
+// managers below all select upstream builds, which would erase the fork patches.
+// Guard both public entry points before config, network, or server lifecycle work.
+const FORK_UPDATES_DISABLED: bool = true;
+const FORK_UPDATE_MESSAGE: &str = "self-update is disabled for this fork; rerun `curl -fsSL https://github.com/shadowfax92/herdr/releases/latest/download/install.sh | sh` to install the latest fork release";
 #[cfg(not(windows))]
 const SERVER_STOP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(not(windows))]
@@ -2107,6 +2112,10 @@ fn homebrew_cellar_keg_root(path: &Path) -> Option<PathBuf> {
 
 /// Manual self-update command (`herdr update`).
 pub fn self_update(options: SelfUpdateOptions) -> Result<Version, String> {
+    if FORK_UPDATES_DISABLED {
+        return Err(FORK_UPDATE_MESSAGE.into());
+    }
+
     let channel = UpdateChannel::configured();
 
     if is_homebrew_managed_install() {
@@ -2346,6 +2355,11 @@ fn print_outdated_integration_notice_with_updated_binary(updated_exe: &Path) {
 /// Background update check: only surface availability and release notes.
 /// Runs in a background thread at startup.
 pub fn auto_update(events: tokio::sync::mpsc::Sender<crate::events::AppEvent>) {
+    if FORK_UPDATES_DISABLED {
+        tracing::debug!("upstream background update checks are disabled for this fork");
+        return;
+    }
+
     crate::logging::update_check_started();
     if let Ok(version) = env::var(FAKE_UPDATE_VERSION_ENV) {
         let version = version.trim();
@@ -2510,6 +2524,37 @@ mod tests {
     };
     use std::sync::{Mutex, OnceLock};
     use std::thread;
+
+    #[test]
+    fn tests_that_fork_updates_are_disabled() {
+        let _guard = env_lock().lock().unwrap();
+        let variables = [
+            "XDG_CONFIG_HOME",
+            crate::HERDR_ENV_VAR,
+            FAKE_UPDATE_VERSION_ENV,
+        ];
+        let previous = variables.map(env::var_os);
+        let config_home = set_test_config_home("fork-updates");
+        // If the guards regress, fail through upstream's safe nested-session and
+        // fake-notification paths rather than downloading or touching a server.
+        env::set_var(crate::HERDR_ENV_VAR, crate::HERDR_ENV_VALUE);
+        env::set_var(FAKE_UPDATE_VERSION_ENV, "99.0.0");
+        let result = self_update(SelfUpdateOptions::default());
+        let (events, mut received) = tokio::sync::mpsc::channel(1);
+        auto_update(events);
+        for (key, value) in variables.into_iter().zip(previous) {
+            match value {
+                Some(value) => env::set_var(key, value),
+                None => env::remove_var(key),
+            }
+        }
+        fs::remove_dir_all(config_home).unwrap();
+
+        let error = result.expect_err("fork builds must never install upstream binaries");
+        assert!(error.contains("disabled for this fork"), "{error}");
+        assert!(error.contains("shadowfax92/herdr"), "{error}");
+        assert!(received.try_recv().is_err());
+    }
 
     fn saved_machine(
         label: &str,

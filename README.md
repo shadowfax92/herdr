@@ -41,7 +41,15 @@ https://github.com/user-attachments/assets/043ec09f-4bdd-41d5-aee0-8fda6b83e267
 
 ## install
 
-to install this fork, have Rust and Zig 0.16.0 installed. Cargo builds in release mode by default. Run from any directory to install the latest pushed commit on `fork/v0.9.5`:
+install the latest fork release on Linux or macOS (x86_64 or arm64):
+
+```sh
+curl -fsSL https://github.com/shadowfax92/herdr/releases/latest/download/install.sh | sh
+```
+
+the installer downloads an optimized release build, verifies its SHA-256 checksum, and installs to `~/.local/bin`. No Rust or Zig is needed. To choose another directory, export `HERDR_INSTALL_DIR` before running the command. Rerun the installer to update; this fork disables `herdr update` and background upstream update checks so upstream binaries cannot replace fork patches.
+
+to build from source, have Rust and Zig 0.16.0 installed. Cargo builds in release mode by default. Run from any directory to install the latest pushed commit on `fork/v0.9.5`:
 
 ```bash
 cargo install \
@@ -58,6 +66,16 @@ or install from the local `my-herdr-fork` checkout:
 ```bash
 cargo install --path . --locked --force
 ```
+
+to cut a fork release, merge the changes into `fork/v0.9.5`, then tag that exact merged commit. For example, after `fork-v0.9.5-1`, publish the next build with:
+
+```sh
+git fetch origin fork/v0.9.5
+git tag -a fork-v0.9.5-2 origin/fork/v0.9.5 -m 'fork release 0.9.5-2'
+git push origin fork-v0.9.5-2
+```
+
+use `fork-v<Cargo.toml version>-<positive build number>` tags. The **Fork release** workflow builds all four binaries, publishes the latest [fork release](https://github.com/shadowfax92/herdr/releases) with `SHA256SUMS` and `install.sh`, then tests the public installer on Linux and macOS for both architectures. Never use `v*` tags for fork releases; those belong to upstream release tooling.
 
 or install the upstream release:
 

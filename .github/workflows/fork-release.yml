@@ -1,0 +1,214 @@
+name: Fork release
+
+on:
+  push:
+    # Keep fork publication separate from upstream's v* release machinery.
+    tags: ['fork-v*']
+  pull_request:
+    branches: ['fork/v0.9.5']
+    paths:
+      - '.github/workflows/fork-release.yml'
+      - 'distribution/fork-install.sh'
+      - 'scripts/test_fork_installer.py'
+      - 'src/update.rs'
+      - 'justfile'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  RUST_TOOLCHAIN_VERSION: 1.96.1
+  LIBGHOSTTY_VT_OPTIMIZE: ReleaseFast
+  LIBGHOSTTY_VT_SIMD: 'true'
+
+jobs:
+  check:
+    if: github.repository == 'shadowfax92/herdr'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Validate release tag
+        if: github.event_name == 'push'
+        run: |
+          python3 - <<'PY'
+          import os, re, tomllib
+          from pathlib import Path
+          version = tomllib.loads(Path('Cargo.toml').read_text())['package']['version']
+          tag = os.environ['GITHUB_REF_NAME']
+          if not re.fullmatch(rf'fork-v{re.escape(version)}-[1-9][0-9]*', tag):
+              raise SystemExit(f'expected fork-v{version}-N (N is a positive integer), got {tag}')
+          PY
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN_VERSION }}
+          components: rustfmt,clippy
+      - name: Install Zig
+        uses: vercel-labs/setup-zig@83c1594f26b86da8a9a8ddd9b5ee5f3af0f96943 # v1.0.2
+        with:
+          version: 0.16.0
+      - name: Install check tools
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: just,cargo-nextest
+      - name: Check installer and fork update policy
+        env:
+          CARGO_PROFILE_DEV_DEBUG: '1'
+          CARGO_PROFILE_TEST_DEBUG: '1'
+        run: |
+          shellcheck -s sh distribution/fork-install.sh
+          go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/fork-release.yml
+          just fork-check
+          just lint
+
+  build:
+    needs: check
+    if: github.event_name == 'push'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            name: herdr-linux-x86_64
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            name: herdr-linux-aarch64
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+            name: herdr-macos-x86_64
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            name: herdr-macos-aarch64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN_VERSION }}
+          targets: ${{ matrix.target }}
+      - name: Install Zig
+        uses: vercel-labs/setup-zig@83c1594f26b86da8a9a8ddd9b5ee5f3af0f96943 # v1.0.2
+        with:
+          version: 0.16.0
+      - name: Install Linux build tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build musl-tools gcc-aarch64-linux-gnu crossbuild-essential-arm64
+      - name: Set Linux aarch64 linker
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: echo 'CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc' >> "$GITHUB_ENV"
+      - name: Install macOS build tools
+        if: runner.os == 'macOS'
+        run: brew install cmake ninja
+      - name: Build optimized binary
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo build --release --locked --target "$TARGET"
+      - name: Package binary
+        env:
+          TARGET: ${{ matrix.target }}
+          ASSET: ${{ matrix.name }}
+        run: |
+          cp "target/$TARGET/release/herdr" "$ASSET"
+          file "$ASSET"
+          if [ "$RUNNER_OS" = Linux ]; then
+            # musl binaries must run without the build host's dynamic loader or C++ runtime.
+            if readelf -l "$ASSET" | grep -q INTERP; then
+              echo 'error: Linux binary requires a dynamic loader' >&2
+              exit 1
+            fi
+            if nm -u "$ASSET" 2>/dev/null | grep -E '(__cxa|GLIBCXX|CXXABI|_ZSt)'; then
+              echo 'error: Linux binary has unresolved C++ runtime symbols' >&2
+              exit 1
+            fi
+          else
+            "./$ASSET" --version
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.name }}
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: herdr-*
+          path: release
+          merge-multiple: true
+      - name: Generate checksums and publish the complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp distribution/fork-install.sh release/install.sh
+          cd release
+          for asset in herdr-linux-x86_64 herdr-linux-aarch64 herdr-macos-x86_64 herdr-macos-aarch64 install.sh; do
+            test -s "$asset"
+          done
+          sha256sum herdr-* install.sh > SHA256SUMS
+          printf 'Optimized fork build from %s.\n\n' "$GITHUB_SHA" > notes.md
+          cat >> notes.md <<'NOTES'
+          Install on Linux or macOS:
+          ```sh
+          curl -fsSL https://github.com/shadowfax92/herdr/releases/latest/download/install.sh | sh
+          ```
+          NOTES
+          # Keep latest on the previous complete release until every asset uploads.
+          gh release create "$GITHUB_REF_NAME" -R shadowfax92/herdr --verify-tag \
+            --draft --title "$GITHUB_REF_NAME" --notes-file notes.md \
+            herdr-* SHA256SUMS install.sh
+          gh release edit "$GITHUB_REF_NAME" -R shadowfax92/herdr --draft=false --latest
+
+  smoke:
+    needs: publish
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-15-intel, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    steps:
+      - name: Install from the published one-liner
+        shell: bash
+        run: |
+          set -euo pipefail
+          HERDR_INSTALL_DIR="$(mktemp -d)"
+          export HERDR_INSTALL_DIR
+          trap 'rm -rf "$HERDR_INSTALL_DIR"' EXIT
+          curl -fsSL https://github.com/shadowfax92/herdr/releases/latest/download/install.sh | sh
+          version="$("$HERDR_INSTALL_DIR/herdr" --version)"
+          base="${GITHUB_REF_NAME#fork-v}"
+          # Preserve Cargo's version identity, used by existing remote bootstrap.
+          expected="herdr ${base%-*}"
+          test "$version" = "$expected"
+          echo "$version"
+          if "$HERDR_INSTALL_DIR/herdr" update > update.txt 2>&1; then
+            echo 'error: fork must reject upstream self-update' >&2
+            exit 1
+          fi
+          grep -F 'disabled for this fork' update.txt
+          printf 'Published installer passed on %s/%s: %s\n' "$RUNNER_OS" "$RUNNER_ARCH" "$version" >> "$GITHUB_STEP_SUMMARY"
