@@ -162,6 +162,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # last_workspace = ""     # optional, unset by default; bind e.g. "alt+backtick" to flip between the last two workspaces
 # previous_agent = ""     # optional, unset by default
 # next_agent = ""         # optional, unset by default
+# next_attention_agent = "" # optional, unset by default; visits agents in ui.sidebar.agents.attention, e.g. "alt+u"
 # focus_agent = ""        # optional indexed binding, e.g. "prefix+alt+1..9"
 # remote_image_paste = "ctrl+v" # only active in herdr --remote; empty disables raw-key image paste
 # new_tab = "prefix+c"

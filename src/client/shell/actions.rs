@@ -169,6 +169,10 @@ impl ClientShellState {
                     }
                     return;
                 }
+                if action == crate::input::KeybindAction::NextAttentionAgent {
+                    self.focus_next_attention_agent(outcome);
+                    return;
+                }
                 if self.handle_endpoint_navigation(action, outcome) {
                     return;
                 }

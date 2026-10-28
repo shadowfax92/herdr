@@ -33,6 +33,7 @@ pub(crate) enum KeybindAction {
     LastWorkspace,
     PreviousAgent,
     NextAgent,
+    NextAttentionAgent,
     NewTab,
     RenameTab,
     PreviousTab,
@@ -114,6 +115,10 @@ pub(crate) fn resolve_non_indexed_action(
         (&keybinds.last_workspace, KeybindAction::LastWorkspace),
         (&keybinds.previous_agent, KeybindAction::PreviousAgent),
         (&keybinds.next_agent, KeybindAction::NextAgent),
+        (
+            &keybinds.next_attention_agent,
+            KeybindAction::NextAttentionAgent,
+        ),
         (&keybinds.new_tab, KeybindAction::NewTab),
         (&keybinds.rename_tab, KeybindAction::RenameTab),
         (&keybinds.previous_tab, KeybindAction::PreviousTab),

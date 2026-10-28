@@ -632,6 +632,12 @@
           "description": "Focus the next agent shown in the agent panel. Unset by default."
         },
         {
+          "key": "keys.next_attention_agent",
+          "type": "keybinding",
+          "default": "unset",
+          "description": "Focus the next agent in the agent panel, on any machine, whose status is listed in ui.sidebar.agents.attention. Unset by default."
+        },
+        {
           "key": "keys.focus_agent",
           "type": "keybinding",
           "default": "unset",
@@ -1065,6 +1071,12 @@
             "dots",
             "symbols"
           ]
+        },
+        {
+          "key": "ui.sidebar.agents.attention",
+          "type": "list of strings",
+          "default": "[\"blocked\", \"done\"]",
+          "description": "Agent statuses keys.next_attention_agent stops at: blocked, done, working, idle or unknown. done is the panel's unread mark, cleared when the agent's pane is focused."
         },
         {
           "key": "ui.sidebar.agents.hidden_workspaces",

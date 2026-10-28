@@ -449,6 +449,14 @@ pub struct AgentsSidebarConfig {
     /// remain in the Spaces panel. Presentation only: the API still lists them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub hidden_workspaces: Vec<String>,
+    /// Agent statuses `next_attention_agent` stops at, from `blocked`, `done`,
+    /// `working`, `idle` and `unknown`. `done` is the panel's unread mark, so
+    /// the default visits agents waiting on the user.
+    #[serde(
+        deserialize_with = "deserialize_attention",
+        skip_serializing_if = "is_default_attention"
+    )]
+    pub attention: Vec<String>,
 }
 
 impl AgentsSidebarConfig {
@@ -478,8 +486,36 @@ impl Default for AgentsSidebarConfig {
             rows_by_agent: BTreeMap::new(),
             row_gap: DEFAULT_SIDEBAR_ROW_GAP,
             hidden_workspaces: Vec::new(),
+            attention: default_attention(),
         }
     }
+}
+
+const ATTENTION_STATUSES: [&str; 5] = ["blocked", "done", "working", "idle", "unknown"];
+
+fn default_attention() -> Vec<String> {
+    vec!["blocked".to_owned(), "done".to_owned()]
+}
+
+fn is_default_attention(attention: &[String]) -> bool {
+    attention == default_attention().as_slice()
+}
+
+fn deserialize_attention<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let attention = Vec::<String>::deserialize(deserializer)?;
+    if let Some(unknown) = attention
+        .iter()
+        .find(|status| !ATTENTION_STATUSES.contains(&status.as_str()))
+    {
+        return Err(serde::de::Error::custom(format!(
+            "unknown agent status `{unknown}` in sidebar agents attention; expected one of {}",
+            ATTENTION_STATUSES.join(", ")
+        )));
+    }
+    Ok(attention)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
