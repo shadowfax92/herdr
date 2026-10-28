@@ -614,6 +614,12 @@
           "description": "Select the next workspace. Unset by default."
         },
         {
+          "key": "keys.last_workspace",
+          "type": "keybinding",
+          "default": "unset",
+          "description": "Return to the previously focused workspace. Unset by default."
+        },
+        {
           "key": "keys.previous_agent",
           "type": "keybinding",
           "default": "unset",

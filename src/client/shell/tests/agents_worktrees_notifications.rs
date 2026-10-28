@@ -1682,3 +1682,67 @@ fn semantic_notifications_use_client_policy_and_stable_navigation_targets() {
     assert!(state.visible_notification.is_none());
     assert_eq!(state.pending_notifications.len(), 1);
 }
+
+fn last_workspace_target(state: &mut ClientShellState) -> Option<String> {
+    let mut input = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::LastWorkspace),
+        &mut input,
+    );
+    match &input.actions[..] {
+        [ClientShellAction::Endpoint { request, .. }] => match &request.method {
+            crate::api::schema::Method::WorkspaceFocus(target) => Some(target.workspace_id.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+#[test]
+fn last_workspace_flips_between_the_two_most_recent_workspaces() {
+    let mut initial = snapshot();
+    let mut second = initial.workspaces[0].clone();
+    second.workspace_id = "ws_2".into();
+    second.label = "second".into();
+    second.focused = false;
+    initial.workspaces.push(second);
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(initial.clone()));
+    assert_eq!(last_workspace_target(&mut state), None, "no history yet");
+
+    let mut moved = initial;
+    moved.revision = 2;
+    moved.focused_workspace_id = Some("ws_2".into());
+    moved.workspaces[0].focused = false;
+    moved.workspaces[1].focused = true;
+    state.set_snapshot(Box::new(moved.clone()));
+    assert_eq!(last_workspace_target(&mut state).as_deref(), Some("ws_1"));
+
+    let mut pane_moved = moved;
+    pane_moved.revision = 3;
+    pane_moved.focused_pane_id = Some("pane_ws2".into());
+    state.set_snapshot(Box::new(pane_moved.clone()));
+    assert_eq!(
+        last_workspace_target(&mut state).as_deref(),
+        Some("ws_1"),
+        "a pane move inside the workspace keeps the workspace history"
+    );
+
+    let mut back = pane_moved;
+    back.revision = 4;
+    back.focused_workspace_id = Some("ws_1".into());
+    back.workspaces[0].focused = true;
+    back.workspaces[1].focused = false;
+    state.set_snapshot(Box::new(back.clone()));
+    assert_eq!(last_workspace_target(&mut state).as_deref(), Some("ws_2"));
+
+    let mut closed = back;
+    closed.revision = 5;
+    closed.workspaces.truncate(1);
+    state.set_snapshot(Box::new(closed));
+    assert_eq!(
+        last_workspace_target(&mut state),
+        None,
+        "a closed workspace is not a target"
+    );
+}
