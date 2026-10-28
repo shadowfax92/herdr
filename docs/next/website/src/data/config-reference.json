@@ -1067,6 +1067,12 @@
           ]
         },
         {
+          "key": "ui.sidebar.agents.hidden_workspaces",
+          "type": "list of strings",
+          "default": "[]",
+          "description": "Workspace labels, matched exactly, whose agents stay out of the Agents panel and its navigation keys. The workspaces stay in the Spaces panel, and the API still lists their agents."
+        },
+        {
           "key": "ui.sidebar.agents.row_gap",
           "type": "integer",
           "default": "0",

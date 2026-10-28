@@ -530,6 +530,7 @@ fn agent_navigation_keeps_scroll_when_target_is_visible() {
         &state.endpoints,
         &state.active_endpoint_id,
         state.config.agent_panel_sort,
+        &state.config.agents,
     );
     let index = targets
         .iter()

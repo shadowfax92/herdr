@@ -444,6 +444,11 @@ pub struct AgentsSidebarConfig {
     #[serde(default, deserialize_with = "deserialize_rows_by_agent")]
     pub rows_by_agent: BTreeMap<String, AgentSidebarRows>,
     pub row_gap: u16,
+    /// Workspace labels, matched exactly, whose agents stay out of the Agents
+    /// panel, e.g. a workspace of background workers. The workspaces themselves
+    /// remain in the Spaces panel. Presentation only: the API still lists them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub hidden_workspaces: Vec<String>,
 }
 
 impl AgentsSidebarConfig {
@@ -451,6 +456,10 @@ impl AgentsSidebarConfig {
         agent
             .and_then(|agent| self.rows_by_agent.get(crate::detect::agent_label(agent)))
             .unwrap_or(&self.rows)
+    }
+
+    pub(crate) fn hides_workspace(&self, label: &str) -> bool {
+        self.hidden_workspaces.iter().any(|hidden| hidden == label)
     }
 }
 
@@ -468,6 +477,7 @@ impl Default for AgentsSidebarConfig {
             ],
             rows_by_agent: BTreeMap::new(),
             row_gap: DEFAULT_SIDEBAR_ROW_GAP,
+            hidden_workspaces: Vec::new(),
         }
     }
 }

@@ -260,14 +260,29 @@ impl crate::agent_view_eval::AgentViewEntry for ClientAgentViewEntry<'_> {
     }
 }
 
+/// Whether `[ui.sidebar.agents].hidden_workspaces` keeps this row out of the
+/// Agents panel. Navigation keys skip what the panel never draws.
+pub(super) fn in_hidden_workspace(
+    row: &AggregateAgentRow<'_>,
+    agents: &crate::config::AgentsSidebarConfig,
+) -> bool {
+    row.endpoint
+        .snapshot
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.workspace_id == row.agent.workspace_id)
+        .is_some_and(|workspace| agents.hides_workspace(&workspace.label))
+}
+
 pub(super) fn online_agent_targets(
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
     sort: crate::config::AgentPanelSortConfig,
+    agents: &crate::config::AgentsSidebarConfig,
 ) -> Vec<AggregateAgentTarget> {
     aggregate_agent_rows(endpoints, active_endpoint_id, sort)
         .into_iter()
-        .filter(|row| !row.endpoint.stale())
+        .filter(|row| !row.endpoint.stale() && !in_hidden_workspace(row, agents))
         .map(|row| AggregateAgentTarget {
             endpoint_id: row.endpoint.endpoint_id.clone(),
             pane_id: row.agent.pane_id.clone(),

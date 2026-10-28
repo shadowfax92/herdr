@@ -49,6 +49,31 @@ pub(super) fn ordered_agent_pane_ids(
         .collect()
 }
 
+/// The agents one machine's panel lists, in panel order: everything outside
+/// `[ui.sidebar.agents].hidden_workspaces`. Agent keys walk this list, so they
+/// never land on an agent the panel doesn't draw.
+pub(super) fn listed_agent_pane_ids(
+    snapshot: &ClientShellSnapshot,
+    config: &ClientShellConfig,
+) -> Vec<String> {
+    ordered_agent_pane_ids(snapshot, config.agent_panel_sort)
+        .into_iter()
+        .filter(|pane_id| {
+            !snapshot
+                .agents
+                .iter()
+                .find(|agent| &agent.pane_id == pane_id)
+                .and_then(|agent| {
+                    snapshot
+                        .workspaces
+                        .iter()
+                        .find(|workspace| workspace.workspace_id == agent.workspace_id)
+                })
+                .is_some_and(|workspace| config.agents.hides_workspace(&workspace.label))
+        })
+        .collect()
+}
+
 pub(super) fn render_agent_panel(
     buffer: &mut Buffer,
     area: Rect,
@@ -259,6 +284,12 @@ pub(super) fn agent_row(
         .workspaces
         .iter()
         .find(|workspace| workspace.workspace_id == agent.workspace_id)?;
+    // Every desktop layout, single- or multi-machine and collapsed, renders
+    // through here. Matching the label on each compose keeps a recreated
+    // workspace hidden under its new ID.
+    if config.agents.hides_workspace(&workspace.label) {
+        return None;
+    }
     let tab = snapshot.tabs.iter().find(|tab| tab.tab_id == agent.tab_id);
     let pane = snapshot
         .panes
