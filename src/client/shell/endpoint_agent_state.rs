@@ -50,10 +50,15 @@ impl EndpointAgentPresentation {
             self.acknowledged.clear();
             self.completed.clear();
             self.working.clear();
+            // A fresh client or server starts every agent read, except those the
+            // server still reports done: those stay unread across a client
+            // restart or live handoff. They still need a matching completion
+            // below, so agents restored without one stay read.
             self.acknowledged.extend(
                 snapshot
                     .agents
                     .iter()
+                    .filter(|agent| agent.agent_status != AgentStatus::Done)
                     .map(|agent| (agent.pane_id.clone(), agent.state_change_seq)),
             );
         }
@@ -130,7 +135,10 @@ impl EndpointAgentPresentation {
         }
 
         let mut changed = false;
-        for pane in &surface.panes {
+        // Reading is per agent: only the focused pane counts, so agents sharing
+        // a tab with it, or hidden behind it while zoomed, stay unread until
+        // they are focused themselves.
+        for pane in surface.panes.iter().filter(|pane| pane.focused) {
             let Some(agent) = snapshot
                 .agents
                 .iter()
