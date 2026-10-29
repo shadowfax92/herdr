@@ -344,6 +344,15 @@ impl ClientShellState {
             frame.cells[start..start + usize::from(bar.width)].to_vec()
         });
         blit_pane_surface(&mut frame, &surface.frame, layout.pane_surface);
+        // Before the mode bar is restored, so it and later overlays draw over the glow.
+        self.landing_glow.compose(
+            &mut frame,
+            surface,
+            layout.pane_surface,
+            &self.active_endpoint_id,
+            &self.config,
+            self.host_background,
+        );
         restore_mode_bar(&mut frame, mode_bar, mode_bar_cells.as_deref());
         let mut occlusion = crate::kitty_graphics::surface::Occlusion::default();
         let has_selection = self

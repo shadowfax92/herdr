@@ -83,6 +83,7 @@ impl ClientShellState {
         let Some(pane_id) = notification.event.pane_id else {
             return;
         };
+        self.arm_landing_glow(&notification.endpoint_id, &pane_id);
         if notification.endpoint_id == self.active_endpoint_id {
             self.push_endpoint_method(
                 crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget { pane_id }),
@@ -284,6 +285,7 @@ impl ClientShellState {
         };
         let mut outcome = ClientShellInput::default();
         if self.notification_target_is_current(&target.endpoint_id, &focus) {
+            self.arm_landing_glow_for_target(&target.endpoint_id, &focus);
             outcome.actions.push(ClientShellAction::ActivateEndpoint {
                 endpoint_id: target.endpoint_id,
                 target: Some(focus),

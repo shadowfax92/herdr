@@ -270,6 +270,7 @@ impl ClientShellState {
             outcome.repaint = true;
             return false;
         }
+        self.arm_landing_glow_for_target(&endpoint_id, &target);
         // Local can still be displayed while a remote activation is pending.
         // Route explicit selections through the runtime so they can cancel that handoff.
         if endpoint_id == self.active_endpoint_id

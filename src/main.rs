@@ -313,6 +313,12 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Show detected/reported agent labels in split pane borders when no manual pane name is set.
 # show_agent_labels_on_pane_borders = false
 
+# Briefly glow the border of the pane a jump lands on (next/previous agent,
+# next attention agent, a sidebar agent click, a notification). "ring" blooms
+# and settles in about half a second, "quiet" is fainter and shorter, "static"
+# is a reduced-motion highlight that clears in one step, "off" disables it.
+# landing_glow = "ring"
+
 # Hide the tab row when a workspace has exactly one tab.
 # New tabs can still be created with the configured keybinding.
 # hide_tab_bar_when_single_tab = false

@@ -177,6 +177,7 @@ impl ClientShellState {
                     return;
                 }
                 if let Some(method) = self.endpoint_method_for_action(action) {
+                    self.arm_landing_glow_for_action(action, &method);
                     self.push_endpoint_method(method, outcome);
                     return;
                 }

@@ -1012,6 +1012,18 @@
           "description": "Show agent labels in split pane borders when no manual pane label is set."
         },
         {
+          "key": "ui.landing_glow",
+          "type": "enum",
+          "default": "\"ring\"",
+          "description": "Briefly glow the border of the pane a jump lands on: next or previous agent, the next attention agent, a sidebar agent click, or a notification. \"ring\" blooms and settles in about half a second, \"quiet\" is fainter and shorter, \"static\" is a reduced-motion highlight that clears in one step, and \"off\" disables it.",
+          "values": [
+            "ring",
+            "quiet",
+            "static",
+            "off"
+          ]
+        },
+        {
           "key": "ui.hide_tab_bar_when_single_tab",
           "type": "boolean",
           "default": "false",
