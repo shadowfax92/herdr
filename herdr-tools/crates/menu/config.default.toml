@@ -67,4 +67,4 @@ label = "hide…"
 [[items]]
 type = "focus_toggle"
 key = "F"
-label = "focus mode"
+label = "focus on/off"

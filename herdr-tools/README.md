@@ -53,8 +53,10 @@ the picker is a native overlay. A plugin sees only the local server, so
 herdr-tools never stores or judges scope. It only does two things with it:
 
 - **Opens it.** The menu's `focus`, `hide` (and retired `workspace_visibility`)
-  rows ask Herdr to open its picker (`scope.pick`), and `focus_toggle` flips
-  focus on or off (`scope.set {focus_active}`). See `crates/menu/README.md`.
+  rows ask Herdr to open its picker (`scope.pick`), and `focus_toggle` asks
+  the owner's client to flip focus (`scope.toggle`). The menu's server can be
+  a remote machine's, whose scope no client applies, so the menu never reads
+  or sets the scope itself. See `crates/menu/README.md`.
 - **Filters by it.** Find's pane navigator drops panes whose tab Herdr judges
   out of scope, from `scope.get`'s per-tab verdict ([`scope`](#scope-scopers)).
 

@@ -26,7 +26,7 @@ Then press one key:
 | `h` | Copy the current pane's identity and agent commands to the clipboard |
 | `f` | Open Herdr's focus picker |
 | `v` | Open Herdr's hide picker (the old "excluded workspaces" row) |
-| `F` | Switch focus on or off; the row shows the current state |
+| `F` | Switch focus on or off, keeping what is focused |
 
 The fork items read the focused pane's hook-reported native session ID, ask
 [RTR](https://github.com/shadowfax92/rtr) to fork that exact Claude/Codex
@@ -57,16 +57,19 @@ Focus and hide are Herdr's own (the herdr fork's `herdr scope …`): pick
 workspaces or tabs on any machine, and the machines and agents panels show only
 those (focus) or leave them out (hide), with no notifications from the rest.
 The scope lives in the local server until it restarts. The menu never edits it
-itself; it opens Herdr's native picker, which sees every machine:
+itself; it asks your client to act on Local's scope, so both work from a pane
+on any machine:
 
 - `type = "focus"` and `type = "hide"` close the menu, then open the picker
   (`scope.pick`) in that mode on your client. The mode only sets what `space`
   marks; both marks stay one key away (`f` focus, `x` hide).
-- `type = "focus_toggle"` switches focus on or off and keeps its targets. It
-  reads the scope as you press it and sends the opposite (`scope.set
-  {focus_active}`). Its row shows the state when the menu opened:
-  `focus mode · on`. Switching on a focus with nothing in it is refused with a
-  hint, since it would change nothing.
+- `type = "focus_toggle"` asks your client to switch focus on or off
+  (`scope.toggle`), keeping its targets, and closes the menu. Its label is the
+  configured one: the menu talks to the server of the machine its pane is on,
+  and on a studio pane that server's scope is not the one the client applies
+  (only Local's is), so the menu shows no state and never reads or sets the
+  scope itself. A refusal (`no_client`, or a Herdr without `scope.toggle`)
+  shows in the menu, which stays open.
 
 The picker opens on the client once the popup is gone: the menu starts a
 detached `herdr-tools menu scope-pick <mode>`, closes its own popup
@@ -75,7 +78,7 @@ refused pick (for example `no_client`, with no client attached) is a
 notification.
 
 As the menu opens it reads `scope.get` once, when it has a scope row.
-`scope.pick` cannot be probed without opening the picker, and the three scope
+`scope.pick` and `scope.toggle` cannot be probed without acting, and the scope
 methods ship together, so a Herdr that knows `scope.get` is taken to have all
 of them. On a Herdr without scope (Herdr 0.9.5) every scope row reads
 `<label> (unavailable)`, is never selectable or activated, and a red panel
@@ -263,7 +266,7 @@ Item types:
 | `copy_context` | `key`, `label` | Copy the pane that opened the menu and commands to inspect it |
 | `focus` | `key`, `label` | Close the menu and open Herdr's focus picker (see [Focus and hide](#focus-and-hide)) |
 | `hide` | `key`, `label` | Close the menu and open Herdr's hide picker |
-| `focus_toggle` | `key`, `label` | Switch focus on or off, keeping its targets; the row shows the state |
+| `focus_toggle` | `key`, `label` | Ask your client to switch focus on or off, keeping its targets |
 | `workspace_visibility` | `key`, `label` | Retired; the same as `hide` |
 | `shell` | `key`, `label`, `command` | Run a trusted user shell command |
 | `separator` | none | Draw a divider |

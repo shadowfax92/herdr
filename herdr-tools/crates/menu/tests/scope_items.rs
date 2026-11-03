@@ -3,7 +3,7 @@
 //!
 //! Each row reaches execution as its own outcome (the event loop turns a
 //! `ScopePick` into `popup.close` + a detached `scope.pick`, and a
-//! `FocusToggle` into `scope.get` + `scope.set`; `src/scope.rs` tests those
+//! `FocusToggle` into `scope.toggle`; `src/scope.rs` tests those
 //! calls against a fake socket). On a Herdr without scope the rows read
 //! "<label> (unavailable)" above a scrollable panel, never activate, and every
 //! other row stays usable: what the retired row did when Agents was not running.
@@ -72,12 +72,7 @@ fn render_inner(state: &MenuState, width: u16, height: u16) -> String {
 
 #[test]
 fn each_scope_row_dispatches_its_own_action() {
-    for scope in [
-        ScopeSupport::Unknown,
-        ScopeSupport::Available {
-            focus_active: false,
-        },
-    ] {
+    for scope in [ScopeSupport::Unknown, ScopeSupport::Available] {
         let mut state = menu(scope);
         assert_eq!(
             state.handle_key(press('f')),
@@ -105,7 +100,7 @@ fn each_scope_row_dispatches_its_own_action() {
 
 #[test]
 fn enter_runs_the_selected_scope_row() {
-    let mut state = menu(ScopeSupport::Available { focus_active: true });
+    let mut state = menu(ScopeSupport::Available);
     assert_eq!(state.selected(), Some(0));
     assert_eq!(
         state.handle_key(code(KeyCode::Enter)),
@@ -120,19 +115,16 @@ fn enter_runs_the_selected_scope_row() {
 }
 
 #[test]
-fn the_focus_switch_shows_the_current_state() {
-    let on = menu(ScopeSupport::Available { focus_active: true });
-    assert!(render_menu(&on, 80, 14).contains("F  focus mode · on"));
-    let off = menu(ScopeSupport::Available {
-        focus_active: false,
-    });
-    assert!(render_menu(&off, 80, 14).contains("F  focus mode · off"));
-    // Unread: the plain label, no guess.
-    let unknown = render_menu(&menu(ScopeSupport::Unknown), 80, 14);
-    assert!(unknown.contains("F  focus mode"));
-    assert!(!unknown.contains("focus mode ·"));
-    // The picker rows never carry a state.
-    assert!(render_menu(&on, 80, 14).contains("x  hide…"));
+fn scope_rows_show_their_configured_labels() {
+    // The menu's server may be a remote machine's, whose scope no client
+    // applies, so the focus switch never shows a state it read there.
+    for scope in [ScopeSupport::Available, ScopeSupport::Unknown] {
+        let screen = render_menu(&menu(scope), 80, 14);
+        assert!(screen.contains("F  focus mode"), "{screen}");
+        assert!(!screen.contains("focus mode ·"), "{screen}");
+        assert!(!screen.contains("(unavailable)"), "{screen}");
+        assert!(screen.contains("x  hide…"), "{screen}");
+    }
 }
 
 #[test]
@@ -189,9 +181,7 @@ fn learning_scope_is_missing_moves_the_selection_off_a_disabled_row() {
     state.set_scope(ScopeSupport::Missing);
     assert_eq!(state.selected(), Some(4));
     assert!(state.scope_failure().is_some());
-    state.set_scope(ScopeSupport::Available {
-        focus_active: false,
-    });
+    state.set_scope(ScopeSupport::Available);
     assert_eq!(state.selected(), Some(4));
     assert!(state.scope_failure().is_none());
 }
@@ -207,12 +197,7 @@ fn the_built_in_v_row_opens_the_hide_picker() {
             ..
         })
     )));
-    let mut state = MenuState::with_scope(
-        config,
-        ScopeSupport::Available {
-            focus_active: false,
-        },
-    );
+    let mut state = MenuState::with_scope(config, ScopeSupport::Available);
     assert!(matches!(
         state.handle_key(press('v')),
         InputOutcome::Execute(MenuItem::ScopePick(ScopePickItem {

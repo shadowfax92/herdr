@@ -81,6 +81,13 @@ class IsolatedHerdr:
                 f"refusing to use non-test socket {self.socket}"
             )
             self.env["HERDR_SOCKET_PATH"] = self.socket
+            # Ask Herdr where plugin config lives: a debug build of the fork
+            # namespaces its dirs as herdr-dev, so the stable path would be
+            # written and never read.
+            asked = self.cli("plugin", "config-dir", "shadowfax.tools", check=False)
+            asked = Path(getattr(asked, "stdout", asked).strip() or ".").resolve()
+            if asked.is_relative_to(self.root):
+                self.plugin_config_dir = asked
         except BaseException:
             self.__exit__(None, None, None)
             raise

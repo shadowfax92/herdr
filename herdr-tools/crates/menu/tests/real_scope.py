@@ -16,9 +16,10 @@ What it drives, all through the real laid-out plugin and the real CLI:
 1. Find: `herdr scope hide beta` drops beta's pane from the navigator (Enter on
    its name focuses nothing) while alpha's is still reachable; with focus on
    beta it is the other way round.
-2. Menu, focus_toggle (F): the row shows `focus mode · on/off`; F flips
-   `scope.focus.active` and keeps the targets; on an empty focus it refuses and
-   stays open.
+2. Menu, focus_toggle (F): the row shows its configured label, no state; F
+   asks the client to flip focus on Local (`scope.toggle`), closes the menu,
+   and keeps the targets. On a build with scope.get but no scope.toggle yet the
+   menu stays open with that refusal, and this step prints SKIP.
 3. Menu, hide (x), focus (f) and the retired workspace_visibility row (v): each
    closes the menu and opens Herdr's picker in its mode. The picker's own keys
    (j moves, space toggles the mode's mark, enter applies) then change exactly
@@ -58,7 +59,7 @@ label = "hide…"
 [[menu.items]]
 type = "focus_toggle"
 key = "F"
-label = "focus mode"
+label = "focus on/off"
 
 [[menu.items]]
 type = "workspace_visibility"
@@ -181,32 +182,45 @@ def main():
         refocus(source, source_tab)
         print("PASS find: with focus on beta only beta's pane is listed")
 
-        # --- 2. focus_toggle: shows the state, flips it, keeps targets -------
-        invoke("menu", "menu menu")
-        screen = screen_until(lambda text: "focusmode·on" in text, what="'focus mode · on'")
-        assert "(unavailable)" not in screen, screen
-        herdr.type("F")
-        herdr.wait_for(lambda: not running("menu menu"), what="the menu to close after F")
-        after = scope()["scope"]["focus"]
-        assert after["active"] is False and len(after["targets"]) == 1, after
-        invoke("menu", "menu menu")
-        screen_until(lambda text: "focusmode·off" in text, what="'focus mode · off'")
-        herdr.type("F")
-        herdr.wait_for(lambda: not running("menu menu"), what="the menu to close after F")
-        assert scope()["scope"]["focus"]["active"] is True, scope()
-        print("PASS F: 'focus mode · on' -> off -> on, targets kept")
+        # --- 2. focus_toggle: a static label; the client flips Local's focus -
+        def press_toggle():
+            """Opens the menu and presses F. True once the menu has closed;
+            False when this Herdr refused scope.toggle as unknown (the menu
+            then stays open with the refusal, and is closed here)."""
+            # Not invoke(): its wait discards the output holding the first frame.
+            herdr.drain(0)
+            herdr.cli("plugin", "action", "invoke", "shadowfax.tools.menu")
+            screen = screen_until(lambda text: "Ffocuson/off" in text, what="the F row")
+            assert "(unavailable)" not in screen and "focuson/off·" not in flat(screen), screen
+            herdr.type("F")
+            screen, deadline = "", time.monotonic() + 10
+            while running("menu menu"):
+                assert time.monotonic() < deadline, f"F neither closed the menu nor failed: {screen[-1500:]}"
+                screen += herdr.drain(0.1)
+                if "hasnoscope.toggle" in flat(screen):
+                    herdr.type("\x1b")
+                    herdr.wait_for(lambda: not running("menu menu"), what="the menu to close after Esc")
+                    return False
+            return True
 
+        def focus_active_is(value):
+            return lambda: scope()["scope"]["focus"]["active"] is value
+
+        # Step 1 left focus on, with beta its one target.
+        if press_toggle():
+            herdr.wait_for(focus_active_is(False), what="F to switch focus off on Local")
+            assert len(scope()["scope"]["focus"]["targets"]) == 1, scope()
+            assert press_toggle(), "the second F was refused"
+            herdr.wait_for(focus_active_is(True), what="F to switch focus back on")
+            assert len(scope()["scope"]["focus"]["targets"]) == 1, scope()
+            print("PASS F: static 'focus on/off' label; on -> off -> on through the client, "
+                  "targets kept, menu closed each time")
+        else:
+            print("SKIP F: this Herdr has scope.get but no scope.toggle yet; the menu showed "
+                  "the refusal and stayed open")
         herdr.cli("scope", "clear")
         herdr.cli("scope", "unfocus")
-        assert not scope()["scope"]["focus"]["targets"], scope()
-        invoke("menu", "menu menu")
-        herdr.type("F")
-        screen_until(lambda text: "nothingisfocusedyet" in text, what="the empty-focus refusal")
-        assert running("menu menu"), "F on an empty focus must keep the menu open"
-        assert scope()["scope"]["focus"]["active"] is False, scope()
-        herdr.type("\x1b")
-        herdr.wait_for(lambda: not running("menu menu"), what="the menu to close after Esc")
-        print("PASS F on an empty focus: refused with a hint, menu stays, scope unchanged")
+        refocus(source, source_tab)
 
         # --- 3. focus / hide / retired v open the picker in their mode -------
         for key, mode, owned in [("x", "hide", "hidden"), ("v", "hide", "hidden"),
@@ -225,9 +239,19 @@ def main():
             herdr.type(" ")
             herdr.drain(0.3)
             herdr.type("\r")
-            herdr.wait_for(lambda: scope()["scope"] != before, timeout=10,
-                           what=f"{key}'s {mode} picker to apply a change "
-                                "(j, space, enter in Herdr's picker)")
+            try:
+                herdr.wait_for(lambda: scope()["scope"] != before, timeout=10,
+                               what=f"{key}'s {mode} picker to apply a change "
+                                    "(j, space, enter in Herdr's picker)")
+            except AssertionError:
+                pane = herdr.cli("pane", "read", focused(), "--source", "recent-unwrapped",
+                                 "--lines", "20", check=False)
+                text = getattr(pane, "stdout", pane) or ""
+                if "j: command not found" in text or "j: not found" in text:
+                    raise AssertionError(
+                        f"{key}: the picker opened but its keys reached the pane: the client "
+                        "still routed input to the menu's closed popup") from None
+                raise
             after = scope()["scope"]
             # Space toggles this mode's mark only, so the other list is untouched.
             if owned == "hidden":

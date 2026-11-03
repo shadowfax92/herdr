@@ -463,8 +463,10 @@ fn run_event_loop(
                     Err(error) => state.set_failure(format!("{}: {error:#}", item.label)),
                 }
             }
+            // The client flips focus on Local; nothing opens, so the menu just
+            // exits and its popup closes with it.
             InputOutcome::Execute(MenuItem::FocusToggle(item)) => match scope.toggle_focus() {
-                Ok(_) => return Ok(()),
+                Ok(()) => return Ok(()),
                 Err(error) => state.set_failure(format!("{}: {error:#}", item.label)),
             },
             // Separators are not selectable.

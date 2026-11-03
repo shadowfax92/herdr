@@ -53,7 +53,8 @@ pub enum MenuItem {
     /// `type = "focus"` or `"hide"`: open Herdr's native scope picker in that
     /// mode. The retired `workspace_visibility` row parses as `hide`.
     ScopePick(ScopePickItem),
-    /// `type = "focus_toggle"`: switch focus on or off, keeping its targets.
+    /// `type = "focus_toggle"`: switch focus on or off, keeping its targets
+    /// (`scope.toggle`, which the owner's client carries out on Local).
     FocusToggle(ActionItem),
     Separator,
 }

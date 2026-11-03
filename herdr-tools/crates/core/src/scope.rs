@@ -9,7 +9,7 @@
 //! ```text
 //!  find catalog ── session.snapshot ──▶ panes ─┐
 //!               ── scope.get ─▶ local.tabs ────┴─▶ ScopeFilter::admits_tab ─▶ rows
-//!  menu ─────────── scope.get ─▶ scope.focus.active (focus_toggle's label + flip)
+//!  menu ─────────── scope.get ─▶ Some / None (whether its scope rows are usable)
 //! ```
 //!
 //! Everything fails open. A Herdr without `scope.get` answers `None` (filter

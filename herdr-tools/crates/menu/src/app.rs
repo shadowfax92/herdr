@@ -310,16 +310,15 @@ impl MenuState {
     }
 
     /// Rendering and activation share this state. A disabled scope row keeps
-    /// its configured noun phrase and says it is unavailable; the focus switch
-    /// shows whether focus was on when the menu opened (`focus mode · on`).
+    /// its configured noun phrase and says it is unavailable. Labels are
+    /// otherwise the config's own: the focus switch shows no state, since the
+    /// server the menu reads may not be the one whose scope the client applies.
     pub fn item_label(&self, item: &MenuItem) -> String {
         let noun = item.label().unwrap_or_default();
-        match (item, self.scope) {
-            (_, ScopeSupport::Missing) if item.needs_scope() => format!("{noun} (unavailable)"),
-            (MenuItem::FocusToggle(_), ScopeSupport::Available { focus_active }) => {
-                format!("{noun} · {}", if focus_active { "on" } else { "off" })
-            }
-            _ => noun.into(),
+        if item.needs_scope() && self.scope == ScopeSupport::Missing {
+            format!("{noun} (unavailable)")
+        } else {
+            noun.into()
         }
     }
 

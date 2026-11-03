@@ -1,10 +1,17 @@
 //! Focus and hide from the menu: open Herdr's native picker, or flip focus.
 //!
 //! Focus and hide are the fork's own (one `ScopeState` on the local server,
-//! applied by the client to every machine). The menu never edits targets: it
-//! asks Herdr to open its picker (`scope.pick`) or switches focus on and off
-//! (`scope.set {focus_active}`), keeping the targets.
+//! applied by the client to every machine). The menu never reads or edits the
+//! scope itself: it asks Herdr to open its picker (`scope.pick`) or to flip
+//! focus (`scope.toggle`), and the owner's client does either against Local.
 //!
+//! The menu talks to the server of the machine its source pane is on, which
+//! is a remote one (studio) when that pane is. Reading and setting the scope
+//! there would change studio's scope, which no client applies: the client
+//! reads the scope only from Local. Both requests therefore hand the work to
+//! the client, which knows where Local is.
+//!
+//! `scope.toggle` opens nothing, so the menu sends it from its popup and exits.
 //! The picker opens on the client, and the menu is a popup on that client, so
 //! the popup must be gone first or the picker would open beneath it. The menu
 //! process is the popup and closing it ends the process, so a detached helper
@@ -34,12 +41,15 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, Context, Result};
 use serde_json::json;
 use tools_core::scope::is_unknown_method;
-use tools_core::{Host, HostError, ScopeReport};
+use tools_core::{Host, HostError};
 
 use crate::config::ScopePickMode;
+
+/// The socket method that flips focus on the owner's client.
+pub const SCOPE_TOGGLE: &str = "scope.toggle";
 
 /// The menu reads `scope.get` before its first frame; a wedged server may
 /// delay the menu this long, never longer.
@@ -60,19 +70,19 @@ pub enum ScopeSupport {
     Unknown,
     /// This Herdr has no scope methods: the rows read "(unavailable)".
     Missing,
-    /// Scope is there; `focus_active` labels the focus switch.
-    Available { focus_active: bool },
+    /// This Herdr has scope.
+    Available,
 }
 
 impl ScopeSupport {
-    /// Reads `scope.get`. `scope.get`, `scope.set` and `scope.pick` ship as one
-    /// feature, and `scope.pick` cannot be probed without opening the picker,
-    /// so a Herdr that knows `scope.get` is taken to know all three.
+    /// Reads `scope.get`. Neither `scope.pick` nor `scope.toggle` can be probed
+    /// without acting (opening the picker, flipping focus), and the scope
+    /// methods ship as one feature, so a Herdr that knows `scope.get` is taken
+    /// to know them all. A build with `scope.get` but without one of the others
+    /// shows that refusal when its row is used.
     pub fn probe(host: &Host) -> Self {
         match host.clone().with_timeout(PROBE_TIMEOUT).scope() {
-            Ok(Some(report)) => Self::Available {
-                focus_active: report.scope.focus.active,
-            },
+            Ok(Some(_)) => Self::Available,
             Ok(None) => Self::Missing,
             Err(_) => Self::Unknown,
         }
@@ -94,26 +104,15 @@ impl ScopeActions {
         &self.host
     }
 
-    /// Flips focus from its current state (read now, not when the menu opened)
-    /// and returns the new state. `scope.set` takes the absolute value, so a
-    /// retried request cannot flip twice. Switching on a focus with nothing in
-    /// it would change nothing on screen, so that is refused with a hint.
-    pub fn toggle_focus(&self) -> Result<bool> {
-        let report = self
-            .host
-            .scope()?
-            .context("this Herdr has no focus and hide (scope.get)")?;
-        let active = !report.scope.focus.active;
-        if active && report.scope.focus.targets.is_empty() {
-            bail!("nothing is focused yet; pick workspaces or tabs with focus… first");
-        }
-        let reply = self
-            .host
-            .request("scope.set", json!({"focus_active": active}))?;
-        // The reply is the new scope; trust it over our own flip when present.
-        Ok(ScopeReport::from_result(reply)
-            .map(|report| report.scope.focus.active)
-            .unwrap_or(active))
+    /// Asks the owner's client to flip focus on Local (`scope.toggle`, no
+    /// params), keeping its targets. The client does the flip, so this works
+    /// from a pane on any machine. A refusal becomes a readable error for the
+    /// menu to show, and the popup then stays open.
+    pub fn toggle_focus(&self) -> Result<()> {
+        self.host
+            .request(SCOPE_TOGGLE, json!({}))
+            .map(drop)
+            .map_err(|error| anyhow!(toggle_failure(&error)))
     }
 
     /// Hands the pick to a detached helper, then closes the menu's popup; the
@@ -213,6 +212,20 @@ pub fn pick_failure(mode: ScopePickMode, error: &anyhow::Error) -> String {
     }
 }
 
+/// Why `scope.toggle` was refused, by Herdr's refusal code.
+pub fn toggle_failure(error: &anyhow::Error) -> String {
+    if is_unknown_method(error) {
+        return format!("this Herdr has no {SCOPE_TOGGLE}; update Herdr");
+    }
+    match error
+        .downcast_ref::<HostError>()
+        .map(|error| error.code.as_str())
+    {
+        Some("no_client") => "no Herdr client is attached".into(),
+        _ => format!("{error:#}"),
+    }
+}
+
 /// Blocks until `input` reaches EOF or `timeout` passes. The read runs on a
 /// thread so a menu that never exits cannot hold the helper forever.
 fn wait_for_eof(mut input: impl Read + Send + 'static, timeout: Duration) {
@@ -241,30 +254,18 @@ mod tests {
             "message": format!("invalid request: unknown variant `{method}`, expected one of `ping`")}})
     }
 
-    fn scope(active: bool, targets: usize) -> Value {
-        let targets = vec![json!({"machine": "local", "workspace_label": "setup"}); targets];
-        json!({"type": "scope", "scope": {"focus": {"active": active, "targets": targets}, "hidden": []},
-               "local": {"tabs": []}})
-    }
-
-    /// A fake Herdr that records every request and answers scope.get with
-    /// `active`/`targets`, scope.set with the scope it was given.
-    fn recording(
-        active: bool,
-        targets: usize,
-    ) -> (Arc<Mutex<Vec<Value>>>, tempfile::TempDir, Host) {
+    /// A fake Herdr that records every request, answers scope.get with an
+    /// empty scope and anything else with ok.
+    fn recording() -> (Arc<Mutex<Vec<Value>>>, tempfile::TempDir, Host) {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let log = seen.clone();
         let (dir, host) = fake_host(move |request| {
             log.lock().unwrap().push(request.clone());
             match request["method"].as_str().unwrap() {
-                "scope.get" => ok(&request, scope(active, targets)),
-                "scope.set" => ok(
+                "scope.get" => ok(
                     &request,
-                    scope(
-                        request["params"]["focus_active"].as_bool().unwrap(),
-                        targets,
-                    ),
+                    json!({"type": "scope", "scope": {"focus": {"active": true, "targets": []}},
+                           "local": {"tabs": []}}),
                 ),
                 _ => ok(&request, json!({"type": "ok"})),
             }
@@ -281,12 +282,10 @@ mod tests {
     }
 
     #[test]
-    fn probe_reads_focus_and_tells_missing_from_unknown() {
-        let (_seen, _dir, host) = recording(true, 1);
-        assert_eq!(
-            ScopeSupport::probe(&host),
-            ScopeSupport::Available { focus_active: true }
-        );
+    fn probe_tells_available_from_missing_and_unknown() {
+        let (seen, _dir, host) = recording();
+        assert_eq!(ScopeSupport::probe(&host), ScopeSupport::Available);
+        assert_eq!(methods(&seen), ["scope.get"]);
         let (_dir, host) = fake_host(|request| unknown(&request));
         assert_eq!(ScopeSupport::probe(&host), ScopeSupport::Missing);
         let (_dir, host) = fake_host(
@@ -300,41 +299,42 @@ mod tests {
     }
 
     #[test]
-    fn toggle_reads_then_sets_the_flipped_absolute_state() {
-        for active in [true, false] {
-            let (seen, _dir, host) = recording(active, 2);
-            assert_eq!(ScopeActions::new(host).toggle_focus().unwrap(), !active);
-            assert_eq!(methods(&seen), ["scope.get", "scope.set"]);
-            assert_eq!(
-                seen.lock().unwrap()[1]["params"],
-                json!({"focus_active": !active})
-            );
-        }
+    fn toggle_hands_the_flip_to_the_client_and_never_touches_the_scope() {
+        // The menu may be on a remote machine's server; reading or setting the
+        // scope there would flip a scope no client applies.
+        let (seen, _dir, host) = recording();
+        ScopeActions::new(host).toggle_focus().unwrap();
+        assert_eq!(methods(&seen), ["scope.toggle"]);
+        assert_eq!(seen.lock().unwrap()[0]["params"], json!({}));
     }
 
     #[test]
-    fn toggle_refuses_an_empty_focus_and_a_herdr_without_scope() {
-        let (seen, _dir, host) = recording(false, 0);
+    fn toggle_refusals_read_by_code() {
+        let (_dir, host) = fake_host(
+            |request| json!({"id": request["id"], "error": {"code": "no_client", "message": "no client attached"}}),
+        );
         let error = ScopeActions::new(host).toggle_focus().unwrap_err();
-        assert!(error.to_string().contains("nothing is focused"), "{error}");
-        assert_eq!(methods(&seen), ["scope.get"]);
-        // Switching an empty focus off is still allowed.
-        let (seen, _dir, host) = recording(true, 0);
-        assert!(!ScopeActions::new(host).toggle_focus().unwrap());
-        assert_eq!(methods(&seen), ["scope.get", "scope.set"]);
+        assert_eq!(error.to_string(), "no Herdr client is attached");
 
+        // A Herdr with scope.get but without scope.toggle, or without scope.
         let (_dir, host) = fake_host(|request| unknown(&request));
         let error = ScopeActions::new(host).toggle_focus().unwrap_err();
-        assert!(
-            format!("{error:#}").contains("no focus and hide"),
-            "{error:#}"
+        assert_eq!(
+            error.to_string(),
+            "this Herdr has no scope.toggle; update Herdr"
         );
+
+        let (_dir, host) = fake_host(
+            |request| json!({"id": request["id"], "error": {"code": "internal", "message": "boom"}}),
+        );
+        let error = ScopeActions::new(host).toggle_focus().unwrap_err();
+        assert!(error.to_string().contains("boom"), "{error}");
     }
 
     #[test]
     fn hand_off_starts_the_helper_before_closing_the_popup() {
         for mode in [ScopePickMode::Focus, ScopePickMode::Hide] {
-            let (seen, _dir, host) = recording(false, 0);
+            let (seen, _dir, host) = recording();
             let log = seen.clone();
             ScopeActions::new(host)
                 .hand_off_pick(mode, |picked| {
@@ -351,9 +351,9 @@ mod tests {
 
     #[test]
     fn a_helper_that_cannot_start_leaves_the_popup_open() {
-        let (seen, _dir, host) = recording(false, 0);
+        let (seen, _dir, host) = recording();
         let error = ScopeActions::new(host)
-            .hand_off_pick(ScopePickMode::Hide, |_| bail!("no exe"))
+            .hand_off_pick(ScopePickMode::Hide, |_| Err(anyhow!("no exe")))
             .unwrap_err();
         assert!(format!("{error:#}").contains("no exe"));
         assert!(methods(&seen).is_empty());
@@ -361,7 +361,7 @@ mod tests {
 
     #[test]
     fn pick_sends_the_mode_and_refusals_read_by_code() {
-        let (seen, _dir, host) = recording(false, 0);
+        let (seen, _dir, host) = recording();
         pick(&host, ScopePickMode::Hide).unwrap();
         pick(&host, ScopePickMode::Focus).unwrap();
         let seen = seen.lock().unwrap();
