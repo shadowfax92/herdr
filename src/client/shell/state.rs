@@ -989,6 +989,13 @@ pub(crate) struct ClientShellState {
     /// `scope.set` requests for Local, queued by `request_scope_set` and drained
     /// by the client loop's next action dispatch.
     pub(super) scope_requests: Vec<ClientShellAction>,
+    /// Ids of `scope.set` requests sent or queued for Local and not yet settled.
+    /// Their results are settled by `finish_scope_request` whichever endpoint is
+    /// active, so a failure is never silently cancelled with the inactive lane.
+    pub(super) scope_request_ids: std::collections::HashSet<String>,
+    /// The `focus_active` last asked of Local and not yet seen in a projection,
+    /// so a second toggle before the projection returns flips from it.
+    pub(super) scope_focus_pending: Option<bool>,
 }
 
 pub(super) fn product_announcement_state(
@@ -1163,6 +1170,8 @@ impl ClientShellState {
             #[cfg(test)]
             scope_set_requests: Vec::new(),
             scope_requests: Vec::new(),
+            scope_request_ids: std::collections::HashSet::new(),
+            scope_focus_pending: None,
         }
     }
 

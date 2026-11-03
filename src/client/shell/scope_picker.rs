@@ -505,7 +505,7 @@ impl ClientShellState {
     /// `toggle_focus`: flips focus on or off, keeping its targets.
     pub(super) fn toggle_scope_focus(&mut self, outcome: &mut ClientShellInput) {
         let mut next = self.effective_scope().into_owned();
-        next.focus.active = !next.focus.active;
+        next.focus.active = !self.scope_focus_for_toggle();
         self.submit_scope_set(
             ScopeSetParams {
                 focus_active: Some(next.focus.active),

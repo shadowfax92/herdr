@@ -1935,22 +1935,7 @@ async fn run_client_loop(
                         };
                         let (repaint, actions) = state.shell.as_mut().map_or_else(
                             || (false, Vec::new()),
-                            |shell| {
-                                if completed.generation == generation
-                                    && shell.endpoint_is_active(&completed.endpoint_id)
-                                {
-                                    shell.handle_endpoint_result(
-                                        &completed.boot_id,
-                                        &completed.request_id,
-                                        completed.result,
-                                    )
-                                } else {
-                                    (
-                                        shell.cancel_endpoint_request(&completed.request_id),
-                                        Vec::new(),
-                                    )
-                                }
-                            },
+                            |shell| settle_completed_command(shell, completed, generation),
                         );
                         if let Some(shell) = state.shell.as_mut() {
                             shell.reconcile_input_source();
@@ -2339,12 +2324,22 @@ async fn run_client_loop(
                         .into_iter()
                         .filter(|expired| {
                             write_stream.accepts(&expired.endpoint_id, expired.generation)
+                                // A scope write is settled even from a stale
+                                // connection, so its failure is still reported.
+                                || state.shell.as_ref().is_some_and(|shell| {
+                                    shell.owns_scope_request(&expired.request_id)
+                                })
                         })
                         .collect::<Vec<_>>();
                     let (effects, outcome, frame) = {
                         let shell = state.shell.as_mut().expect("checked shell mode");
                         let mut outcome = shell.tick_selection_autoscroll(now);
                         for expired in expired_endpoints {
+                            if shell.owns_scope_request(&expired.request_id) {
+                                outcome.repaint |= shell
+                                    .finish_scope_request(&expired.request_id, &expired.result);
+                                continue;
+                            }
                             if !shell.endpoint_is_active(&expired.endpoint_id) {
                                 continue;
                             }

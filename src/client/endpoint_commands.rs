@@ -24,6 +24,17 @@ struct InFlightCommand {
     request_id: String,
     response: Vec<u8>,
     sent_at: Instant,
+    /// A Local scope write, which a lane retirement keeps (see `retire_lane`).
+    survives_retire: bool,
+}
+
+/// Focus and hide writes go to the Local server whatever machine is presented:
+/// they belong to no presentation epoch, and Local takes them with its surface
+/// off. Applying focus can jump to another machine, which retires Local's lane in
+/// the same breath, so a retirement must neither drop a queued write nor orphan
+/// one in flight.
+fn survives_retire(request: &Request) -> bool {
+    matches!(request.method, crate::api::schema::Method::ScopeSet(_))
 }
 
 pub(super) struct EndpointCommandResult {
@@ -125,6 +136,7 @@ impl EndpointCommands {
                 request_id,
                 response: Vec::new(),
                 sent_at: Instant::now(),
+                survives_retire: survives_retire(&queued.request),
             });
             break;
         }
@@ -150,13 +162,20 @@ impl EndpointCommands {
 
     /// Retire the complete source lane at source-off. The in-flight request is tombstoned for a
     /// late endpoint-local response; every queued request is cancelled before it can run in a
-    /// later presentation epoch. Other endpoint lanes are deliberately untouched.
+    /// later presentation epoch. Other endpoint lanes are deliberately untouched. Scope writes
+    /// are the exception (`survives_retire`): they stay in flight or queued, in order, and the
+    /// client loop pumps Local's lane while another endpoint is active.
     pub(super) fn retire_lane(&mut self, endpoint_id: &ClientEndpointId) -> Vec<String> {
         let Some(lane) = self.lanes.get_mut(endpoint_id) else {
             return Vec::new();
         };
         let mut request_ids = Vec::new();
-        if let Some(command) = lane.in_flight.take() {
+        if lane
+            .in_flight
+            .as_ref()
+            .is_some_and(|command| !command.survives_retire)
+        {
+            let command = lane.in_flight.take().expect("checked in-flight command");
             lane.retire((
                 command.generation,
                 command.boot_id,
@@ -164,7 +183,12 @@ impl EndpointCommands {
             ));
             request_ids.push(command.request_id);
         }
-        request_ids.extend(lane.queued.drain(..).map(|command| command.request.id));
+        let (kept, retired): (VecDeque<_>, VecDeque<_>) = lane
+            .queued
+            .drain(..)
+            .partition(|command| survives_retire(&command.request));
+        lane.queued = kept;
+        request_ids.extend(retired.into_iter().map(|command| command.request.id));
         request_ids
     }
 
@@ -316,6 +340,7 @@ mod tests {
                         request_id: "request-a".into(),
                         response: Vec::new(),
                         sent_at: Instant::now(),
+                        survives_retire: false,
                     }),
                     ..EndpointCommandLane::default()
                 },
@@ -453,6 +478,7 @@ mod tests {
                     request_id: "request-b".into(),
                     response: Vec::new(),
                     sent_at: Instant::now(),
+                    survives_retire: false,
                 }),
                 ..EndpointCommandLane::default()
             },

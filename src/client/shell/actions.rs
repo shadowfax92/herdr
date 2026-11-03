@@ -508,6 +508,15 @@ impl ClientShellState {
     }
 
     pub(crate) fn cancel_endpoint_request(&mut self, request_id: &str) -> bool {
+        if self.owns_scope_request(request_id) {
+            return self.finish_scope_request(
+                request_id,
+                &Err(ClientShellEndpointError {
+                    code: Some("endpoint_cancelled".into()),
+                    message: "This server action was interrupted.".into(),
+                }),
+            );
+        }
         let Some(pending) = self.pending_requests.get(request_id) else {
             return false;
         };
@@ -534,6 +543,9 @@ impl ClientShellState {
         request_id: &str,
         result: Result<crate::api::schema::ResponseResult, ClientShellEndpointError>,
     ) -> (bool, Vec<ClientShellAction>) {
+        if self.owns_scope_request(request_id) {
+            return (self.finish_scope_request(request_id, &result), Vec::new());
+        }
         let Some(pending) = self.pending_requests.remove(request_id) else {
             return (false, Vec::new());
         };

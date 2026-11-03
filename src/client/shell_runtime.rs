@@ -71,24 +71,66 @@ pub(super) fn dispatch_client_shell_actions(
     // A source-off-first handoff leaves the registry's committed identity pointing at a
     // deliberately surface-inactive source. Do not drain its retained queue into a server that
     // must reject it; completion below resumes the committed owner's lane.
-    let mut cancelled = Vec::new();
     if endpoints.active_surface_available() {
         let active_endpoint = endpoints.active_id().clone();
-        cancelled.extend(endpoint_commands.send_next(&active_endpoint, endpoints));
-    }
-    // While another machine is active, Local's lane holds only scope requests: an
-    // activation retires the source lane, and only `is_local_scope_request` enqueues
-    // into an inactive Local. The Local server answers them with its surface off.
-    if !endpoints.active_id().is_local() {
-        cancelled
-            .extend(endpoint_commands.send_next(&endpoint::ClientEndpointId::Local, endpoints));
-    }
-    if let Some(shell) = shell {
-        for request_id in cancelled {
-            repaint |= shell.cancel_endpoint_request(&request_id);
+        let cancelled = endpoint_commands.send_next(&active_endpoint, endpoints);
+        if let Some(shell) = shell.as_deref_mut() {
+            for request_id in cancelled {
+                repaint |= shell.cancel_endpoint_request(&request_id);
+            }
         }
     }
+    repaint |= pump_local_scope_lane(endpoint_commands, endpoints, shell);
     Ok((replay_mouse, repaint))
+}
+
+/// Settles a completed endpoint command. Local's scope writes settle whichever
+/// endpoint is active (their lane is Local's, which may be inactive), so a failure
+/// reaches the user instead of being cancelled with the inactive lane. Other
+/// results reach the shell only from the active endpoint's current connection
+/// and are otherwise cancelled.
+pub(super) fn settle_completed_command(
+    shell: &mut shell::ClientShellState,
+    completed: endpoint_commands::EndpointCommandResult,
+    generation: u64,
+) -> (bool, Vec<shell::ClientShellAction>) {
+    if shell.owns_scope_request(&completed.request_id) {
+        return (
+            shell.finish_scope_request(&completed.request_id, &completed.result),
+            Vec::new(),
+        );
+    }
+    if completed.generation == generation && shell.endpoint_is_active(&completed.endpoint_id) {
+        shell.handle_endpoint_result(&completed.boot_id, &completed.request_id, completed.result)
+    } else {
+        (
+            shell.cancel_endpoint_request(&completed.request_id),
+            Vec::new(),
+        )
+    }
+}
+
+/// Sends Local's next scope write while another endpoint is active. Local's lane
+/// then holds only scope writes: an activation retires everything else on it, and
+/// only `is_local_scope_request` enqueues into an inactive Local. The Local server
+/// answers them with its surface off. Returns whether a cancellation needs a frame.
+pub(super) fn pump_local_scope_lane(
+    endpoint_commands: &mut endpoint_commands::EndpointCommands,
+    endpoints: &mut endpoint::EndpointRegistry,
+    shell: Option<&mut shell::ClientShellState>,
+) -> bool {
+    if endpoints.active_id().is_local() {
+        return false;
+    }
+    let cancelled = endpoint_commands.send_next(&endpoint::ClientEndpointId::Local, endpoints);
+    let Some(shell) = shell else {
+        return false;
+    };
+    let mut repaint = false;
+    for request_id in cancelled {
+        repaint |= shell.cancel_endpoint_request(&request_id);
+    }
+    repaint
 }
 
 /// Focus and hide live only on the Local server, so its `scope.set` is the one
@@ -566,6 +608,9 @@ pub(super) fn complete_endpoint_activation(
             }
         }
     }
+    // The retired source lane kept its scope writes; Local takes them now, even
+    // while the newly active machine (or a successor handoff) owns the surface.
+    pump_local_scope_lane(endpoint_commands, endpoints, state.shell.as_mut());
     let (cleanup, frame) = {
         let shell = state.shell.as_mut().expect("checked client shell");
         (
@@ -1117,6 +1162,21 @@ mod tests {
             (state, endpoints, local_sent, remote_sent)
         }
 
+        fn viewing_a_remote_with_commands() -> (
+            ClientState,
+            endpoint::EndpointRegistry,
+            Sent,
+            endpoint_commands::EndpointCommands,
+        ) {
+            let (state, endpoints, local_sent, _remote_sent) = viewing_a_remote();
+            (
+                state,
+                endpoints,
+                local_sent,
+                endpoint_commands::EndpointCommands::default(),
+            )
+        }
+
         /// The `scope.set` params of every request Local was sent.
         fn scope_sets(sent: &Sent) -> Vec<ScopeSetParams> {
             sent.lock()
@@ -1283,6 +1343,285 @@ mod tests {
                 .unwrap()
                 .take_scope_requests()
                 .is_empty());
+        }
+
+        /// Local is active with a navigation command in flight when focus is
+        /// applied; the jump to another machine then retires Local's lane.
+        fn local_active_with_a_command_in_flight() -> (
+            ClientState,
+            endpoint::EndpointRegistry,
+            Sent,
+            endpoint_commands::EndpointCommands,
+        ) {
+            let (mut state, mut endpoints, local_sent, _remote_sent) = viewing_a_remote();
+            assert!(endpoints.set_surface_active(&endpoint::ClientEndpointId::Local, true));
+            assert!(endpoints.set_active(&endpoint::ClientEndpointId::Local));
+            let mut endpoint_commands = endpoint_commands::EndpointCommands::default();
+            let navigation = shell::ClientShellAction::Endpoint {
+                endpoint_id: endpoint::ClientEndpointId::Local,
+                boot_id: "boot-v1".into(),
+                request: Box::new(crate::api::schema::Request {
+                    id: "navigation".into(),
+                    method: crate::api::schema::Method::WorkspaceFocus(
+                        crate::api::schema::WorkspaceTarget {
+                            workspace_id: "w1".into(),
+                        },
+                    ),
+                }),
+            };
+            dispatch_client_shell_actions(
+                vec![navigation],
+                &mut endpoint_commands,
+                &mut endpoints,
+                state.shell.as_mut(),
+                &mut Vec::new(),
+                &mut None,
+            )
+            .unwrap();
+            assert_eq!(local_sent.lock().unwrap().len(), 1);
+            local_sent.lock().unwrap().clear();
+            (state, endpoints, local_sent, endpoint_commands)
+        }
+
+        /// Retires both lanes and switches to the remote, as
+        /// `install_pending_activation` and its completion do.
+        fn switch_to_the_remote(
+            state: &mut ClientState,
+            endpoints: &mut endpoint::EndpointRegistry,
+            endpoint_commands: &mut endpoint_commands::EndpointCommands,
+        ) {
+            let mut retired = endpoint_commands.retire_lane(&remote());
+            retired.extend(endpoint_commands.retire_lane(&endpoint::ClientEndpointId::Local));
+            for request_id in retired {
+                state
+                    .shell
+                    .as_mut()
+                    .unwrap()
+                    .cancel_endpoint_request(&request_id);
+            }
+            assert!(endpoints.set_active(&remote()));
+            assert!(endpoints.set_surface_active(&endpoint::ClientEndpointId::Local, false));
+        }
+
+        #[test]
+        fn a_machine_switch_keeps_a_queued_scope_write_and_sends_it() {
+            let (mut state, mut endpoints, local_sent, mut endpoint_commands) =
+                local_active_with_a_command_in_flight();
+            let params = ScopeSetParams {
+                focus_active: Some(true),
+                ..ScopeSetParams::default()
+            };
+            state
+                .shell
+                .as_mut()
+                .unwrap()
+                .request_scope_set(params.clone());
+            // Queued behind the navigation still in flight.
+            dispatch_client_shell_actions(
+                Vec::new(),
+                &mut endpoint_commands,
+                &mut endpoints,
+                state.shell.as_mut(),
+                &mut Vec::new(),
+                &mut None,
+            )
+            .unwrap();
+            assert!(local_sent.lock().unwrap().is_empty());
+
+            switch_to_the_remote(&mut state, &mut endpoints, &mut endpoint_commands);
+            pump_local_scope_lane(&mut endpoint_commands, &mut endpoints, state.shell.as_mut());
+
+            assert_eq!(scope_sets(&local_sent), [params]);
+            assert_eq!(state.shell.as_ref().unwrap().endpoint_notice_text(), None);
+        }
+
+        #[test]
+        fn a_machine_switch_keeps_a_scope_write_in_flight() {
+            let (mut state, mut endpoints, local_sent, mut endpoint_commands) =
+                viewing_a_remote_with_commands();
+            state
+                .shell
+                .as_mut()
+                .unwrap()
+                .request_scope_set(ScopeSetParams {
+                    focus_active: Some(false),
+                    ..ScopeSetParams::default()
+                });
+            dispatch_client_shell_actions(
+                Vec::new(),
+                &mut endpoint_commands,
+                &mut endpoints,
+                state.shell.as_mut(),
+                &mut Vec::new(),
+                &mut None,
+            )
+            .unwrap();
+            assert_eq!(scope_sets(&local_sent).len(), 1);
+            let ClientMessage::ClientShellEndpointRequest { request, .. } =
+                local_sent.lock().unwrap()[0].clone()
+            else {
+                unreachable!();
+            };
+            let request_id = serde_json::from_str::<crate::api::schema::Request>(&request)
+                .unwrap()
+                .id;
+
+            // Retiring Local's lane neither cancels the write nor drops its answer.
+            assert!(endpoint_commands
+                .retire_lane(&endpoint::ClientEndpointId::Local)
+                .is_empty());
+            let answer = serde_json::to_vec(&crate::api::schema::SuccessResponse {
+                id: request_id.clone(),
+                result: crate::api::schema::ResponseResult::Ok {},
+            })
+            .unwrap();
+            let completed = endpoint_commands
+                .receive_chunk(
+                    &endpoint::ClientEndpointId::Local,
+                    1,
+                    "boot-v1",
+                    &request_id,
+                    true,
+                    answer,
+                )
+                .unwrap()
+                .expect("the kept write completes");
+            assert!(completed.result.is_ok());
+        }
+
+        #[test]
+        fn a_failed_or_interrupted_scope_write_tells_the_user_and_success_does_not() {
+            let (mut state, ..) = viewing_a_remote();
+            let shell = state.shell.as_mut().unwrap();
+            let mut ids = Vec::new();
+            for _ in 0..3 {
+                shell.request_scope_set(ScopeSetParams::default());
+            }
+            for action in shell.take_scope_requests() {
+                let shell::ClientShellAction::Endpoint { request, .. } = action else {
+                    unreachable!();
+                };
+                ids.push(request.id);
+            }
+
+            let (repaint, actions) = shell.handle_endpoint_result(
+                "boot-v1",
+                &ids[0],
+                Ok(crate::api::schema::ResponseResult::Ok {}),
+            );
+            assert!(!repaint && actions.is_empty());
+            assert_eq!(shell.endpoint_notice_text(), None);
+
+            shell.handle_endpoint_result(
+                "boot-v1",
+                &ids[1],
+                Err(shell::ClientShellEndpointError {
+                    code: Some("invalid_params".into()),
+                    message: "bad target".into(),
+                }),
+            );
+            let notice = shell.endpoint_notice_text().expect("a failure notice");
+            assert!(
+                notice.contains("did not change") && notice.contains("bad target"),
+                "{notice}"
+            );
+
+            assert!(shell.cancel_endpoint_request(&ids[2]));
+            let notice = shell
+                .endpoint_notice_text()
+                .expect("an interruption notice");
+            assert!(notice.contains("did not change"), "{notice}");
+        }
+
+        #[test]
+        fn an_inactive_locals_scope_results_are_settled_not_cancelled() {
+            let (mut state, ..) = viewing_a_remote();
+            let shell = state.shell.as_mut().unwrap();
+            for _ in 0..2 {
+                shell.request_scope_set(ScopeSetParams::default());
+            }
+            let ids: Vec<String> = shell
+                .take_scope_requests()
+                .into_iter()
+                .map(|action| match action {
+                    shell::ClientShellAction::Endpoint { request, .. } => request.id,
+                    _ => unreachable!(),
+                })
+                .collect();
+            let completed = |request_id: &str, result| endpoint_commands::EndpointCommandResult {
+                endpoint_id: endpoint::ClientEndpointId::Local,
+                generation: 1,
+                boot_id: "boot-v1".into(),
+                request_id: request_id.into(),
+                result,
+            };
+
+            // Success on the inactive Local: settled quietly, never "interrupted".
+            let (repaint, _) = settle_completed_command(
+                shell,
+                completed(&ids[0], Ok(crate::api::schema::ResponseResult::Ok {})),
+                1,
+            );
+            assert!(!repaint);
+            assert!(!shell.owns_scope_request(&ids[0]));
+            assert_eq!(shell.endpoint_notice_text(), None);
+
+            // A timeout on the inactive Local is reported.
+            let (repaint, _) = settle_completed_command(
+                shell,
+                completed(
+                    &ids[1],
+                    Err(shell::ClientShellEndpointError {
+                        code: Some("endpoint_timeout".into()),
+                        message: "this server did not respond to the action".into(),
+                    }),
+                ),
+                1,
+            );
+            assert!(repaint);
+            let notice = shell.endpoint_notice_text().expect("a timeout notice");
+            assert!(notice.contains("did not change") && notice.contains("did not respond"));
+        }
+
+        #[test]
+        fn consecutive_toggles_alternate_until_local_confirms() {
+            let (mut state, ..) = viewing_a_remote();
+            let shell = state.shell.as_mut().unwrap();
+            shell.set_scope_projection(Some(focused("setup")));
+            let toggled = |shell: &mut shell::ClientShellState| {
+                shell.toggle_scope_focus_from_endpoint();
+                let actions = shell.take_scope_requests();
+                let [shell::ClientShellAction::Endpoint { request, .. }] = actions.as_slice()
+                else {
+                    panic!("one scope.set per toggle");
+                };
+                let crate::api::schema::Method::ScopeSet(params) = &request.method else {
+                    unreachable!();
+                };
+                (request.id.clone(), params.focus_active)
+            };
+            assert_eq!(toggled(shell).1, Some(false));
+            assert_eq!(toggled(shell).1, Some(true));
+            assert_eq!(toggled(shell).1, Some(false));
+
+            // Local confirms the last value asked for: toggles follow it again.
+            let mut off = focused("setup");
+            off.focus.active = false;
+            shell.set_scope_projection(Some(off));
+            let (failing, active) = toggled(shell);
+            assert_eq!(active, Some(true));
+
+            // That write fails, so focus stays off and the next toggle turns it
+            // on again rather than flipping the failed value.
+            shell.handle_endpoint_result(
+                "boot-v1",
+                &failing,
+                Err(shell::ClientShellEndpointError {
+                    code: Some("server_unavailable".into()),
+                    message: "server is shutting down".into(),
+                }),
+            );
+            assert_eq!(toggled(shell).1, Some(true));
         }
     }
 }

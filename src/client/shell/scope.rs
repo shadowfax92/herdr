@@ -420,6 +420,14 @@ impl ClientShellState {
     /// Takes the Local endpoint's latest projection: `None` when Local has
     /// none, or lost the capability on reconnect.
     pub(crate) fn set_scope_projection(&mut self, scope: Option<ScopeState>) {
+        // Local has caught up with the focus last asked for, or will never
+        // report it (no projection at all): toggles follow the projection again.
+        if scope
+            .as_ref()
+            .is_none_or(|scope| self.scope_focus_pending == Some(scope.focus.active))
+        {
+            self.scope_focus_pending = None;
+        }
         if self.scope_projection == scope {
             return;
         }
@@ -446,6 +454,14 @@ impl ClientShellState {
         self.open_scope_picker_overlay(mode);
     }
 
+    /// The focus state a toggle flips from: the value last asked of Local while
+    /// its projection has not reported it yet, else the projected one. Two
+    /// toggles in quick succession therefore send opposite values.
+    pub(super) fn scope_focus_for_toggle(&self) -> bool {
+        self.scope_focus_pending
+            .unwrap_or_else(|| self.effective_scope().focus.active)
+    }
+
     /// A server's `scope.toggle` (a plugin menu, on whichever machine is
     /// active): the `toggle_focus` keybind's path, run outside a key press. The
     /// returned outcome carries the jump into the new scope; the `scope.set`
@@ -454,6 +470,14 @@ impl ClientShellState {
         let mut outcome = ClientShellInput::default();
         self.toggle_scope_focus(&mut outcome);
         outcome
+    }
+
+    /// The visible endpoint notice as `title: body`, for client-loop tests.
+    #[cfg(test)]
+    pub(crate) fn endpoint_notice_text(&self) -> Option<String> {
+        self.visible_endpoint_notice
+            .as_ref()
+            .map(|notice| format!("{}: {}", notice.title, notice.body))
     }
 
     /// The open picker's mode, so client-loop tests can see a control opened it.
@@ -473,9 +497,9 @@ impl ClientShellState {
     /// action dispatch (`take_scope_requests`), which every input path runs.
     /// `dispatch_client_shell_actions` lets it onto Local's lane while another
     /// endpoint is active, and the Local server answers it with its surface
-    /// off. It is not tracked as a pending request: success needs no follow-up
-    /// beyond the projection, and a result arriving while another machine is
-    /// active must not read as an interrupted action.
+    /// off. Its id is tracked apart from `pending_requests` (which belong to the
+    /// active endpoint): `finish_scope_request` settles it from any endpoint
+    /// state, silently on success and with a notice on any failure.
     pub(crate) fn request_scope_set(&mut self, params: crate::scope::ScopeSetParams) {
         let local = ClientEndpointId::Local;
         let boot_id = self
@@ -507,6 +531,12 @@ impl ClientShellState {
         }
         let request_id = format!("client-shell:{}", self.next_request_id);
         self.next_request_id = self.next_request_id.saturating_add(1);
+        if let crate::api::schema::Method::ScopeSet(params) = &method {
+            if let Some(active) = params.focus_active {
+                self.scope_focus_pending = Some(active);
+            }
+        }
+        self.scope_request_ids.insert(request_id.clone());
         self.scope_requests.push(ClientShellAction::Endpoint {
             endpoint_id: local,
             boot_id,
@@ -520,5 +550,42 @@ impl ClientShellState {
     /// Hands queued `scope.set` requests to the client loop's dispatcher.
     pub(crate) fn take_scope_requests(&mut self) -> Vec<ClientShellAction> {
         std::mem::take(&mut self.scope_requests)
+    }
+
+    /// Whether `request_id` is an unsettled `scope.set` for Local.
+    pub(crate) fn owns_scope_request(&self, request_id: &str) -> bool {
+        self.scope_request_ids.contains(request_id)
+    }
+
+    /// Settles one of Local's `scope.set` requests, from a response, a timeout,
+    /// or a cancellation (lane retirement, disconnect, unsendable). Success says
+    /// nothing: the projection shows it. Any failure tells the user that focus
+    /// and hide did not change, in the endpoint notice banner, and drops the
+    /// pending toggle state so the next toggle flips from what Local reports.
+    /// Returns whether a frame is needed; `false` for ids it does not own.
+    pub(crate) fn finish_scope_request(
+        &mut self,
+        request_id: &str,
+        result: &Result<crate::api::schema::ResponseResult, ClientShellEndpointError>,
+    ) -> bool {
+        if !self.scope_request_ids.remove(request_id) {
+            return false;
+        }
+        let Err(error) = result else {
+            return false;
+        };
+        self.scope_focus_pending = None;
+        let code = error.code.as_deref().unwrap_or("invalid_response");
+        let body = match code {
+            "endpoint_timeout" => "The local server did not respond.".to_owned(),
+            "endpoint_cancelled" => "The request to the local server was interrupted.".to_owned(),
+            _ => format!("The local server refused it: {}", error.message),
+        };
+        self.push_endpoint_notice(
+            ClientEndpointNoticeKind::Rejected,
+            format!("scope.set:{code}"),
+            "Focus and hide did not change",
+            body,
+        )
     }
 }
