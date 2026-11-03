@@ -1,0 +1,53 @@
+title = "agent forks"
+width = 68
+max_height = 24
+
+[[items]]
+type = "fork"
+key = "l"
+label = "fork current conversation left"
+placement = "left"
+
+[[items]]
+type = "fork"
+key = "r"
+label = "fork current conversation right"
+placement = "right"
+
+[[items]]
+type = "fork"
+key = "t"
+label = "fork current conversation top"
+placement = "top"
+
+[[items]]
+type = "fork"
+key = "b"
+label = "fork current conversation bottom"
+placement = "bottom"
+
+[[items]]
+type = "separator"
+
+[[items]]
+type = "rotate_fork"
+key = "o"
+label = "rotate last forked pane"
+
+[[items]]
+type = "separator"
+
+[[items]]
+type = "redistribute"
+key = "d"
+label = "redistribute panes…"
+
+[[items]]
+type = "copy_context"
+key = "h"
+label = "copy pane context"
+
+[[items]]
+type = "workspace_visibility"
+key = "v"
+label = "excluded workspaces"
