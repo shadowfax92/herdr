@@ -24,10 +24,31 @@ bin:
     mkdir -p bin
     cp target/release/herdr-tools bin/herdr-tools
 
-# Real-herdr checks in a throwaway, isolated server (never the default session).
+# Real-herdr checks, each in its own throwaway isolated server (never the default
+# session). Every mode's suite runs against the built plugin. find's real_herdr.py
+# is left out: it stops at a done-agent fixture that also fails with the old
+# herdr-jump binary on this fork build, so it measures herdr, not this plugin.
 real: bin
     cargo build -p tools-core --example open_popup --locked
+    cargo build -p tools-menu --example fork_probe --locked
     python3 tests/real_scaffold.py
+    python3 crates/find/tests/real_find.py
+    python3 crates/find/tests/slow_host.py
+    uv run --quiet --with pyte==0.8.2 python crates/find/tests/real_paths.py
+    python3 crates/move/tests/real_move.py
+    python3 crates/history/tests/real_history.py
+    python3 crates/menu/tests/real_menu.py
+    python3 crates/menu/tests/headless_fork.py target/debug/examples/fork_probe
+    python3 crates/menu/tests/real_fork_rows.py bin/herdr-tools
+    python3 crates/menu/tests/real_redistribution.py bin/herdr-tools
+    python3 crates/comment/tests/real_comment.py
+    python3 crates/layout/tests/real_grid.py
+    python3 crates/layout/tests/real_actions.py
+    python3 crates/scratch/tests/actions_real.py
+    python3 crates/scratch/tests/cleanup_real.py bin/herdr-tools
+    python3 crates/scratch/tests/context_real.py bin/herdr-tools
+    python3 crates/scratch/tests/reap_menu_real.py bin/herdr-tools bin/herdr-tools menu menu
+    python3 crates/scratch/tests/cutover_real.py
 
 # Build release, lay out {{plugin_dir}} by rename, and link it unless Herdr
 # already links shadowfax.tools from there. Uses the herdr on PATH (override

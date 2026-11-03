@@ -3,8 +3,8 @@
 #
 #   herdr-tools/scripts/package.sh <herdr-tools-binary> <out-dir>
 #
-# Writes <out-dir>/shadowfax.tools/{herdr-plugin.toml, bin/herdr-tools, nvim/,
-# README.md, LICENSE}. This is the one definition of the plugin layout: the
+# Writes <out-dir>/shadowfax.tools/{herdr-plugin.toml, bin/herdr-tools,
+# bin/scratch-cutover-state.sh, nvim/, README.md, LICENSE}. This is the one definition of the plugin layout: the
 # fork release tars the result as herdr-tools-<os>-<arch>.tar.gz, which
 # distribution/fork-install.sh unpacks, and `just -f herdr-tools/justfile
 # install` renames it into place. `herdr plugin link` never builds, so the
@@ -42,6 +42,10 @@ mkdir -p "${pkg}/bin"
 cp "${src}/herdr-plugin.toml" "${src}/README.md" "${src}/LICENSE" "${pkg}/"
 cp "$binary" "${pkg}/bin/herdr-tools"
 chmod 755 "${pkg}/bin/herdr-tools"
+# The scratch state handoff ships with the plugin so a remote machine can run
+# the same cutover step (my/sync-remote.sh does) without a source checkout.
+cp "${src}/crates/scratch/cutover-state.sh" "${pkg}/bin/scratch-cutover-state.sh"
+chmod 755 "${pkg}/bin/scratch-cutover-state.sh"
 # nvim/<mode>/ holds runtime assets each mode loads from HERDR_PLUGIN_ROOT.
 # .gitkeep only exists so git tracks the directory before a mode fills it.
 cp -R "${src}/nvim" "${pkg}/nvim"
