@@ -276,9 +276,7 @@ impl ClientShellState {
 
     /// One tab of `endpoint_id`'s snapshot, judged on its own. For a single
     /// question; loops use a `ScopeView`.
-    // A one-off gate for the picker's jump on focus and later surfaces; only
-    // tests call it so far.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(super) fn scope_admits_tab(
         &self,
         endpoint_id: &ClientEndpointId,
@@ -334,8 +332,7 @@ impl ClientShellState {
 
     /// Whether `endpoint_id`'s machine header shows, judged over its cached
     /// snapshot.
-    // A one-off gate like `scope_admits_tab`; only tests call it so far.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(super) fn scope_shows_machine(&self, endpoint_id: &ClientEndpointId) -> bool {
         let endpoint = self
             .endpoints
@@ -422,8 +419,6 @@ impl ClientShellState {
 
     /// Takes the Local endpoint's latest projection: `None` when Local has
     /// none, or lost the capability on reconnect.
-    // The projection decoder (server/wire ticket) is the production caller.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn set_scope_projection(&mut self, scope: Option<ScopeState>) {
         if self.scope_projection == scope {
             return;
