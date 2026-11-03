@@ -68,7 +68,7 @@ def request(herdr, method, params):
 
 
 def state_dir(herdr):
-    return herdr.root / "state/herdr/plugins/shadowfax.tools"
+    return herdr.root / "state/herdr/plugins/shadowfax.tools/comment"
 
 
 def comments(herdr):

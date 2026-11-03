@@ -45,6 +45,13 @@ use herdr::{HerdrClient, HostHerdr};
 use review::{NvimEditor, ReviewService};
 use store::Store;
 
+/// Comment state lives under `<plugin state dir>/comment/`. The state dir is
+/// shared by every mode, so each mode keeps its own subdirectory and no mode's
+/// cleanup can touch another's files.
+pub fn state_root() -> std::path::PathBuf {
+    Paths::from_env().state_dir().join("comment")
+}
+
 /// This mode's name: the first `herdr-tools` argument and its config table.
 pub const MODE: &str = "comment";
 
@@ -143,7 +150,7 @@ pub fn capture_action() -> Result<()> {
 pub fn capture_popup() -> Result<()> {
     let run_id =
         std::env::var("HERDR_COMMENTS_RUN_ID").context("HERDR_COMMENTS_RUN_ID is missing")?;
-    let store = Store::open(Paths::from_env().state_dir())?;
+    let store = Store::open(state_root())?;
     if std::env::var("HERDR_COMMENTS_INLINE").is_ok_and(|value| value == "1") {
         tui::run_inline_annotation(&store, &run_id)
     } else {
@@ -178,7 +185,7 @@ pub fn review_popup() -> Result<()> {
         std::env::var("HERDR_COMMENTS_REVIEW_ID").context("HERDR_COMMENTS_REVIEW_ID is missing")?;
     let herdr_bin = std::env::var("HERDR_BIN_PATH").context("HERDR_BIN_PATH is missing")?;
     let socket_path = std::env::var("HERDR_SOCKET_PATH").context("HERDR_SOCKET_PATH is missing")?;
-    let store = Store::open(Paths::from_env().state_dir())?;
+    let store = Store::open(state_root())?;
     let herdr = HostHerdr::new(herdr_bin, socket_path);
     let root = herdr::plugin_root()?;
     let editor = NvimEditor::new(
@@ -193,5 +200,5 @@ pub fn review_popup() -> Result<()> {
 }
 
 pub fn confirm_review(review_id: &str) -> Result<()> {
-    Store::open(Paths::from_env().state_dir())?.confirm_review(review_id)
+    Store::open(state_root())?.confirm_review(review_id)
 }

@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use tools_core::{Invocation, Paths};
+use tools_core::Invocation;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionContext {
@@ -32,7 +32,7 @@ impl ActionContext {
         }
         Self::from_invocation(
             invocation,
-            Paths::from_env().state_dir(),
+            &crate::state_root(),
             &std::env::var("HERDR_BIN_PATH").context("HERDR_BIN_PATH is missing")?,
             &std::env::var("HERDR_SOCKET_PATH").context("HERDR_SOCKET_PATH is missing")?,
         )
