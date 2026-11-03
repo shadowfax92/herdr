@@ -22,8 +22,10 @@ What it drives, all through the real laid-out plugin and the real CLI:
    menu stays open with that refusal, and this step prints SKIP.
 3. Menu, hide (x), focus (f) and the retired workspace_visibility row (v): each
    closes the menu and opens Herdr's picker in its mode. The picker's own keys
-   (j moves, space toggles the mode's mark, enter applies) then change exactly
-   the part of the scope that mode owns.
+   (ctrl+j moves, Tab toggles the mode's mark and moves on, enter applies) then
+   change exactly the part of the scope that mode owns.
+4. The picker's search: typing `local beta` narrows the list to beta and
+   selects it, Tab hides that filtered row, and enter applies it.
 
 Everything runs in an IsolatedHerdr (temp XDG dirs, its own session, a PTY
 client), so the owner's live Herdr and ~/.config/herdr are never touched.
@@ -232,26 +234,19 @@ def main():
             # The menu closes its popup before Herdr opens the picker.
             herdr.wait_for(lambda: not running("menu menu"), what=f"the menu to close after {key}")
             herdr.drain(1.0)
-            # The picker's contract (DESIGN.md): j moves, space toggles this
-            # mode's mark, enter applies one scope.set to Local.
-            herdr.type("j")
+            # The picker's contract (DESIGN.md, fzf keys): ctrl+j (a bare line
+            # feed) moves, Tab toggles this mode's mark and moves on, enter
+            # applies one scope.set to Local.
+            herdr.type("\n")
             herdr.drain(0.3)
-            herdr.type(" ")
+            herdr.type("\t")
             herdr.drain(0.3)
             herdr.type("\r")
-            try:
-                herdr.wait_for(lambda: scope()["scope"] != before, timeout=10,
-                               what=f"{key}'s {mode} picker to apply a change "
-                                    "(j, space, enter in Herdr's picker)")
-            except AssertionError:
-                pane = herdr.cli("pane", "read", focused(), "--source", "recent-unwrapped",
-                                 "--lines", "20", check=False)
-                text = getattr(pane, "stdout", pane) or ""
-                if "j: command not found" in text or "j: not found" in text:
-                    raise AssertionError(
-                        f"{key}: the picker opened but its keys reached the pane: the client "
-                        "still routed input to the menu's closed popup") from None
-                raise
+            # A timeout with the picker open means its keys went elsewhere,
+            # e.g. to the menu's closed popup.
+            herdr.wait_for(lambda: scope()["scope"] != before, timeout=10,
+                           what=f"{key}'s {mode} picker to apply a change "
+                                "(ctrl+j, Tab, enter in Herdr's picker)")
             after = scope()["scope"]
             # Space toggles this mode's mark only, so the other list is untouched.
             if owned == "hidden":
@@ -260,11 +255,34 @@ def main():
             else:
                 assert after["focus"]["targets"] != before["focus"]["targets"], (key, before, after)
                 assert after["hidden"] == before["hidden"], (key, before, after)
-            print(f"PASS {key}: menu closed, Herdr's {mode} picker opened; space+enter changed "
+            print(f"PASS {key}: menu closed, Herdr's {mode} picker opened; Tab+enter changed "
                   f"only scope.{owned}")
             herdr.cli("scope", "clear")
             herdr.cli("scope", "unfocus")
             refocus(source, source_tab)
+
+        # --- 4. search: type a query, Tab the filtered row, enter ------------
+        assert not scope()["scope"]["hidden"], scope()
+        invoke("menu", "menu menu")
+        herdr.drain(0.5)
+        herdr.type("x")
+        herdr.wait_for(lambda: not running("menu menu"), what="the menu to close after x")
+        herdr.drain(1.0)
+        # Two terms across machine and workspace; the best match (beta) is
+        # selected as the query changes, so Tab hides it without moving there.
+        herdr.type("local beta")
+        herdr.drain(0.5)
+        herdr.type("\t")
+        herdr.drain(0.3)
+        herdr.type("\r")
+        herdr.wait_for(lambda: scope()["scope"]["hidden"], timeout=10,
+                       what="the hide picker to apply the searched row")
+        hidden = scope()["scope"]["hidden"]
+        assert [(t.get("workspace_label"), t.get("tab_label")) for t in hidden] == [("beta", None)], hidden
+        assert hidden[0].get("workspace_id") == beta["workspace"]["workspace_id"], (hidden, beta)
+        assert not scope()["scope"]["focus"]["targets"], scope()
+        print("PASS search: typing 'local beta' in the hide picker selected beta; Tab+enter hid "
+              "exactly that workspace")
 
 
 if __name__ == "__main__":
