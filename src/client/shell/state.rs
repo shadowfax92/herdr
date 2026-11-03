@@ -1737,10 +1737,21 @@ impl ClientShellState {
             }
             self.mode = ClientShellMode::Terminal;
             self.navigate_workspace_id = None;
-            if !matches!(
-                self.overlay.as_ref(),
-                Some(ClientShellOverlay::Onboarding | ClientShellOverlay::ProductAnnouncement(_))
-            ) {
+            // A closing popup keeps the scope picker: the herdr-tools menu
+            // popup asks for the picker (`scope.pick`) as it closes, and that
+            // request can reach the client before the surface without the
+            // popup does. Clearing it here would leave the picker drawn but
+            // dead, with keys going to the pane.
+            let picker_survives_close =
+                popup_closed && matches!(self.overlay, Some(ClientShellOverlay::ScopePicker(_)));
+            if !picker_survives_close
+                && !matches!(
+                    self.overlay.as_ref(),
+                    Some(
+                        ClientShellOverlay::Onboarding | ClientShellOverlay::ProductAnnouncement(_)
+                    )
+                )
+            {
                 self.overlay = self
                     .config
                     .startup_onboarding

@@ -324,6 +324,27 @@ fn the_picker_keeps_the_keyboard_while_a_closing_popup_is_still_known() {
 }
 
 #[test]
+fn the_picker_survives_the_menu_popup_closing_after_it_opened() {
+    // The pick reaches the client first; the surface without the popup follows.
+    let (mut state, _) = state_with(&[]);
+    state.set_pane_surface(super::surface_with_popup());
+    state.open_scope_picker(crate::scope::ScopePickMode::Hide);
+    state.set_pane_surface(surface());
+    assert_eq!(picker(&state).mode, crate::scope::ScopePickMode::Hide);
+    let before = picker(&state).selected.clone();
+    press(&mut state, KeyCode::Char('j'));
+    assert_ne!(
+        picker(&state).selected,
+        before,
+        "j must still move the picker"
+    );
+
+    // A popup opening over the picker still closes it, as for other overlays.
+    state.set_pane_surface(super::surface_with_popup());
+    assert!(state.overlay.is_none());
+}
+
+#[test]
 fn escape_and_an_unchanged_enter_send_nothing() {
     let (mut state, _) = state_with(&[]);
     record(&mut state, KeybindAction::FocusPicker);
