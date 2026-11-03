@@ -41,21 +41,22 @@ install:
     dest='{{plugin_dir}}'
     parent="$(dirname "$dest")"
     mkdir -p "$parent"
-    # Stage beside the destination so the final step is a same-filesystem
-    # rename: the linked dir is either the old tree or the new one, never half.
+    # Stage beside the destination so the swap is a same-filesystem rename: the
+    # linked dir is either the old tree or the new one, never half-written.
+    # scripts/package.sh is the layout the fork release ships too, so a dev
+    # install and a release install cannot drift apart.
     stage="$(mktemp -d "$parent/.shadowfax.tools.stage.XXXXXX")"
-    old=""
-    trap 'rm -rf "$stage" ${old:+"$old"}' EXIT
-    mkdir -p "$stage/bin"
-    cp herdr-plugin.toml README.md LICENSE "$stage/"
-    cp target/release/herdr-tools "$stage/bin/herdr-tools"
-    cp -R nvim "$stage/nvim"
-    if [ -e "$dest" ]; then
-        old="$(mktemp -d "$parent/.shadowfax.tools.old.XXXXXX")"
-        rmdir "$old"
-        mv "$dest" "$old"
+    trap 'rm -rf "$stage"' EXIT
+    scripts/package.sh target/release/herdr-tools "$stage"
+    if [ -e "$dest" ] || [ -L "$dest" ]; then
+        mv "$dest" "$stage/previous"
     fi
-    mv "$stage" "$dest"
+    if ! mv "$stage/shadowfax.tools" "$dest"; then
+        if [ -e "$stage/previous" ] || [ -L "$stage/previous" ]; then
+            mv "$stage/previous" "$dest"
+        fi
+        exit 1
+    fi
     echo "Installed $dest"
     # Running processes (the scratch cleanup worker) keep the old binary's inode;
     # the next start runs the new one. Linking the same id from another dir

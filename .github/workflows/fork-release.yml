@@ -12,6 +12,7 @@ on:
       - 'scripts/test_fork_installer.py'
       - 'src/update.rs'
       - 'justfile'
+      - 'herdr-tools/**'
 
 permissions:
   contents: read
@@ -30,7 +31,7 @@ jobs:
   check:
     if: github.repository == 'shadowfax92/herdr'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -64,10 +65,14 @@ jobs:
           CARGO_PROFILE_DEV_DEBUG: '1'
           CARGO_PROFILE_TEST_DEBUG: '1'
         run: |
-          shellcheck -s sh distribution/fork-install.sh
+          shellcheck -s sh distribution/fork-install.sh herdr-tools/scripts/package.sh
           go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/fork-release.yml
           just fork-check
           just lint
+      # herdr-tools is its own Cargo workspace (the shadowfax.tools plugin), so
+      # the root checks above never see it.
+      - name: Check herdr-tools
+        run: just -f herdr-tools/justfile ci
 
   build:
     needs: check
@@ -79,15 +84,19 @@ jobs:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             name: herdr-linux-x86_64
+            tools: herdr-tools-linux-x86_64
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             name: herdr-linux-aarch64
+            tools: herdr-tools-linux-aarch64
           - target: x86_64-apple-darwin
             os: macos-15-intel
             name: herdr-macos-x86_64
+            tools: herdr-tools-macos-x86_64
           - target: aarch64-apple-darwin
             os: macos-latest
             name: herdr-macos-aarch64
+            tools: herdr-tools-macos-aarch64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     steps:
@@ -114,34 +123,51 @@ jobs:
       - name: Install macOS build tools
         if: runner.os == 'macOS'
         run: brew install cmake ninja
-      - name: Build optimized binary
+      - name: Build optimized binaries
         env:
           TARGET: ${{ matrix.target }}
-        run: cargo build --release --locked --target "$TARGET"
-      - name: Package binary
+        run: |
+          cargo build --release --locked --target "$TARGET"
+          # herdr-tools is its own workspace, so its output lands in herdr-tools/target.
+          cargo build --release --locked --manifest-path herdr-tools/Cargo.toml --target "$TARGET"
+      - name: Package binaries
         env:
           TARGET: ${{ matrix.target }}
           ASSET: ${{ matrix.name }}
+          TOOLS: ${{ matrix.tools }}
         run: |
+          check_binary() {
+            file "$1"
+            if [ "$RUNNER_OS" = Linux ]; then
+              # musl binaries must run without the build host's dynamic loader or C++ runtime.
+              if readelf -l "$1" | grep -q INTERP; then
+                echo "error: Linux binary $1 requires a dynamic loader" >&2
+                exit 1
+              fi
+              if nm -u "$1" 2>/dev/null | grep -E '(__cxa|GLIBCXX|CXXABI|_ZSt)'; then
+                echo "error: Linux binary $1 has unresolved C++ runtime symbols" >&2
+                exit 1
+              fi
+            else
+              "$1" --version
+            fi
+          }
           cp "target/$TARGET/release/herdr" "$ASSET"
-          file "$ASSET"
-          if [ "$RUNNER_OS" = Linux ]; then
-            # musl binaries must run without the build host's dynamic loader or C++ runtime.
-            if readelf -l "$ASSET" | grep -q INTERP; then
-              echo 'error: Linux binary requires a dynamic loader' >&2
-              exit 1
-            fi
-            if nm -u "$ASSET" 2>/dev/null | grep -E '(__cxa|GLIBCXX|CXXABI|_ZSt)'; then
-              echo 'error: Linux binary has unresolved C++ runtime symbols' >&2
-              exit 1
-            fi
-          else
-            "./$ASSET" --version
-          fi
+          check_binary "./$ASSET"
+          # The shadowfax.tools plugin dir, prebuilt: install.sh unpacks it and
+          # `herdr plugin link`s it, which never builds. package.sh is the same
+          # layout `just -f herdr-tools/justfile install` uses.
+          herdr-tools/scripts/package.sh "herdr-tools/target/$TARGET/release/herdr-tools" "$RUNNER_TEMP/tools"
+          check_binary "$RUNNER_TEMP/tools/shadowfax.tools/bin/herdr-tools"
+          # COPYFILE_DISABLE keeps macOS tar from adding AppleDouble ._* entries.
+          COPYFILE_DISABLE=1 tar -czf "$TOOLS.tar.gz" -C "$RUNNER_TEMP/tools" shadowfax.tools
+          tar -tzvf "$TOOLS.tar.gz"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ matrix.name }}
-          path: ${{ matrix.name }}
+          path: |
+            ${{ matrix.name }}
+            ${{ matrix.tools }}.tar.gz
           if-no-files-found: error
           retention-days: 7
 
@@ -166,21 +192,30 @@ jobs:
         run: |
           cp distribution/fork-install.sh release/install.sh
           cd release
-          for asset in herdr-linux-x86_64 herdr-linux-aarch64 herdr-macos-x86_64 herdr-macos-aarch64 install.sh; do
+          assets=(install.sh)
+          for platform in linux-x86_64 linux-aarch64 macos-x86_64 macos-aarch64; do
+            assets+=("herdr-$platform" "herdr-tools-$platform.tar.gz")
+          done
+          for asset in "${assets[@]}"; do
             test -s "$asset"
           done
-          sha256sum herdr-* install.sh > SHA256SUMS
+          # install.sh refuses any asset without exactly one line here.
+          sha256sum "${assets[@]}" > SHA256SUMS
+          cat SHA256SUMS
           printf 'Optimized fork build from %s.\n\n' "$GITHUB_SHA" > notes.md
           cat >> notes.md <<'NOTES'
           Install on Linux or macOS:
           ```sh
           curl -fsSL https://github.com/shadowfax92/herdr/releases/latest/download/install.sh | sh
           ```
+          It also installs the `shadowfax.tools` plugin (`herdr-tools`) to
+          `~/.local/share/herdr/plugins/shadowfax.tools` and links it. Pipe to
+          `HERDR_INSTALL_TOOLS=0 sh` instead to install only herdr.
           NOTES
           # Keep latest on the previous complete release until every asset uploads.
           gh release create "$GITHUB_REF_NAME" -R shadowfax92/herdr --verify-tag \
             --draft --title "$GITHUB_REF_NAME" --notes-file notes.md \
-            herdr-* SHA256SUMS install.sh
+            "${assets[@]}" SHA256SUMS
           gh release edit "$GITHUB_REF_NAME" -R shadowfax92/herdr --draft=false --latest
 
   smoke:
@@ -196,9 +231,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          HERDR_INSTALL_DIR="$(mktemp -d)"
-          export HERDR_INSTALL_DIR
-          trap 'rm -rf "$HERDR_INSTALL_DIR"' EXIT
+          root="$(mktemp -d)"
+          trap 'rm -rf "$root"' EXIT
+          # Temp XDG dirs keep the plugin dir and Herdr's plugin registry off
+          # the runner's home. No Herdr server runs here, so the link is offline.
+          HERDR_INSTALL_DIR="$root/bin"
+          XDG_CONFIG_HOME="$root/config"
+          XDG_DATA_HOME="$root/data"
+          XDG_STATE_HOME="$root/state"
+          export HERDR_INSTALL_DIR XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME
           curl -fsSL https://github.com/shadowfax92/herdr/releases/latest/download/install.sh | sh
           version="$("$HERDR_INSTALL_DIR/herdr" --version)"
           base="${GITHUB_REF_NAME#fork-v}"
@@ -211,4 +252,14 @@ jobs:
             exit 1
           fi
           grep -F 'disabled for this fork' update.txt
-          printf 'Published installer passed on %s/%s: %s\n' "$RUNNER_OS" "$RUNNER_ARCH" "$version" >> "$GITHUB_STEP_SUMMARY"
+          plugin_dir="$XDG_DATA_HOME/herdr/plugins/shadowfax.tools"
+          test -f "$plugin_dir/herdr-plugin.toml"
+          tools_version="$("$plugin_dir/bin/herdr-tools" --version)"
+          echo "$tools_version"
+          "$HERDR_INSTALL_DIR/herdr" plugin list | tee plugins.txt
+          # Linked from the plugin dir; Herdr records its canonical path
+          # (/private/var/... on macOS).
+          grep -F -- '- shadowfax.tools (' plugins.txt
+          grep -F -- "[local:$(cd "$plugin_dir" && pwd -P)" plugins.txt
+          printf 'Published installer passed on %s/%s: %s, %s\n' \
+            "$RUNNER_OS" "$RUNNER_ARCH" "$version" "$tools_version" >> "$GITHUB_STEP_SUMMARY"
