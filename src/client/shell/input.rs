@@ -258,6 +258,13 @@ impl ClientShellState {
                         self.reconcile_input_source();
                         continue;
                     }
+                    // The scope picker owns text as it owns keys, even over a
+                    // popup that is still closing (route_key_press).
+                    if self.insert_scope_picker_text(&text) {
+                        outcome.repaint = true;
+                        self.reconcile_input_source();
+                        continue;
+                    }
                     if self.prepare_committed_text(&text, &mut outcome) {
                         self.reconcile_input_source();
                         continue;
@@ -288,6 +295,11 @@ impl ClientShellState {
                                 | ClientShellOverlay::ReleaseNotes(_)
                         )
                     ) {
+                        self.reconcile_input_source();
+                        continue;
+                    }
+                    if self.insert_scope_picker_text(&text) {
+                        outcome.repaint = true;
                         self.reconcile_input_source();
                         continue;
                     }
@@ -589,6 +601,7 @@ impl ClientShellState {
                     search_focused: true,
                     ..
                 }))
+                | Some(ClientShellOverlay::ScopePicker(_))
         )
     }
 

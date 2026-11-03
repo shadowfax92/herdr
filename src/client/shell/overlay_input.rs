@@ -466,7 +466,7 @@ impl ClientShellState {
     }
 
     pub(super) fn insert_overlay_text(&mut self, text: &str) -> bool {
-        if self.insert_worktree_overlay_text(text) {
+        if self.insert_worktree_overlay_text(text) || self.insert_scope_picker_text(text) {
             return true;
         }
         match self.overlay.as_mut() {

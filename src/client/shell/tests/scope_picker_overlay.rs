@@ -1,7 +1,8 @@
 //! The focus/hide picker and every way to open it: rows across machines,
-//! staged edits, the one `scope.set` it sends, and the jump on focus. The
-//! scope comes from `set_scope_projection`, as the Local server would send it,
-//! and every request is read from `scope_set_requests`.
+//! the fzf-style search, staged edits, the one `scope.set` it sends, and the
+//! jump on focus. The scope comes from `set_scope_projection`, as the Local
+//! server would send it, and every request is read from `scope_set_requests`.
+//! Two machines throughout: Local (setup, ft, admin) and studio (main).
 use super::super::scope_picker::{
     scope_picker_marks, ClientScopePickerOverlay, ScopePickerControl,
 };
@@ -70,7 +71,13 @@ fn studio_snapshot() -> ClientShellSnapshot {
 }
 
 fn state_with(hidden_workspaces: &[&str]) -> (ClientShellState, ClientEndpointId) {
-    let mut config = Config::default();
+    state_with_config(Config::default(), hidden_workspaces)
+}
+
+fn state_with_config(
+    mut config: Config,
+    hidden_workspaces: &[&str],
+) -> (ClientShellState, ClientEndpointId) {
     config.ui.sidebar.agents.hidden_workspaces = hidden_workspaces
         .iter()
         .map(|label| (*label).to_owned())
@@ -131,6 +138,78 @@ fn press(state: &mut ClientShellState, code: KeyCode) -> ClientShellInput {
         code,
         KeyModifiers::empty(),
     ))])
+}
+
+fn ctrl(state: &mut ClientShellState, letter: char) -> ClientShellInput {
+    state.handle_raw_events(vec![RawInputEvent::Key(TerminalKey::new(
+        KeyCode::Char(letter),
+        KeyModifiers::CONTROL,
+    ))])
+}
+
+/// Types `text` key by key, as a legacy terminal reports it.
+fn type_query(state: &mut ClientShellState, text: &str) {
+    for letter in text.chars() {
+        let modifiers = if letter.is_ascii_uppercase() {
+            KeyModifiers::SHIFT
+        } else {
+            KeyModifiers::empty()
+        };
+        let outcome = state.handle_raw_events(vec![RawInputEvent::Key(TerminalKey::new(
+            KeyCode::Char(letter),
+            modifiers,
+        ))]);
+        assert!(outcome.requests.is_empty(), "{letter:?} left the picker");
+    }
+}
+
+/// The listed rows as `indent label`, context rows tagged.
+fn listed(state: &ClientShellState) -> Vec<String> {
+    let view = &picker(state).view;
+    view.listed
+        .iter()
+        .map(|listed| {
+            let row = &view.rows[listed.index];
+            format!(
+                "{}{}{}",
+                "  ".repeat(usize::from(row.depth)),
+                row.label,
+                if listed.context { " (context)" } else { "" }
+            )
+        })
+        .collect()
+}
+
+/// The picker box's lines in the last composed frame, without the sidebar
+/// and panes around it.
+fn picker_text(state: &ClientShellState, frame: &FrameData) -> String {
+    let popup = state.hits.scope_picker_popup;
+    frame_rows(frame)[usize::from(popup.y)..usize::from(popup.bottom())]
+        .iter()
+        .map(|row| {
+            row.chars()
+                .skip(usize::from(popup.x))
+                .take(usize::from(popup.width))
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The selected row's `machine/label`, as the picker resolves it.
+fn selected_label(state: &ClientShellState) -> String {
+    let picker = picker(state);
+    let view = &picker.view;
+    let position = view
+        .selected_position(picker.selected.as_ref())
+        .expect("a listed row is selected");
+    let row = &view.rows[view.listed[position].index];
+    let machine = row.target.machine_label.clone().unwrap_or_default();
+    if row.depth == 0 {
+        machine
+    } else {
+        format!("{machine}/{}", row.label)
+    }
 }
 
 fn picker(state: &ClientShellState) -> &ClientScopePickerOverlay {
@@ -256,15 +335,15 @@ fn staged_toggles_apply_as_one_set_with_only_the_changed_fields() {
     record(&mut state, KeybindAction::HidePicker);
     assert_eq!(picker(&state).mode, ScopePickMode::Hide);
 
-    // space marks with the mode (hide); x and f reach either mark.
+    // Tab marks with the mode (hide); ctrl+x and ctrl+f reach either mark.
     select(&mut state, "Local", 1, "admin");
-    press(&mut state, KeyCode::Char(' '));
+    press(&mut state, KeyCode::Tab);
     select(&mut state, "studio", 2, "fish");
-    press(&mut state, KeyCode::Char('x'));
-    press(&mut state, KeyCode::Char('x'));
-    press(&mut state, KeyCode::Char('x'));
+    ctrl(&mut state, 'x');
+    ctrl(&mut state, 'x');
+    ctrl(&mut state, 'x');
     select(&mut state, "Local", 1, "setup");
-    press(&mut state, KeyCode::Char('f'));
+    ctrl(&mut state, 'f');
     assert!(
         state.scope_set_requests.is_empty(),
         "edits stay local until enter"
@@ -295,7 +374,7 @@ fn toggling_a_marked_row_removes_the_target_that_names_it() {
     // The config hide is a label target for every machine; un-hiding ft
     // removes it.
     select(&mut state, "Local", 1, "ft");
-    press(&mut state, KeyCode::Char(' '));
+    press(&mut state, KeyCode::Tab);
     press(&mut state, KeyCode::Enter);
     assert_eq!(
         state.scope_set_requests,
@@ -314,13 +393,22 @@ fn the_picker_keeps_the_keyboard_while_a_closing_popup_is_still_known() {
     state.popup_terminal_id = Some("closing-menu-popup".into());
     record(&mut state, KeybindAction::FocusPicker);
     let before = picker(&state).selected.clone();
-    let outcome = press(&mut state, KeyCode::Char('j'));
-    assert_ne!(picker(&state).selected, before, "j must move the picker");
+    let outcome = ctrl(&mut state, 'j');
+    assert_ne!(
+        picker(&state).selected,
+        before,
+        "ctrl+j must move the picker"
+    );
     assert!(
         outcome.requests.is_empty(),
         "no key may reach the popup or the pane: {:?}",
         outcome.requests
     );
+    // Typed and pasted text land in the query, not in the closing popup.
+    type_query(&mut state, "ad");
+    let outcome = state.handle_raw_events(vec![RawInputEvent::Paste("min".into())]);
+    assert!(outcome.requests.is_empty(), "{:?}", outcome.requests);
+    assert_eq!(picker(&state).query.as_str(), "admin");
 }
 
 #[test]
@@ -332,11 +420,11 @@ fn the_picker_survives_the_menu_popup_closing_after_it_opened() {
     state.set_pane_surface(surface());
     assert_eq!(picker(&state).mode, crate::scope::ScopePickMode::Hide);
     let before = picker(&state).selected.clone();
-    press(&mut state, KeyCode::Char('j'));
+    ctrl(&mut state, 'j');
     assert_ne!(
         picker(&state).selected,
         before,
-        "j must still move the picker"
+        "ctrl+j must still move the picker"
     );
 
     // A popup opening over the picker still closes it, as for other overlays.
@@ -349,20 +437,20 @@ fn escape_and_an_unchanged_enter_send_nothing() {
     let (mut state, _) = state_with(&[]);
     record(&mut state, KeybindAction::FocusPicker);
     select(&mut state, "Local", 1, "admin");
-    press(&mut state, KeyCode::Char(' '));
+    press(&mut state, KeyCode::Tab);
     press(&mut state, KeyCode::Esc);
     assert!(state.overlay.is_none());
 
     record(&mut state, KeybindAction::FocusPicker);
-    press(&mut state, KeyCode::Char('x'));
-    press(&mut state, KeyCode::Char('x'));
+    ctrl(&mut state, 'x');
+    ctrl(&mut state, 'x');
     press(&mut state, KeyCode::Enter);
     assert!(state.overlay.is_none());
     assert!(state.scope_set_requests.is_empty());
 }
 
 #[test]
-fn a_flips_focus_and_c_clears_back_to_the_config_hides() {
+fn ctrl_o_flips_focus_and_ctrl_r_clears_back_to_the_config_hides() {
     let (mut state, _) = state_with(&["ft"]);
     let scope = ScopeState {
         focus: ScopeFocus {
@@ -374,7 +462,7 @@ fn a_flips_focus_and_c_clears_back_to_the_config_hides() {
     state.set_scope_projection(Some(scope.clone()));
 
     record(&mut state, KeybindAction::FocusPicker);
-    press(&mut state, KeyCode::Char('a'));
+    ctrl(&mut state, 'o');
     assert!(!picker(&state).staged.focus.active);
     press(&mut state, KeyCode::Enter);
     assert_eq!(
@@ -387,7 +475,7 @@ fn a_flips_focus_and_c_clears_back_to_the_config_hides() {
 
     state.scope_set_requests.clear();
     record(&mut state, KeybindAction::HidePicker);
-    press(&mut state, KeyCode::Char('c'));
+    ctrl(&mut state, 'r');
     assert_eq!(
         picker(&state).staged,
         ScopeState::from_config_hidden(&["ft".into()])
@@ -425,9 +513,9 @@ fn apply_keeps_targets_the_picker_cannot_see() {
         .join("\n")
         .contains("2 unlisted targets are kept on apply"));
     select(&mut state, "Local", 1, "setup");
-    press(&mut state, KeyCode::Char('f'));
+    ctrl(&mut state, 'f');
     select(&mut state, "Local", 1, "admin");
-    press(&mut state, KeyCode::Char('x'));
+    ctrl(&mut state, 'x');
     press(&mut state, KeyCode::Enter);
     assert_eq!(
         state.scope_set_requests,
@@ -445,9 +533,9 @@ fn applying_focus_jumps_to_the_first_admitted_workspace_in_panel_order() {
     record(&mut state, KeybindAction::FocusPicker);
     // Focus admin on Local and main on studio; the displayed setup leaves.
     select(&mut state, "studio", 1, "main");
-    press(&mut state, KeyCode::Char(' '));
+    press(&mut state, KeyCode::Tab);
     select(&mut state, "Local", 1, "admin");
-    press(&mut state, KeyCode::Char(' '));
+    press(&mut state, KeyCode::Tab);
     let outcome = press(&mut state, KeyCode::Enter);
     assert_eq!(state.scope_set_requests.len(), 1);
     // Local comes first in the panel, so admin wins over studio's main.
@@ -464,7 +552,7 @@ fn applying_focus_jumps_to_the_first_admitted_workspace_in_panel_order() {
     state.set_scope_projection(None);
     record(&mut state, KeybindAction::FocusPicker);
     select(&mut state, "studio", 2, "outreach");
-    press(&mut state, KeyCode::Char('f'));
+    ctrl(&mut state, 'f');
     let outcome = press(&mut state, KeyCode::Enter);
     assert_eq!(
         activations(&outcome),
@@ -481,7 +569,7 @@ fn applying_focus_skips_machines_that_are_not_online() {
     state.set_endpoint_status(&studio_id, ClientEndpointStatus::Reconnecting);
     record(&mut state, KeybindAction::FocusPicker);
     select(&mut state, "studio", 1, "main");
-    press(&mut state, KeyCode::Char('f'));
+    ctrl(&mut state, 'f');
     let outcome = press(&mut state, KeyCode::Enter);
     assert_eq!(state.scope_set_requests.len(), 1);
     assert!(activations(&outcome).is_empty(), "{:?}", outcome.actions);
@@ -591,7 +679,7 @@ fn a_plugin_pick_while_open_switches_mode_and_keeps_edits() {
     let (mut state, _) = state_with(&[]);
     state.open_scope_picker(ScopePickMode::Focus);
     select(&mut state, "Local", 1, "admin");
-    press(&mut state, KeyCode::Char(' '));
+    press(&mut state, KeyCode::Tab);
     state.open_scope_picker(ScopePickMode::Hide);
     assert_eq!(picker(&state).mode, ScopePickMode::Hide);
     assert_eq!(
@@ -764,4 +852,355 @@ fn every_workspace_menu_variant_ends_with_focus_and_hide() {
         .items()
         .iter()
         .any(|item| item.action == ClientContextMenuAction::FocusScope));
+}
+
+// --- Search: type to filter, fzf keys -------------------------------------
+
+#[test]
+fn typing_filters_rows_and_keeps_their_machine_and_workspace_as_context() {
+    let (mut state, _) = state_with(&[]);
+    record(&mut state, KeybindAction::FocusPicker);
+    type_query(&mut state, "outr");
+    assert_eq!(picker(&state).query.as_str(), "outr");
+    assert_eq!(
+        listed(&state),
+        ["studio (context)", "  main (context)", "    outreach"]
+    );
+    let view = &picker(&state).view;
+    assert_eq!((view.matched, view.rows.len()), (1, 12));
+    // Only the matched letters of a match's own label are highlighted.
+    assert_eq!(view.listed[2].label_indices, [0, 1, 2, 3]);
+    assert!(view.listed[..2]
+        .iter()
+        .all(|row| row.label_indices.is_empty()));
+
+    // Context rows are still selectable and markable.
+    ctrl(&mut state, 'k');
+    assert_eq!(selected_label(&state), "studio/main");
+    press(&mut state, KeyCode::Tab);
+    assert_eq!(
+        picker(&state).staged.focus.targets,
+        [studio("ws_1", "main")]
+    );
+
+    let frame = state.compose(100, 32).expect("picker frame");
+    let text = picker_text(&state, &frame);
+    assert!(text.contains("› outr"), "{text}");
+    assert!(text.contains("1/12"), "{text}");
+    assert!(text.contains("outreach"), "{text}");
+    assert!(!text.contains("setup"), "{text}");
+}
+
+#[test]
+fn a_multi_term_query_narrows_across_machine_and_workspace() {
+    let (mut state, _) = state_with(&[]);
+    record(&mut state, KeybindAction::FocusPicker);
+    type_query(&mut state, "fish");
+    assert_eq!(
+        listed(&state),
+        [
+            "Local (context)",
+            "  admin (context)",
+            "    fish",
+            "studio (context)",
+            "  main (context)",
+            "    fish",
+        ]
+    );
+    // Every term must match one of the row's labels: Local's fish has no
+    // `studio`.
+    ctrl(&mut state, 'u');
+    type_query(&mut state, "studio fish");
+    assert_eq!(
+        listed(&state),
+        ["studio (context)", "  main (context)", "    fish"]
+    );
+    ctrl(&mut state, 'u');
+    type_query(&mut state, "studio main");
+    assert_eq!(
+        listed(&state),
+        ["studio (context)", "  main", "    fish", "    outreach"]
+    );
+    // The workspace whose own label matches ranks above its tabs.
+    assert_eq!(selected_label(&state), "studio/main");
+}
+
+#[test]
+fn smart_case_ignores_case_until_the_query_has_an_uppercase_letter() {
+    let (mut state, _) = state_with(&[]);
+    record(&mut state, KeybindAction::FocusPicker);
+    for (query, matched) in [
+        ("local", 8),
+        ("Local", 8),
+        ("LOCAL", 0),
+        ("fish", 2),
+        ("Fish", 0),
+    ] {
+        ctrl(&mut state, 'u');
+        type_query(&mut state, query);
+        assert_eq!(picker(&state).view.matched, matched, "{query}");
+    }
+    let frame = state.compose(100, 32).expect("picker frame");
+    let text = picker_text(&state, &frame);
+    assert!(text.contains("no matches"), "{text}");
+    assert!(text.contains("0/12"), "{text}");
+}
+
+#[test]
+fn marks_survive_query_changes_and_apply_while_filtered_out() {
+    let (mut state, _) = state_with(&[]);
+    record(&mut state, KeybindAction::HidePicker);
+    type_query(&mut state, "admin");
+    assert_eq!(selected_label(&state), "Local/admin");
+    press(&mut state, KeyCode::Tab);
+    ctrl(&mut state, 'u');
+    type_query(&mut state, "outreach");
+    ctrl(&mut state, 'f');
+    // admin is no longer listed but keeps its mark.
+    assert!(
+        !listed(&state).iter().any(|row| row.contains("admin")),
+        "{:?}",
+        listed(&state)
+    );
+    assert_eq!(picker(&state).staged.hidden, [local("ws_3", "admin")]);
+
+    press(&mut state, KeyCode::Enter);
+    assert!(state.overlay.is_none());
+    assert_eq!(
+        state.scope_set_requests,
+        [ScopeSetParams {
+            focus_targets: Some(vec![with_tab(studio("ws_1", "main"), "tab_2", "outreach")]),
+            focus_active: Some(true),
+            hidden: Some(vec![local("ws_3", "admin")]),
+        }]
+    );
+}
+
+#[test]
+fn tab_and_shift_tab_mark_with_the_mode_then_move() {
+    let (mut state, _) = state_with(&[]);
+    record(&mut state, KeybindAction::FocusPicker);
+    assert_eq!(selected_label(&state), "Local/setup");
+    press(&mut state, KeyCode::Tab);
+    assert_eq!(selected_label(&state), "Local/herdr");
+    press(&mut state, KeyCode::BackTab);
+    assert_eq!(selected_label(&state), "Local/setup");
+    assert_eq!(
+        picker(&state).staged.focus.targets,
+        [
+            local("ws_1", "setup"),
+            with_tab(local("ws_1", "setup"), "tab_1", "herdr")
+        ]
+    );
+
+    // In hide mode Tab hides instead, and focus marks stay.
+    ctrl(&mut state, 't');
+    assert_eq!(picker(&state).mode, ScopePickMode::Hide);
+    press(&mut state, KeyCode::Tab);
+    assert_eq!(selected_label(&state), "Local/herdr");
+    assert_eq!(picker(&state).staged.hidden, [local("ws_1", "setup")]);
+    assert_eq!(picker(&state).staged.focus.targets.len(), 2);
+    assert_eq!(picker(&state).query.as_str(), "", "tab must not type");
+}
+
+/// Every chord in the key table, sent as the bytes a legacy terminal sends,
+/// with the owner's ctrl+a prefix configured: the picker owns the keyboard
+/// ahead of the prefix (`route_key_press`), so each one reaches it.
+#[test]
+fn every_picker_chord_reaches_it_with_a_ctrl_a_prefix() {
+    let config = toml::from_str::<Config>("[keys]\nprefix = \"ctrl+a\"\n").expect("config");
+    let (mut state, _) = state_with_config(config, &["ft"]);
+    state.set_scope_projection(Some(ScopeState {
+        focus: ScopeFocus {
+            active: true,
+            targets: vec![local("ws_1", "setup")],
+        },
+        hidden: vec![config_hide("ft"), local("ws_3", "admin")],
+    }));
+    record(&mut state, KeybindAction::FocusPicker);
+    state.compose(100, 40).expect("picker frame");
+    let send = |state: &mut ClientShellState, bytes: &[u8]| {
+        let outcome = state.handle_input_bytes(bytes);
+        assert!(
+            outcome.requests.is_empty(),
+            "{bytes:?} left the picker: {:?}",
+            outcome.requests
+        );
+        assert!(
+            matches!(state.overlay, Some(ClientShellOverlay::ScopePicker(_))),
+            "{bytes:?} closed the picker"
+        );
+    };
+
+    assert_eq!(selected_label(&state), "Local/setup");
+    for (bytes, expected) in [
+        (&b"\x0e"[..], "Local/herdr"),   // ctrl+n
+        (b"\x0a", "Local/nvim"),         // ctrl+j (a bare line feed)
+        (b"\x10", "Local/herdr"),        // ctrl+p
+        (b"\x0b", "Local/setup"),        // ctrl+k
+        (b"\x1b[6~", "studio/outreach"), // PgDn: a page past the end
+        (b"\x1b[5~", "Local"),           // PgUp
+    ] {
+        send(&mut state, bytes);
+        assert_eq!(selected_label(&state), expected, "{bytes:?}");
+    }
+
+    select(&mut state, "Local", 1, "admin");
+    send(&mut state, b"\x06"); // ctrl+f
+    assert_eq!(
+        picker(&state).staged.focus.targets,
+        [local("ws_1", "setup"), local("ws_3", "admin")]
+    );
+    send(&mut state, b"\x18"); // ctrl+x
+    assert_eq!(picker(&state).staged.hidden, [config_hide("ft")]);
+    send(&mut state, b"\x14"); // ctrl+t
+    assert_eq!(picker(&state).mode, ScopePickMode::Hide);
+    send(&mut state, b"\x14");
+    assert_eq!(picker(&state).mode, ScopePickMode::Focus);
+    send(&mut state, b"\x0f"); // ctrl+o
+    assert!(!picker(&state).staged.focus.active);
+    send(&mut state, b"\x09"); // Tab
+    send(&mut state, b"\x1b[Z"); // Shift+Tab
+    assert_eq!(selected_label(&state), "Local/admin");
+    send(&mut state, b"\x12"); // ctrl+r
+    assert_eq!(
+        picker(&state).staged,
+        ScopeState::from_config_hidden(&["ft".into()])
+    );
+    // The prefix key is the query's line start here, not the prefix.
+    send(&mut state, b"\x01");
+    assert_eq!(state.mode, ClientShellMode::Terminal);
+    assert_eq!(picker(&state).query.as_str(), "", "no chord may type");
+
+    state.handle_input_bytes(b"\r");
+    assert!(state.overlay.is_none(), "enter applies and closes");
+    assert_eq!(
+        state.scope_set_requests,
+        [ScopeSetParams {
+            focus_targets: Some(Vec::new()),
+            focus_active: Some(false),
+            hidden: Some(vec![config_hide("ft")]),
+        }]
+    );
+}
+
+#[test]
+fn space_types_into_the_query_instead_of_marking() {
+    let (mut state, _) = state_with(&[]);
+    record(&mut state, KeybindAction::FocusPicker);
+    let before = picker(&state).staged.clone();
+    type_query(&mut state, " studio fish");
+    assert_eq!(picker(&state).query.as_str(), " studio fish");
+    assert_eq!(picker(&state).staged, before, "space must not mark");
+    assert_eq!(
+        listed(&state),
+        ["studio (context)", "  main (context)", "    fish"]
+    );
+}
+
+#[test]
+fn escape_cancels_with_a_query_and_a_reopened_picker_starts_empty() {
+    let (mut state, _) = state_with(&[]);
+    record(&mut state, KeybindAction::HidePicker);
+    type_query(&mut state, "adm");
+    press(&mut state, KeyCode::Tab);
+    press(&mut state, KeyCode::Esc);
+    assert!(state.overlay.is_none());
+    assert!(state.scope_set_requests.is_empty());
+
+    record(&mut state, KeybindAction::HidePicker);
+    assert_eq!(picker(&state).query.as_str(), "");
+    assert!(picker(&state).staged.hidden.is_empty());
+    assert_eq!(picker(&state).view.listed.len(), 12);
+}
+
+#[test]
+fn each_edit_selects_the_best_match_not_the_first() {
+    let (mut state, _) = state_with(&[]);
+    let mut snapshot = local_snapshot();
+    snapshot.tabs.push(tab("tab_5", "ws_1", "outreach-old", 3));
+    state.set_snapshot(Box::new(snapshot));
+    record(&mut state, KeybindAction::FocusPicker);
+    type_query(&mut state, "outreach");
+    assert_eq!(
+        listed(&state),
+        [
+            "Local (context)",
+            "  setup (context)",
+            "    outreach-old",
+            "studio (context)",
+            "  main (context)",
+            "    outreach",
+        ]
+    );
+    // An exact label beats Local's earlier prefix match.
+    assert_eq!(selected_label(&state), "studio/outreach");
+    // Both are prefix matches now; the tie goes to panel order.
+    press(&mut state, KeyCode::Backspace);
+    assert_eq!(selected_label(&state), "Local/outreach-old");
+}
+
+#[test]
+fn an_empty_query_lists_the_full_tree_and_keeps_the_selection() {
+    let (mut state, _) = state_with(&[]);
+    record(&mut state, KeybindAction::FocusPicker);
+    let tree = listed(&state);
+    assert_eq!(tree.len(), 12);
+    assert!(tree.iter().all(|row| !row.contains("(context)")));
+    assert_eq!(selected_label(&state), "Local/setup");
+
+    type_query(&mut state, "zz");
+    assert!(picker(&state).view.listed.is_empty());
+    press(&mut state, KeyCode::Backspace);
+    press(&mut state, KeyCode::Backspace);
+    assert_eq!(listed(&state), tree);
+    assert_eq!(picker(&state).view.matched, 12);
+    assert_eq!(selected_label(&state), "Local/setup");
+}
+
+/// Matching follows the query, not frames (CLAUDE.md, multiplicative
+/// paths): frames reuse each row's verdict, and a row that arrives while the
+/// picker is open is the only one judged.
+#[test]
+fn frames_reuse_verdicts_and_only_new_rows_are_matched() {
+    let (mut state, studio_id) = state_with(&[]);
+    record(&mut state, KeybindAction::FocusPicker);
+    assert_eq!(
+        picker(&state).view.rows_judged,
+        0,
+        "an empty query matches nothing"
+    );
+    type_query(&mut state, "fish");
+    let judged = picker(&state).view.rows_judged;
+    for _ in 0..3 {
+        state.compose(100, 32).expect("picker frame");
+    }
+    assert_eq!(picker(&state).view.rows_judged, judged);
+
+    let mut studio = studio_snapshot();
+    studio.tabs.push(tab("tab_3", "ws_1", "fishing", 3));
+    state.set_endpoint_snapshot(&studio_id, Box::new(studio));
+    state.compose(100, 32).expect("picker frame");
+    assert_eq!(picker(&state).view.rows_judged, judged + 1);
+    assert!(listed(&state).contains(&"    fishing".to_owned()));
+}
+
+#[test]
+fn the_box_fits_its_rows_and_is_capped_by_the_screen() {
+    let (mut state, _) = state_with(&[]);
+    record(&mut state, KeybindAction::FocusPicker);
+    state.compose(100, 40).expect("picker frame");
+    // Header, query and rule, 12 rows, hints and buttons, two borders.
+    assert_eq!(state.hits.scope_picker_popup.height, 3 + 12 + 2 + 2);
+    assert_eq!(state.hits.scope_picker_viewport_rows, 12);
+    // Typing does not resize it.
+    type_query(&mut state, "outr");
+    state.compose(100, 40).expect("picker frame");
+    assert_eq!(state.hits.scope_picker_popup.height, 19);
+
+    // On a short screen it is capped and the list scrolls.
+    ctrl(&mut state, 'u');
+    state.compose(100, 15).expect("picker frame");
+    assert_eq!(state.hits.scope_picker_popup.height, 13);
+    assert_eq!(state.hits.scope_picker_viewport_rows, 6);
 }

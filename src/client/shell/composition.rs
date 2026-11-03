@@ -162,6 +162,9 @@ impl ClientShellState {
             self.reveal_mobile_workspace = true;
         }
         self.last_composed_size = Some((cols, rows));
+        // Snapshots may have changed since the picker's last key; its render
+        // only reads the view this refreshes, and matches nothing itself.
+        self.refresh_scope_picker();
         let valid_navigation_target = self.mode == ClientShellMode::Navigate
             && self
                 .navigate_workspace_id

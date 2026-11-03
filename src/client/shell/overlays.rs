@@ -85,7 +85,7 @@ pub(crate) fn render_client_overlay(
         ClientShellOverlay::WorktreeRemove(v) => {
             worktree_overlays::render_worktree_remove_overlay(b, v, p)
         }
-        ClientShellOverlay::ScopePicker(v) => render_scope_picker_overlay(b, v, endpoints, p),
+        ClientShellOverlay::ScopePicker(v) => render_scope_picker_overlay(b, v, p),
         ClientShellOverlay::ContextMenu(_) | ClientShellOverlay::GlobalMenu(_) => None,
     }
 }
@@ -1059,25 +1059,39 @@ fn render_navigator_overlay(
     })
 }
 
-/// The focus/hide picker (`scope_picker`): every machine, workspace and tab
-/// with its mark, previewing the staged scope. Rows the staged scope would not
-/// show are dimmed; nothing reaches the server until apply.
+/// The focus/hide picker (`scope_picker`): the mode header, the query line,
+/// then the listed machines, workspaces and tabs with their marks, previewing
+/// the staged scope. Rows the staged scope would not show are muted, context
+/// rows (listed only as a match's machine or workspace) are dimmed, and
+/// matched letters are highlighted. It reads `v.view`, which
+/// `refresh_scope_picker` keeps current, so a frame does no matching; nothing
+/// reaches the server until apply.
 fn render_scope_picker_overlay(
     b: &mut Buffer,
     v: &super::super::scope_picker::ClientScopePickerOverlay,
-    endpoints: &[ClientShellEndpoint],
     p: &Palette,
 ) -> Option<OverlayRender> {
     use super::super::scope_picker::{
-        scope_picker_marks, scope_picker_rows, scope_picker_selected_index, unlisted_scope_targets,
-        ScopePickerControl,
+        scope_picker_marks, unlisted_scope_targets, ScopePickerControl,
     };
     use crate::scope::ScopePickMode;
+    use unicode_segmentation::UnicodeSegmentation;
 
+    let view = &v.view;
     let a = b.area;
+    let unlisted = unlisted_scope_targets(&v.staged, &view.rows);
+    // Header, query and rule above the rows; the unlisted note, hints and
+    // buttons below; two border lines.
+    let footer = 2 + u16::from(unlisted > 0);
+    let chrome = 3 + footer + 2;
+    // Fit every row, not just the listed ones, so the box keeps its size and
+    // place while the query narrows the list.
+    let rows_height = u16::try_from(view.rows.len().max(1)).unwrap_or(u16::MAX);
     let width = a.width.saturating_sub(4).min(80);
-    let height = a.height.saturating_sub(2).min(36);
-    if width < 24 || height < 10 {
+    let height = chrome
+        .saturating_add(rows_height)
+        .min(a.height.saturating_sub(2));
+    if width < 24 || height <= chrome {
         return None;
     }
     let q = Rect::new(
@@ -1105,10 +1119,10 @@ fn render_scope_picker_overlay(
         base.fg(p.accent),
     );
 
-    // Header: which mark space toggles (click to switch), and the focus switch.
+    // Header: which mark Tab toggles (click to switch), and the focus switch.
     let mut controls = Vec::new();
-    put_text(b, i.x, i.y, i.width, " space", base.fg(p.overlay0));
-    let mut x = i.x + display_width(" space ");
+    put_text(b, i.x, i.y, i.width, " tab", base.fg(p.overlay0));
+    let mut x = i.x + display_width(" tab ");
     for (mode, label) in [
         (ScopePickMode::Focus, " focus "),
         (ScopePickMode::Hide, " hide "),
@@ -1140,30 +1154,77 @@ fn render_scope_picker_overlay(
         focus_state,
         base.fg(focus_color).add_modifier(Modifier::BOLD),
     );
+
+    // The query line, as Find draws it: `›`, the query (a hint while it is
+    // empty) and, while typing, matched rows over all rows.
+    let query_y = i.y + 1;
+    let count =
+        (!v.query.trim().is_empty()).then(|| format!("{}/{} ", view.matched, view.rows.len()));
+    let count_width = count.as_deref().map_or(0, display_width);
+    put_text(b, i.x + 1, query_y, 1, "›", base.fg(p.accent));
+    let field = Rect::new(
+        i.x + 3,
+        query_y,
+        i.width.saturating_sub(3 + count_width + 1),
+        1,
+    );
+    let cursor = if v.query.is_empty() {
+        put_text(
+            b,
+            field.x,
+            field.y,
+            field.width,
+            "Type a machine, workspace or tab…",
+            base.fg(p.overlay0),
+        );
+        Some(crate::protocol::CursorState {
+            x: field.x,
+            y: field.y,
+            visible: true,
+            shape: 0,
+        })
+    } else {
+        text_editor::render(b, field, &v.query, base.fg(p.text))
+    };
+    if let Some(count) = count.as_deref() {
+        put_right_text(b, i, query_y, count, base.fg(p.overlay0));
+    }
     put_text(
         b,
         i.x,
-        i.y + 1,
+        i.y + 2,
         i.width,
         &"─".repeat(i.width as usize),
         base.fg(p.surface1),
     );
 
-    let body = Rect::new(i.x, i.y + 2, i.width, i.height.saturating_sub(5));
-    let rows = scope_picker_rows(endpoints, &v.staged);
-    let selected = scope_picker_selected_index(&rows, v.selected.as_ref());
+    let body = Rect::new(i.x, i.y + 3, i.width, i.height.saturating_sub(3 + footer));
     let viewport = usize::from(body.height).max(1);
-    let scroll = v
-        .scroll
-        .clamp(selected.saturating_sub(viewport - 1), selected)
-        .min(rows.len().saturating_sub(viewport));
+    let selected = view.selected_position(v.selected.as_ref());
+    let scroll = selected
+        .map_or(0, |selected| {
+            v.scroll
+                .clamp(selected.saturating_sub(viewport - 1), selected)
+        })
+        .min(view.listed.len().saturating_sub(viewport));
+    if view.listed.is_empty() {
+        put_text(
+            b,
+            body.x,
+            body.y,
+            body.width,
+            " no matches",
+            base.fg(p.overlay0),
+        );
+    }
     let mut row_hits = Vec::new();
-    for (ix, row) in rows.iter().enumerate().skip(scroll).take(viewport) {
-        let rect = Rect::new(body.x, body.y + (ix - scroll) as u16, body.width, 1);
+    for (position, listed) in view.listed.iter().enumerate().skip(scroll).take(viewport) {
+        let row = &view.rows[listed.index];
+        let rect = Rect::new(body.x, body.y + (position - scroll) as u16, body.width, 1);
         row_hits.push((rect, row.key.clone()));
         let marks = scope_picker_marks(&v.staged, row);
-        let is_selected = ix == selected;
-        let style = if is_selected {
+        let is_selected = Some(position) == selected;
+        let mut style = if is_selected {
             selected_style
         } else if !row.shown {
             base.fg(p.overlay0)
@@ -1172,6 +1233,9 @@ fn render_scope_picker_overlay(
         } else {
             base.fg(p.text)
         };
+        if listed.context && !is_selected {
+            style = style.add_modifier(Modifier::DIM);
+        }
         b.set_style(rect, style);
         let mark = if marks.focus {
             "◉"
@@ -1204,6 +1268,26 @@ fn render_scope_picker_overlay(
                 style.fg(if marks.focus { p.green } else { p.red }),
             );
         }
+        // Matched letters, as Find marks them; on the selected row's accent
+        // background the accent color would vanish, so underline instead.
+        if !listed.label_indices.is_empty() {
+            let matched = if is_selected {
+                style.add_modifier(Modifier::UNDERLINED)
+            } else {
+                style.fg(p.accent).add_modifier(Modifier::BOLD)
+            };
+            let mut x = rect.x + indent + 2;
+            for (index, grapheme) in row.label.graphemes(true).enumerate() {
+                let w = display_width(grapheme);
+                if x + w > rect.right() {
+                    break;
+                }
+                if listed.label_indices.binary_search(&(index as u32)).is_ok() {
+                    b.set_style(Rect::new(x, rect.y, w, 1), matched);
+                }
+                x += w;
+            }
+        }
         let mut meta = Vec::new();
         let machine_state;
         if row.depth == 0 && row.endpoint_status != ClientEndpointStatus::Online {
@@ -1227,7 +1311,6 @@ fn render_scope_picker_overlay(
         }
     }
 
-    let unlisted = unlisted_scope_targets(&v.staged, &rows);
     if unlisted > 0 {
         put_text(
             b,
@@ -1248,17 +1331,17 @@ fn render_scope_picker_overlay(
         i.x,
         i.bottom() - 2,
         i.width,
-        " ↑↓/j/k move · space mark · f focus · x hide · tab mode · a on/off · c clear",
+        " ↑↓ move · tab mark · ^f focus · ^x hide · ^t mode",
         base.fg(p.overlay0),
     );
     let toggle_label = if v.staged.focus.active {
-        " a focus off "
+        " ^o focus off "
     } else {
-        " a focus on "
+        " ^o focus on "
     };
     let labels = [
         (toggle_label, ScopePickerControl::ToggleActive),
-        (" c clear ", ScopePickerControl::Clear),
+        (" ^r clear ", ScopePickerControl::Clear),
         (" ↵ apply ", ScopePickerControl::Apply),
         (" esc cancel ", ScopePickerControl::Cancel),
     ];
@@ -1293,6 +1376,7 @@ fn render_scope_picker_overlay(
         scope_picker_rows: row_hits,
         scope_picker_controls: controls,
         scope_picker_viewport_rows: viewport,
+        cursor,
         ..OverlayRender::default()
     })
 }
