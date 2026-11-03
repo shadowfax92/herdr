@@ -1,0 +1,40 @@
+default_popup: { width: "90%", height: "95%" }
+
+scratches:
+  nvim:
+    command: ["nvim"]
+    tmx_type: vim
+    tmux_mode: workspace
+    tmux_prefix: ctrl+a
+    key: alt+i
+
+  shell:
+    shell: true
+    tmx_type: sh
+    tmux_mode: workspace
+    tmux_prefix: ctrl+a
+    key: alt+0
+
+profiles:
+  - name: laptop
+    match: { max_client_width: 310 }
+    popups:
+      nvim: { width: "95%", height: "95%" }
+      shell: { width: "95%", height: "95%" }
+
+  - name: 2-3-ultrawide
+    match: { max_client_width: 350 }
+    popups:
+      nvim: { width: "90%", height: "95%" }
+      shell: { width: "90%", height: "95%" }
+
+  - name: full-ultrawide
+    match: { min_client_width: 400 }
+    popups:
+      nvim: { width: "70%", height: "95%" }
+      shell: { width: "80%", height: "95%" }
+
+cleanup:
+  enabled: true
+  ttl_hours: 24
+  interval_seconds: 60

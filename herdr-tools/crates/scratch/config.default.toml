@@ -1,0 +1,37 @@
+# The built-in `[scratch]` config. herdr-tools uses these scratches when
+# `config.toml` has no `[scratch]` table or a `[scratch]` table without
+# `scratches`; a `scratches` table you write replaces them as a whole. Copy what
+# you want to change into `~/.config/herdr/plugins/config/shadowfax.tools/config.toml`.
+#
+# Popup sizes live in `[popup]` under key `scratch-<name>`; unconfigured keys
+# use the manifest's `scratch` pane default (90% x 95%):
+#
+#   [popup.size]
+#   scratch-nvim = { width = "90%", height = "95%" }
+#
+#   [[popup.profile]]
+#   name = "laptop"
+#   max_client_width = 310
+#   size.scratch-nvim = { width = "95%", height = "95%" }
+
+# A separate worker reclaims closed-source scratches and hidden sessions unused
+# for this long. Expiration terminates every job in the selected scratch.
+[scratch.cleanup]
+enabled = true
+ttl_hours = 24
+interval_seconds = 60
+
+# Start with an editor; workspace mode keeps normal tmux windows and splits.
+[scratch.scratches.nvim]
+command = ["nvim"]
+tmx_type = "vim"
+tmux_mode = "workspace"
+tmux_prefix = "ctrl+a"
+key = "alt+i"
+
+[scratch.scratches.shell]
+shell = true
+tmx_type = "sh"
+tmux_mode = "workspace"
+tmux_prefix = "ctrl+a"
+key = "alt+0"

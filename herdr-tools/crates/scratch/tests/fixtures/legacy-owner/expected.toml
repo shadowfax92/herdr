@@ -1,0 +1,43 @@
+# What `migrate_legacy` must produce from shadowfax.scratch/config.yaml beside
+# this file (a copy of the owner's live config on 2026-11-02).
+
+[popup.size]
+scratch-nvim = { width = "90%", height = "95%" }
+scratch-shell = { width = "90%", height = "95%" }
+
+[[popup.profile]]
+name = "laptop"
+max_client_width = 310
+size.scratch-nvim = { width = "95%", height = "95%" }
+size.scratch-shell = { width = "95%", height = "95%" }
+
+[[popup.profile]]
+name = "2-3-ultrawide"
+max_client_width = 350
+size.scratch-nvim = { width = "90%", height = "95%" }
+size.scratch-shell = { width = "90%", height = "95%" }
+
+[[popup.profile]]
+name = "full-ultrawide"
+min_client_width = 400
+size.scratch-nvim = { width = "70%", height = "95%" }
+size.scratch-shell = { width = "80%", height = "95%" }
+
+[scratch.cleanup]
+enabled = true
+ttl_hours = 24
+interval_seconds = 60
+
+[scratch.scratches.nvim]
+command = ["nvim"]
+tmux_mode = "workspace"
+tmux_prefix = "ctrl+a"
+tmx_type = "vim"
+key = "alt+i"
+
+[scratch.scratches.shell]
+shell = true
+tmux_mode = "workspace"
+tmux_prefix = "ctrl+a"
+tmx_type = "sh"
+key = "alt+0"

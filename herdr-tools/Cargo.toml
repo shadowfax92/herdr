@@ -28,6 +28,8 @@ tools-layout.workspace = true
 tools-scratch.workspace = true
 
 [dev-dependencies]
+# tests/scratch_reap_cli.rs decodes the scratch cleanup report.
+serde_json.workspace = true
 tempfile.workspace = true
 
 [workspace]
