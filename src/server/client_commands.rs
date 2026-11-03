@@ -40,6 +40,9 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     // Additive methods; the local client sends them to Local even while another
     // machine is active (see `handle_client_shell_endpoint_request`).
     "scope.get",
+    // Additive: the client hands each remote server its scope, whether or not
+    // that machine is the one presented.
+    "scope.mirror",
     "scope.set",
     "server.reload_config",
     "tab.close",
@@ -304,6 +307,10 @@ mod tests {
         assert_eq!(
             actual.remove("scope.get").as_deref(),
             Some("c7513844898aae4e3eac67fddcdfe54e7624bcb7a6e538af59e325557d863c06")
+        );
+        assert_eq!(
+            actual.remove("scope.mirror").as_deref(),
+            Some("62868998b88bfd6be75f8c7d751d041e7758966e12ef3e3bbb90108445ed0121")
         );
         assert_eq!(
             actual.remove("scope.set").as_deref(),

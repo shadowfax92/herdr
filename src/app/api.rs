@@ -1124,6 +1124,7 @@ impl App {
             Method::ScopeGet(_) => return self.handle_scope_get(request.id),
             Method::ScopeSet(params) => return self.handle_scope_set(request.id, params),
             Method::ScopeClear(_) => return self.handle_scope_clear(request.id),
+            Method::ScopeMirror(_) => return Self::handle_scope_mirror_without_client(request.id),
             Method::ScopePick(_) | Method::ScopeToggle(_) => {
                 return Self::handle_scope_client_request_without_client(request.id);
             }

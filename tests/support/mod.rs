@@ -25,6 +25,8 @@ pub const SERVER_MESSAGE_PANE_SURFACE_PATCH: u32 = 19;
 const CLIENT_MESSAGE_CLIENT_SHELL_PANE_INPUT: u32 = 13;
 const CLIENT_MESSAGE_CLIENT_SHELL_FOCUS: u32 = 18;
 const CLIENT_MESSAGE_ENDPOINT_CONTROL: u32 = 20;
+const CLIENT_MESSAGE_CLIENT_SHELL_ENDPOINT_REQUEST: u32 = 15;
+const SERVER_MESSAGE_CLIENT_SHELL_ENDPOINT_RESPONSE_CHUNK: u32 = 18;
 
 pub fn isolate_herdr_test_process(command: &mut CommandBuilder) {
     command.env_remove("HERDR_STARTUP_CWD");
@@ -861,6 +863,83 @@ fn process_exists(pid: libc::pid_t) -> bool {
         true
     } else {
         std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+}
+
+/// Sends one client-lane request (`ClientMessage::ClientShellEndpointRequest`):
+/// the path a client uses for commands it sends to one machine's server.
+pub fn send_client_shell_endpoint_request(
+    stream: &mut UnixStream,
+    boot_id: &str,
+    request: &serde_json::Value,
+) -> Result<(), String> {
+    let payload = encode_varint_enum(
+        CLIENT_MESSAGE_CLIENT_SHELL_ENDPOINT_REQUEST,
+        &[
+            &encode_string(boot_id),
+            &encode_string(&request.to_string()),
+        ],
+    );
+    stream
+        .write_all(&frame_message(&payload))
+        .map_err(|e| format!("write endpoint request: {e}"))?;
+    stream
+        .flush()
+        .map_err(|e| format!("flush endpoint request: {e}"))
+}
+
+/// Reads server messages, skipping everything else, until the endpoint control
+/// `kind` arrives; returns its JSON data.
+pub fn read_endpoint_control(
+    stream: &mut UnixStream,
+    kind: &str,
+) -> Result<serde_json::Value, String> {
+    loop {
+        let (variant, payload) = read_server_message(stream)?;
+        if variant != SERVER_MESSAGE_ENDPOINT_CONTROL {
+            continue;
+        }
+        let mut offset = 0;
+        if decode_string(&payload, &mut offset)? != kind {
+            continue;
+        }
+        let data = decode_string(&payload, &mut offset)?;
+        return serde_json::from_str(&data).map_err(|err| err.to_string());
+    }
+}
+
+/// Reads server messages, skipping everything else, until the last chunk of
+/// the client-lane response to `request_id`; returns the JSON response.
+pub fn read_client_shell_endpoint_response(
+    stream: &mut UnixStream,
+    request_id: &str,
+) -> Result<serde_json::Value, String> {
+    let mut response = Vec::new();
+    loop {
+        let (variant, payload) = read_server_message(stream)?;
+        if variant != SERVER_MESSAGE_CLIENT_SHELL_ENDPOINT_RESPONSE_CHUNK {
+            continue;
+        }
+        let mut offset = 0;
+        let _boot_id = decode_string(&payload, &mut offset)?;
+        let chunk_request_id = decode_string(&payload, &mut offset)?;
+        let final_chunk = *payload
+            .get(offset)
+            .ok_or_else(|| "response chunk omitted final_chunk".to_owned())?
+            != 0;
+        offset += 1;
+        let (len, consumed) = decode_varint_u32(&payload, offset)?;
+        offset += consumed;
+        let data = payload
+            .get(offset..offset + len as usize)
+            .ok_or_else(|| "response chunk shorter than its data".to_owned())?;
+        if chunk_request_id != request_id {
+            continue;
+        }
+        response.extend_from_slice(data);
+        if final_chunk {
+            return serde_json::from_slice(&response).map_err(|err| err.to_string());
+        }
     }
 }
 

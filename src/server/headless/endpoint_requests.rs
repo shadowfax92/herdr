@@ -38,15 +38,19 @@ impl HeadlessServer {
         let surface_active = client.shell_surface_active;
         if matches!(
             &request.method,
-            api::schema::Method::ScopeGet(_) | api::schema::Method::ScopeSet(_)
+            api::schema::Method::ScopeGet(_)
+                | api::schema::Method::ScopeSet(_)
+                | api::schema::Method::ScopeMirror(_)
         ) {
             // The scope lives only on the Local server, and a client changes it
             // while another machine's surface is active, which leaves this
-            // connection's surface inactive. Scope requests touch no surface or
-            // focus, so they skip the surface gate, the in-flight lease (a lease
-            // retired by an endpoint switch may still be held here) and the
-            // navigation bookkeeping, and are answered at once. The changed
-            // scope reaches every client through the render pass.
+            // connection's surface inactive. Likewise the client mirrors its
+            // scope to every remote server, presented or not. Scope requests
+            // touch no surface or focus, so they skip the surface gate, the
+            // in-flight lease (a lease retired by an endpoint switch may still
+            // be held here) and the navigation bookkeeping, and are answered at
+            // once. A changed scope reaches every client through the render pass;
+            // a mirror changes only what `scope.get` answers.
             if self.shutting_down || self.host_shutdown_requested() {
                 let message = crate::server::client_commands::error_message(
                     boot_id,
@@ -58,10 +62,32 @@ impl HeadlessServer {
                 return false;
             }
             let changes_ui = api::request_changes_ui(&request);
-            request.id = request_id.clone();
-            let response = self
-                .app
-                .handle_api_request_after_internal_events_drained(*request);
+            let id = request_id.clone();
+            let response = match request.method {
+                api::schema::Method::ScopeMirror(params) => {
+                    self.set_client_scope_mirror(client_id, params);
+                    serde_json::to_string(&api::schema::SuccessResponse {
+                        id,
+                        result: api::schema::ResponseResult::Ok {},
+                    })
+                    .unwrap_or_else(|_| "{}".to_string())
+                }
+                // This client's own `scope.get` follows its own mirror.
+                api::schema::Method::ScopeGet(params) => {
+                    match self.scope_get_judged_by_mirror(&id, client_id) {
+                        Some(response) => response,
+                        None => self.app.handle_api_request_after_internal_events_drained(
+                            api::schema::Request {
+                                id,
+                                method: api::schema::Method::ScopeGet(params),
+                            },
+                        ),
+                    }
+                }
+                method => self.app.handle_api_request_after_internal_events_drained(
+                    api::schema::Request { id, method },
+                ),
+            };
             self.send_to_client(
                 client_id,
                 ServerMessage::ClientShellEndpointResponseChunk {

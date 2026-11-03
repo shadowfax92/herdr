@@ -1,6 +1,7 @@
 //! `herdr scope` against a real, isolated server: focus and hide reach the
 //! server through the CLI, and `scope.get` reports the server's verdict for
-//! every local tab.
+//! every local tab, judged by an attached client's `scope.mirror` when one has
+//! sent it (the server half of a remote machine following the laptop's scope).
 //!
 //! The server runs with its own temporary `XDG_*` dirs and an explicit socket
 //! path, and every inherited Herdr variable is cleared, so neither the server
@@ -15,7 +16,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use support::{cleanup_test_base, register_runtime_dir, register_spawned_herdr_pid};
+use support::{
+    cleanup_test_base, client_shell_handshake, read_client_shell_endpoint_response,
+    read_endpoint_control, register_runtime_dir, register_spawned_herdr_pid,
+    send_client_shell_endpoint_request,
+};
 
 const INHERITED_HERDR_VARS: &[&str] = &[
     "HERDR_SOCKET_PATH",
@@ -258,4 +263,86 @@ fn scope_cli_focuses_hides_and_reports_server_verdicts() {
     let output = server.herdr(&["scope", "pick", "hide"]);
     assert_eq!(output.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&output.stderr).contains("no_client"));
+}
+
+/// The server half of a remote machine: a client attached over the raw client
+/// lane hands this server its scope with `scope.mirror`, naming the server as
+/// it does (`studio`), and the plugin-facing `herdr scope get` then judges the
+/// local tabs by it. Once that client disconnects, the server's own scope
+/// (its config hide of `ft`) decides again.
+#[test]
+fn a_clients_scope_mirror_decides_scope_get_until_it_disconnects() {
+    let server = IsolatedServer::start(
+        "onboarding = false\n[ui.sidebar.agents]\nhidden_workspaces = [\"ft\"]\n",
+    );
+    assert_path_is_private(&server.socket);
+    let alpha = server.create_workspace("alpha");
+    let beta = server.create_workspace("beta");
+    let ft = server.create_workspace("ft");
+    let own_verdicts = || {
+        let (_, tabs) = server.verdicts();
+        let shown = admitted_workspaces(&tabs);
+        shown.contains(&alpha.as_str())
+            && shown.contains(&beta.as_str())
+            && !shown.contains(&ft.as_str())
+    };
+    assert!(own_verdicts());
+
+    let client_socket = server.base.join("api-client.sock");
+    let mut client = std::os::unix::net::UnixStream::connect(&client_socket).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    client_shell_handshake(&mut client, 1, 80, 24).expect("client shell handshake");
+    let projection = read_endpoint_control(&mut client, "endpoint.scope-projection.v1")
+        .expect("scope projection on attach");
+    let boot_id = projection["boot_id"].as_str().unwrap().to_owned();
+
+    // The laptop calls this machine `studio`. Its `local:` target is the laptop
+    // itself, so it admits nothing here.
+    let mirror = serde_json::json!({
+        "id": "client-shell:1",
+        "method": "scope.mirror",
+        "params": {
+            "scope": {
+                "focus": {"active": true, "targets": [
+                    {"machine": "studio", "workspace_label": "beta"},
+                    {"machine": "local", "workspace_label": "alpha"}
+                ]},
+                "hidden": []
+            },
+            "machine": "ssh:0123456789abcdef0123456789abcdef",
+            "machine_label": "studio"
+        }
+    });
+    send_client_shell_endpoint_request(&mut client, &boot_id, &mirror).unwrap();
+    let response = read_client_shell_endpoint_response(&mut client, "client-shell:1").unwrap();
+    assert_eq!(response["result"]["type"], "ok", "{response}");
+
+    // Keep reading the connection so a quiet client is never a slow one.
+    let mut drain = client.try_clone().unwrap();
+    drain.set_read_timeout(None).unwrap();
+    let drainer =
+        std::thread::spawn(move || while support::read_server_message(&mut drain).is_ok() {});
+
+    let (response, tabs) = server.verdicts();
+    assert_eq!(admitted_workspaces(&tabs), [beta.as_str()], "{tabs:?}");
+    // `scope` stays the server's own: focus off, the config hide of ft.
+    assert_eq!(response["result"]["scope"]["focus"]["active"], false);
+    assert_eq!(
+        response["result"]["scope"]["hidden"],
+        serde_json::json!([{"machine": "*", "workspace_label": "ft", "config": true}])
+    );
+
+    client.shutdown(std::net::Shutdown::Both).unwrap();
+    drainer.join().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !own_verdicts() {
+        assert!(
+            Instant::now() < deadline,
+            "the mirror outlived its client: {:?}",
+            server.verdicts().1
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }

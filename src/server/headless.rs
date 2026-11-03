@@ -1567,19 +1567,7 @@ impl HeadlessServer {
         id: String,
         message: serde_json::Result<ServerMessage>,
     ) -> String {
-        let attached = |client: &ClientConnection| {
-            matches!(client.mode, ClientConnectionMode::ClientShell) && client.writer.is_some()
-        };
-        let target = self
-            .foreground_client_id
-            .filter(|client_id| self.clients.get(client_id).is_some_and(attached))
-            .or_else(|| {
-                self.clients
-                    .iter()
-                    .filter(|(_, client)| attached(client))
-                    .max_by_key(|(_, client)| client.last_activity)
-                    .map(|(&client_id, _)| client_id)
-            });
+        let target = self.scope_acting_client();
         let sent = match (target, message) {
             (Some(client_id), Ok(message)) => self.send_to_client(client_id, message),
             (_, Err(err)) => {
@@ -1603,6 +1591,49 @@ impl HeadlessServer {
             })
         }
         .unwrap_or_else(|_| "{}".to_string())
+    }
+
+    /// The shell client a scope request from outside any client (a plugin, the
+    /// CLI) acts for: the foreground client, else the attached shell client
+    /// active most recently. Pick and toggle go to it, and plugin `scope.get`
+    /// judges by its mirror.
+    fn scope_acting_client(&self) -> Option<u64> {
+        let attached = |client: &ClientConnection| {
+            matches!(client.mode, ClientConnectionMode::ClientShell) && client.writer.is_some()
+        };
+        self.foreground_client_id
+            .filter(|client_id| self.clients.get(client_id).is_some_and(attached))
+            .or_else(|| {
+                self.clients
+                    .iter()
+                    .filter(|(_, client)| attached(client))
+                    .max_by_key(|(_, client)| client.last_activity)
+                    .map(|(&client_id, _)| client_id)
+            })
+    }
+
+    /// Stores (or, for `scope: null`, clears) the scope `client_id` filters by.
+    /// Only `scope.get` reads it, so nothing renders or projects.
+    fn set_client_scope_mirror(&mut self, client_id: u64, params: crate::scope::ScopeMirrorParams) {
+        if let Some(client) = self.clients.get_mut(&client_id) {
+            client.scope_mirror = crate::scope::ScopeMirror::from_params(params);
+        }
+    }
+
+    /// `scope.get` judged by `client_id`'s mirror, or `None` when that client
+    /// has not mirrored (the app then answers with this server's own scope).
+    fn scope_get_judged_by_mirror(&self, id: &str, client_id: u64) -> Option<String> {
+        let mirror = self.clients.get(&client_id)?.scope_mirror.as_ref()?;
+        let result = self
+            .app
+            .scope_result_judged_by(&mirror.scope, mirror.machine());
+        Some(
+            serde_json::to_string(&api::schema::SuccessResponse {
+                id: id.to_owned(),
+                result,
+            })
+            .unwrap_or_else(|_| "{}".to_string()),
+        )
     }
 
     fn drain_client_config_reload_request(&mut self) {
@@ -3051,6 +3082,28 @@ impl HeadlessServer {
                 let response = self.handle_scope_client_api(msg.request.id.clone(), message);
                 let _ = msg.respond_to.send(response);
                 return false;
+            }
+            // A plugin's scope read on a remote machine: the client that owns
+            // the scope mirrors it here (`scope.mirror`), so the verdicts follow
+            // that client's focus and hide, not this server's config hides. A
+            // server nobody has mirrored to answers from its own state below.
+            api::schema::Method::ScopeGet(_) => {
+                let mirroring = self.scope_acting_client().filter(|client_id| {
+                    self.clients
+                        .get(client_id)
+                        .is_some_and(|client| client.scope_mirror.is_some())
+                });
+                if let Some(client_id) = mirroring {
+                    // Labels judged here must be the ones the next snapshot
+                    // shows, as on the app path below.
+                    let changed = self.drain_all_internal_events_with_forwarding();
+                    if let Some(response) =
+                        self.scope_get_judged_by_mirror(&msg.request.id, client_id)
+                    {
+                        let _ = msg.respond_to.send(response);
+                        return changed;
+                    }
+                }
             }
             _ => {}
         }

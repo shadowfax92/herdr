@@ -305,3 +305,261 @@ async fn toggle_goes_to_one_client_whose_scope_set_flips_focus() {
         assert_eq!(projections[0].scope.focus.targets.len(), 1);
     }
 }
+
+mod mirror {
+    //! `scope.mirror`: the client hands this (remote) server the scope it
+    //! filters by, and plugin `scope.get` judges local tabs by it, as the client
+    //! names this machine, while that client is the one acting.
+    use super::*;
+
+    use crate::scope::{ScopeFocus, ScopeMirrorParams};
+
+    const STUDIO_KEY: &str = "ssh:0123456789abcdef0123456789abcdef";
+
+    /// `main` (tabs `fish`, `outreach`) and `admin` (tab `shell`), with this
+    /// server's own scope hiding `admin`, so a reply judged by the server's
+    /// own state is easy to tell from one judged by a mirror.
+    fn studio_server() -> HeadlessServer {
+        let mut server = test_headless_server();
+        let mut main = crate::workspace::Workspace::test_new("main");
+        main.tabs[0].custom_name = Some("fish".into());
+        main.test_add_tab(Some("outreach"));
+        let mut admin = crate::workspace::Workspace::test_new("admin");
+        admin.tabs[0].custom_name = Some("shell".into());
+        server.app.state.workspaces = vec![main, admin];
+        server.app.state.scope = ScopeState {
+            hidden: vec![ScopeTarget::parse("admin").unwrap()],
+            ..ScopeState::default()
+        };
+        server
+    }
+
+    fn focus(targets: Vec<ScopeTarget>) -> ScopeState {
+        ScopeState {
+            focus: ScopeFocus {
+                active: true,
+                targets,
+            },
+            hidden: Vec::new(),
+        }
+    }
+
+    fn target(text: &str) -> ScopeTarget {
+        ScopeTarget::parse(text).unwrap()
+    }
+
+    /// One client-lane request and its response, skipping any projection the
+    /// writer delivers first.
+    fn lane(
+        server: &mut HeadlessServer,
+        shell: &TestShell,
+        client_id: u64,
+        method: api::schema::Method,
+    ) -> serde_json::Value {
+        let boot_id = server.client_shell_boot_id.clone();
+        server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+            client_id,
+            boot_id,
+            request: Box::new(api::schema::Request {
+                id: "client-shell:1".into(),
+                method,
+            }),
+        });
+        loop {
+            let message = read_server_message(
+                shell
+                    .control
+                    .recv_timeout(Duration::from_secs(1))
+                    .expect("endpoint response"),
+            );
+            if let ServerMessage::ClientShellEndpointResponseChunk { data, .. } = message {
+                return serde_json::from_slice(&data).unwrap();
+            }
+        }
+    }
+
+    fn mirror(
+        server: &mut HeadlessServer,
+        shell: &TestShell,
+        client_id: u64,
+        scope: Option<ScopeState>,
+    ) {
+        let response = lane(
+            server,
+            shell,
+            client_id,
+            api::schema::Method::ScopeMirror(ScopeMirrorParams {
+                scope,
+                machine: STUDIO_KEY.into(),
+                machine_label: "studio".into(),
+            }),
+        );
+        assert_eq!(response["result"]["type"], "ok", "{response}");
+    }
+
+    /// `workspace/tab` labels of the tabs a `scope.get` reply admits.
+    fn admitted(server: &HeadlessServer, response: &serde_json::Value) -> Vec<String> {
+        assert_eq!(response["result"]["type"], "scope", "{response}");
+        let mut labels = HashMap::new();
+        for (ws_idx, ws) in server.app.state.workspaces.iter().enumerate() {
+            for tab_idx in 0..ws.tabs.len() {
+                labels.insert(
+                    server.app.public_tab_id(ws_idx, tab_idx).unwrap(),
+                    format!(
+                        "{}/{}",
+                        ws.custom_name.as_deref().unwrap(),
+                        ws.tab_display_name(tab_idx).unwrap()
+                    ),
+                );
+            }
+        }
+        response["result"]["local"]["tabs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|tab| tab["admitted"].as_bool().unwrap())
+            .map(|tab| labels[tab["tab_id"].as_str().unwrap()].clone())
+            .collect()
+    }
+
+    fn plugin_get(server: &mut HeadlessServer) -> serde_json::Value {
+        let (changed, response) = api(
+            server,
+            api::schema::Method::ScopeGet(api::schema::EmptyParams::default()),
+        );
+        assert!(!changed, "a scope read never renders");
+        response
+    }
+
+    fn plugin_admitted(server: &mut HeadlessServer) -> Vec<String> {
+        let response = plugin_get(server);
+        admitted(server, &response)
+    }
+
+    #[tokio::test]
+    async fn a_mirror_judges_local_tabs_as_the_client_names_this_machine() {
+        let mut server = studio_server();
+        let shell = attach(&mut server, 61, false);
+        drain_controls(&shell);
+        let own = server.app.state.scope.clone();
+        assert_eq!(plugin_admitted(&mut server), ["main/fish", "main/outreach"]);
+
+        // By label: the client calls this machine `studio`.
+        mirror(
+            &mut server,
+            &shell,
+            61,
+            Some(focus(vec![target("studio:main/outreach")])),
+        );
+        let response = plugin_get(&mut server);
+        assert_eq!(admitted(&server, &response), ["main/outreach"]);
+        // `scope` stays this server's own; only the verdicts follow the client.
+        assert_eq!(
+            response["result"]["scope"],
+            serde_json::to_value(&own).unwrap()
+        );
+
+        // By storage key, and a `local` target is the client's own machine, not
+        // this one, so it admits nothing here.
+        mirror(
+            &mut server,
+            &shell,
+            61,
+            Some(focus(vec![
+                ScopeTarget {
+                    machine: STUDIO_KEY.into(),
+                    workspace_label: Some("admin".into()),
+                    ..ScopeTarget::default()
+                },
+                target("local:main"),
+            ])),
+        );
+        assert_eq!(plugin_admitted(&mut server), ["admin/shell"]);
+        // A mirror is not a scope change: nothing projects.
+        server.render_and_stream();
+        assert!(scope_projections(&drain_controls(&shell)).is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_foreground_clients_mirror_wins_else_the_most_recently_active() {
+        let mut server = studio_server();
+        let laptop = attach(&mut server, 62, true);
+        let desktop = attach(&mut server, 63, true);
+        assert_eq!(server.foreground_client_id, Some(63));
+        drain_controls(&laptop);
+        drain_controls(&desktop);
+        mirror(
+            &mut server,
+            &laptop,
+            62,
+            Some(focus(vec![target("studio:main/outreach")])),
+        );
+        mirror(
+            &mut server,
+            &desktop,
+            63,
+            Some(focus(vec![target("studio:admin")])),
+        );
+        // Mirroring never takes the foreground.
+        assert_eq!(server.foreground_client_id, Some(63));
+        assert_eq!(plugin_admitted(&mut server), ["admin/shell"]);
+        // A client's own read follows its own mirror.
+        let own_read = lane(
+            &mut server,
+            &laptop,
+            62,
+            api::schema::Method::ScopeGet(api::schema::EmptyParams::default()),
+        );
+        assert_eq!(admitted(&server, &own_read), ["main/outreach"]);
+
+        // No foreground client: the one active most recently acts.
+        server.foreground_client_id = None;
+        server.clients.get_mut(&62).unwrap().last_activity = u64::MAX;
+        assert_eq!(plugin_admitted(&mut server), ["main/outreach"]);
+    }
+
+    #[tokio::test]
+    async fn a_disconnect_or_null_drops_the_mirror() {
+        let mut server = studio_server();
+        let shell = attach(&mut server, 64, false);
+        drain_controls(&shell);
+        mirror(
+            &mut server,
+            &shell,
+            64,
+            Some(focus(vec![target("studio:admin")])),
+        );
+        assert_eq!(plugin_admitted(&mut server), ["admin/shell"]);
+        mirror(&mut server, &shell, 64, None);
+        assert!(server.clients[&64].scope_mirror.is_none());
+        assert_eq!(plugin_admitted(&mut server), ["main/fish", "main/outreach"]);
+
+        mirror(
+            &mut server,
+            &shell,
+            64,
+            Some(focus(vec![target("studio:admin")])),
+        );
+        server.handle_server_event(ServerEvent::ClientDisconnected { client_id: 64 });
+        assert!(!server.clients.contains_key(&64));
+        // Back to this server's own scope, which hides `admin`.
+        assert_eq!(plugin_admitted(&mut server), ["main/fish", "main/outreach"]);
+    }
+
+    #[tokio::test]
+    async fn the_socket_api_refuses_a_mirror() {
+        let mut server = studio_server();
+        let _shell = attach(&mut server, 65, false);
+        let (changed, response) = api(
+            &mut server,
+            api::schema::Method::ScopeMirror(ScopeMirrorParams {
+                scope: Some(ScopeState::default()),
+                machine: STUDIO_KEY.into(),
+                machine_label: "studio".into(),
+            }),
+        );
+        assert!(!changed);
+        assert_eq!(response["error"]["code"], "connection_local_only");
+        assert!(server.clients[&65].scope_mirror.is_none());
+    }
+}

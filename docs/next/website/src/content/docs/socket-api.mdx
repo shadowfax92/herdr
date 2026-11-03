@@ -545,6 +545,18 @@ can open the picker or toggle focus. Whatever the client changes, it writes to
 its local server with `scope.set`, and it reads the scope only from its local
 server; scopes on remote servers are ignored.
 
+On a saved machine's server, `scope.get` follows the client instead. The client
+hands each remote server the scope it filters by, with `scope.mirror` on its own
+connection, whenever the scope changes and whenever that machine connects or is
+renamed. That server then judges `local.tabs` by the mirrored scope, naming
+itself as the client does (its endpoint key and saved label), so a plugin on
+that machine lists exactly what the client's panels show. It picks the client
+the way `scope.pick` does: the foreground client, else the most recently active
+one. `scope` in the reply is still the server's own state, and a server no
+client has mirrored to, or one whose client disconnected, judges by its own
+scope. `scope.mirror` exists only on the client connection; over the socket it
+fails with `connection_local_only`.
+
 ## Plugin APIs
 
 The plugin API is an early interface for executable workflow tools. A plugin is

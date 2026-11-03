@@ -579,6 +579,16 @@ fn handle_request(
         );
     }
 
+    // A mirror belongs to one client connection (`ClientConnection.scope_mirror`),
+    // which a socket API request does not have.
+    if matches!(&request.method, Method::ScopeMirror(_)) {
+        return error_response_json(
+            request.id,
+            "connection_local_only",
+            "scope.mirror is only available through a client shell endpoint".into(),
+        );
+    }
+
     if matches!(&request.method, Method::ServerStop(_)) {
         if let Some(server_stop) = server_stop {
             server_stop.request(ShutdownReason::ApiStop {
@@ -620,6 +630,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::ScopeGet(_) => "scope.get",
         Method::ScopeSet(_) => "scope.set",
         Method::ScopeClear(_) => "scope.clear",
+        Method::ScopeMirror(_) => "scope.mirror",
         Method::ScopePick(_) => "scope.pick",
         Method::ScopeToggle(_) => "scope.toggle",
         Method::SessionSnapshot(_) => "session.snapshot",

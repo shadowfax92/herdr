@@ -100,6 +100,55 @@ pub struct ScopePickParams {
     pub mode: ScopePickMode,
 }
 
+/// `scope.mirror`: an attached client hands a remote server the scope it
+/// filters by, so that server's `scope.get` judges its tabs as the client's
+/// panels do.
+///
+/// `machine` and `machine_label` are how the client names this server
+/// (`ClientEndpointId::storage_key()` and the endpoint label, exactly what its
+/// `ScopeView` uses). The server judges its tabs as that machine instead of
+/// `local`, so targets need no rewriting: both sides run the same predicate on
+/// the same names. `scope: null` clears the mirror.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ScopeMirrorParams {
+    #[serde(default)]
+    pub scope: Option<ScopeState>,
+    pub machine: String,
+    pub machine_label: String,
+}
+
+/// One client's mirrored scope, as a server stores it per client connection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ScopeMirror {
+    pub(crate) scope: ScopeState,
+    pub(crate) machine: String,
+    pub(crate) machine_label: String,
+}
+
+impl ScopeMirror {
+    /// The mirror `params` asks for; `None` when it clears one.
+    pub(crate) fn from_params(params: ScopeMirrorParams) -> Option<Self> {
+        let ScopeMirrorParams {
+            scope,
+            machine,
+            machine_label,
+        } = params;
+        scope.map(|scope| Self {
+            scope,
+            machine,
+            machine_label,
+        })
+    }
+
+    /// This server as the mirroring client names it.
+    pub(crate) fn machine(&self) -> ScopeMachineRef<'_> {
+        ScopeMachineRef {
+            key: &self.machine,
+            label: &self.machine_label,
+        }
+    }
+}
+
 /// The server's verdict for one local tab, so plugins filter without
 /// reimplementing the rule.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

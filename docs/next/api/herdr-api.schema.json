@@ -3856,6 +3856,50 @@
           ],
           "type": "object"
         },
+        "ScopeFocus": {
+          "properties": {
+            "active": {
+              "default": false,
+              "description": "Focus can be switched off without forgetting its targets.",
+              "type": "boolean"
+            },
+            "targets": {
+              "default": [],
+              "items": {
+                "$ref": "#/schemas/request/$defs/ScopeTarget"
+              },
+              "type": "array"
+            }
+          },
+          "type": "object"
+        },
+        "ScopeMirrorParams": {
+          "description": "`scope.mirror`: an attached client hands a remote server the scope it\nfilters by, so that server's `scope.get` judges its tabs as the client's\npanels do.\n\n`machine` and `machine_label` are how the client names this server\n(`ClientEndpointId::storage_key()` and the endpoint label, exactly what its\n`ScopeView` uses). The server judges its tabs as that machine instead of\n`local`, so targets need no rewriting: both sides run the same predicate on\nthe same names. `scope: null` clears the mirror.",
+          "properties": {
+            "machine": {
+              "type": "string"
+            },
+            "machine_label": {
+              "type": "string"
+            },
+            "scope": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/ScopeState"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "machine",
+            "machine_label"
+          ],
+          "type": "object"
+        },
         "ScopePickMode": {
           "description": "Which mark the picker's `space` toggles; both marks stay one key away.",
           "enum": [
@@ -3900,6 +3944,26 @@
                 "array",
                 "null"
               ]
+            }
+          },
+          "type": "object"
+        },
+        "ScopeState": {
+          "description": "The whole scope, as the server stores it, projects it and returns it.",
+          "properties": {
+            "focus": {
+              "$ref": "#/schemas/request/$defs/ScopeFocus",
+              "default": {
+                "active": false,
+                "targets": []
+              }
+            },
+            "hidden": {
+              "default": [],
+              "items": {
+                "$ref": "#/schemas/request/$defs/ScopeTarget"
+              },
+              "type": "array"
             }
           },
           "type": "object"
@@ -5042,6 +5106,23 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Client lane only: an attached client's scope, which this server's\n`scope.get` judges its tabs by while that client is the one acting.",
+          "properties": {
+            "method": {
+              "const": "scope.mirror",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/ScopeMirrorParams"
             }
           },
           "required": [
@@ -9719,7 +9800,7 @@
               "type": "object"
             },
             {
-              "description": "`scope.get`, `scope.set` and `scope.clear`: the whole scope plus the\nserver's verdict for each local tab, so callers never reimplement the\nadmission rule.",
+              "description": "`scope.get`, `scope.set` and `scope.clear`: the whole scope plus the\nserver's verdict for each local tab, so callers never reimplement the\nadmission rule. `scope` is always this server's own state. On a server\nan attached client has sent `scope.mirror` (a remote machine), `scope.get`'s\n`local` instead reflects that client's view: its mirrored scope, judged\nwith this machine named as the client names it.",
               "properties": {
                 "local": {
                   "$ref": "#/schemas/success_response/$defs/ScopeLocalReport"

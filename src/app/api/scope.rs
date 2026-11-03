@@ -7,12 +7,16 @@
 //! reach here from a running server: the headless server hands them to the
 //! foreground client itself, so this layer only answers them when no client
 //! can exist.
+//!
+//! On a remote machine the attached client's `scope.mirror` (stored per client
+//! connection by the headless server) decides `scope.get`'s per-tab verdicts
+//! instead of this state; both go through `scope_local_report`, the one judge.
 
 use crate::api::schema::ResponseResult;
 use crate::app::App;
 use crate::scope::{
-    ScopeLocalReport, ScopeLocalTab, ScopeMachineRef, ScopeSetParams, ScopeTabRef, ScopeTarget,
-    ScopeWorkspaceRef, ANY_MACHINE,
+    ScopeLocalReport, ScopeLocalTab, ScopeMachineRef, ScopeSetParams, ScopeState, ScopeTabRef,
+    ScopeTarget, ScopeWorkspaceRef, ANY_MACHINE,
 };
 
 use super::responses::{encode_error, encode_success};
@@ -52,24 +56,49 @@ impl App {
         encode_error(id, "no_client", "no client is attached to act on the scope")
     }
 
+    /// `scope.mirror` is stored per client connection by the headless server's
+    /// client lane; the app has no client to store it on.
+    pub(super) fn handle_scope_mirror_without_client(id: String) -> String {
+        encode_error(
+            id,
+            "connection_local_only",
+            "scope.mirror is only available through a client shell endpoint",
+        )
+    }
+
     fn scope_result(&self) -> ResponseResult {
+        self.scope_result_judged_by(&self.state.scope, ScopeMachineRef::LOCAL)
+    }
+
+    /// `scope.get`'s reply with `local` judged by `scope` as `machine`: this
+    /// server's own scope as `local`, or a client's mirror as that client names
+    /// this machine. `scope` in the reply is always this server's own state.
+    pub(crate) fn scope_result_judged_by(
+        &self,
+        scope: &ScopeState,
+        machine: ScopeMachineRef<'_>,
+    ) -> ResponseResult {
         ResponseResult::Scope {
             scope: self.state.scope.clone(),
-            local: self.scope_local_report(),
+            local: self.scope_local_report(scope, machine),
         }
     }
 
-    /// The server's verdict for every local tab, judged by the same predicate
-    /// the client uses, with this server as machine `local` / `Local`. Labels
-    /// are the ones clients see in their snapshots, so a label target means the
-    /// same thing here and in the panels.
-    pub(crate) fn scope_local_report(&self) -> ScopeLocalReport {
-        let scope = &self.state.scope;
+    /// The verdict for every local tab, judged by the same predicate the client
+    /// uses, with this server as `machine` (`local` / `Local` for its own scope;
+    /// the mirroring client's storage key and label for a mirror). Labels are
+    /// the ones clients see in their snapshots, so a label target means the same
+    /// thing here and in the panels.
+    pub(crate) fn scope_local_report(
+        &self,
+        scope: &ScopeState,
+        machine: ScopeMachineRef<'_>,
+    ) -> ScopeLocalReport {
         let mut tabs = Vec::new();
         for (ws_idx, ws) in self.state.workspaces.iter().enumerate() {
             let label = ws.display_name_from(&self.state.terminals, &self.terminal_runtimes);
             let workspace = ScopeWorkspaceRef {
-                machine: ScopeMachineRef::LOCAL,
+                machine,
                 id: &ws.id,
                 label: &label,
             };

@@ -82,6 +82,10 @@ pub enum Method {
     /// Forgets focus and runtime hides, and restores the config's hides.
     #[serde(rename = "scope.clear")]
     ScopeClear(EmptyParams),
+    /// Client lane only: an attached client's scope, which this server's
+    /// `scope.get` judges its tabs by while that client is the one acting.
+    #[serde(rename = "scope.mirror")]
+    ScopeMirror(crate::scope::ScopeMirrorParams),
     /// Opens the focus/hide picker on the foreground client.
     #[serde(rename = "scope.pick")]
     ScopePick(crate::scope::ScopePickParams),

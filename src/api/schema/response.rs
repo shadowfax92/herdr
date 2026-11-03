@@ -116,7 +116,10 @@ pub enum ResponseResult {
     },
     /// `scope.get`, `scope.set` and `scope.clear`: the whole scope plus the
     /// server's verdict for each local tab, so callers never reimplement the
-    /// admission rule.
+    /// admission rule. `scope` is always this server's own state. On a server
+    /// an attached client has sent `scope.mirror` (a remote machine), `scope.get`'s
+    /// `local` instead reflects that client's view: its mirrored scope, judged
+    /// with this machine named as the client names it.
     Scope {
         scope: crate::scope::ScopeState,
         local: crate::scope::ScopeLocalReport,
