@@ -1,7 +1,8 @@
 """Exercise the actual picker process while read-only host calls are stalled.
 
-Usage: python3 tests/slow_host.py
-Each case owns a fake Unix host and PTY. No Herdr server is contacted.
+Usage (from herdr-tools/): just bin && python3 crates/find/tests/slow_host.py
+Runs `herdr-tools find picker` from target/release. Each case owns a fake Unix
+host and PTY. No Herdr server is contacted.
 """
 import fcntl
 import json
@@ -18,7 +19,8 @@ import termios
 import threading
 import time
 
-binary = Path(__file__).resolve().parents[1] / "target/release/herdr-jump"
+binary = Path(__file__).resolve().parents[3] / "target/release/herdr-tools"
+assert binary.is_file(), f"build it first: {binary}"
 panes = [{"pane_id": f"w1:p{i}", "terminal_id": f"term{i}", "tab_id": "w1:t1",
           "workspace_id": "w1", "label": label} for i, label in [(1, "source alpha"), (2, "target beta")]]
 snapshot = {"workspaces":[{"workspace_id":"w1"}], "tabs":[{"tab_id":"w1:t1", "workspace_id":"w1"}], "panes":panes}
@@ -90,7 +92,7 @@ def exercise(mode):
         env.update(HERDR_SOCKET_PATH=path, HERDR_JUMP_SOURCE_PANE="w1:p1", TERM="xterm-256color",
                    HOME=directory, XDG_STATE_HOME=str(Path(directory) / "state"),
                    CODEX_HOME=str(Path(directory) / "codex"), CLAUDE_CONFIG_DIR=str(Path(directory) / "claude"))
-        process = subprocess.Popen([str(binary), "picker"], env=env, stdin=slave, stdout=slave, stderr=slave)
+        process = subprocess.Popen([str(binary), "find", "picker"], env=env, stdin=slave, stdout=slave, stderr=slave)
         os.close(slave)
         output = bytearray()
 

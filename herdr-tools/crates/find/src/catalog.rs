@@ -5,7 +5,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use crate::agents_policy::{Note, Outcome};
 use crate::matcher::{Field, Haystack, Matcher, Query, TextMatch};
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
@@ -179,28 +178,11 @@ pub(crate) fn catalog(value: serde_json::Value, source: &str) -> Result<Vec<Cand
     catalog_with_own(value, source, "")
 }
 
-#[cfg(test)]
 pub(crate) fn catalog_with_own(
     value: serde_json::Value,
     source: &str,
     own: &str,
 ) -> Result<Vec<Candidate>> {
-    Ok(catalog_with_policy(value, source, own, Outcome::NotInstalled)?.rows)
-}
-
-/// Rows and the policy outcome are published together by the catalog worker.
-/// No consumer can observe unfiltered rows while policy I/O is still pending.
-pub(crate) struct LoadedCatalog {
-    pub rows: Vec<Candidate>,
-    pub note: Note,
-}
-
-pub(crate) fn catalog_with_policy(
-    value: serde_json::Value,
-    source: &str,
-    own: &str,
-    policy: Outcome,
-) -> Result<LoadedCatalog> {
     let snapshot: Snapshot = serde_json::from_value(value).context("invalid pane catalog")?;
     let home = std::env::var("HOME").ok();
     let workspaces: HashMap<_, _> = snapshot
@@ -229,7 +211,6 @@ pub(crate) fn catalog_with_policy(
     let mut seen = HashSet::new();
     let mut terminals = HashSet::new();
     let mut rows = Vec::new();
-    let mut hidden = 0;
     for (order, pane) in snapshot.panes.iter().enumerate() {
         if [
             &pane.pane_id,
@@ -256,13 +237,6 @@ pub(crate) fn catalog_with_policy(
         // A tab-placed picker is present in snapshots, unlike native popups.
         // It must never become its own navigation or kill target.
         if pane.pane_id == own {
-            continue;
-        }
-        // Filter before presentation, search fields or column sizing exist.
-        // The source pane has no exception: only the popup itself is skipped
-        // separately above, so it never contributes to the hidden count.
-        if policy.hides(&pane.workspace_id) {
-            hidden += 1;
             continue;
         }
         let state = AgentState::from_host(pane.agent.as_deref(), &pane.agent_status);
@@ -407,16 +381,7 @@ pub(crate) fn catalog_with_policy(
         ));
     }
     rows.sort_by_key(|(key, _)| *key);
-    Ok(LoadedCatalog {
-        rows: rows.into_iter().map(|(_, candidate)| candidate).collect(),
-        note: if matches!(policy, Outcome::Unavailable) {
-            Note::Unavailable
-        } else if hidden > 0 {
-            Note::Hidden(hidden)
-        } else {
-            Note::None
-        },
-    })
+    Ok(rows.into_iter().map(|(_, candidate)| candidate).collect())
 }
 
 /// Compare path components so HOME never abbreviates a similarly named sibling.
@@ -1269,58 +1234,27 @@ mod tests {
         );
     }
 
+    /// Every workspace's panes are rows, `ft` included: Find hides none. The
+    /// Agents workspace policy herdr-jump last consulted is gone, and with
+    /// Agents disabled it never hid anything.
     #[test]
-    fn tests_that_hidden_workspaces_are_removed_before_rows_and_search() {
-        let loaded = catalog_with_policy(
-            snapshot(),
-            "w2:p1",
-            "",
-            crate::agents_policy::Outcome::Available(crate::agents_policy::test_policy(false)),
-        )
-        .unwrap();
-        assert_eq!(loaded.rows.len(), 2);
-        assert_eq!(loaded.note, crate::agents_policy::Note::Hidden(1));
-        assert!(loaded.rows.iter().all(|row| row.workspace_id == "w1"));
-        assert!(search(&loaded.rows, "plain-shell").is_empty());
-        assert!(loaded
-            .rows
-            .iter()
-            .any(|row| row.state == AgentState::Neutral));
+    fn tests_that_all_panes_include_shells_and_hidden_workspaces() {
+        let rows = catalog(snapshot(), "w2:p1").unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].pane_id, "w2:p1");
+        assert_eq!(rows[0].terminal_id, "term2");
+        assert_eq!(rows[1].title, "Inspect Beacon unread");
+        assert_eq!(search(&rows, "plain-shell").len(), 1);
     }
 
     #[test]
-    fn shown_and_unavailable_policies_keep_all_panes_with_the_correct_note() {
-        for (policy, note) in [
-            (
-                Outcome::Available(crate::agents_policy::test_policy(true)),
-                Note::None,
-            ),
-            (Outcome::Unavailable, Note::Unavailable),
-            (Outcome::NotInstalled, Note::None),
-        ] {
-            let loaded = catalog_with_policy(snapshot(), "w1:p1", "", policy).unwrap();
-            assert_eq!(loaded.rows.len(), 3);
-            assert_eq!(loaded.note, note);
-            assert_eq!(search(&loaded.rows, "plain-shell").len(), 1);
-        }
-    }
-
-    #[test]
-    fn own_popup_does_not_count_as_hidden_and_no_dropped_panes_has_no_note() {
-        let loaded = catalog_with_policy(
-            snapshot(),
-            "w2:p1",
-            "w2:p1",
-            Outcome::Available(crate::agents_policy::test_policy(false)),
-        )
-        .unwrap();
-        assert_eq!(loaded.rows.len(), 2);
-        assert_eq!(loaded.note, Note::None);
-        let mut empty = crate::agents_policy::test_policy(false);
-        empty.excluded_workspace_ids.clear();
-        let loaded = catalog_with_policy(snapshot(), "", "", Outcome::Available(empty)).unwrap();
-        assert_eq!(loaded.rows.len(), 3);
-        assert_eq!(loaded.note, Note::None);
+    fn own_popup_is_never_a_row() {
+        assert_eq!(
+            catalog_with_own(snapshot(), "w2:p1", "w2:p1")
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     #[test]

@@ -1,15 +1,20 @@
-# Herdr Jump
+# Find (`herdr-tools find`)
 
-Search-first native Rust picker popups for Herdr. Each picker is a popup you
-type into: one shared fuzzy matcher, one look, and one Enter.
+Search-first native Rust picker popups for Herdr: the `find` mode of the
+`shadowfax.tools` plugin, formerly the Herdr Jump plugin (`shadowfax.jump`).
+Each picker is a popup you type into: one shared fuzzy matcher, one look, and
+one Enter.
 
 | Key | Picker | Enter |
 | --- | --- | --- |
 | **Alt-p** | **Panes**: visible open panes, with agent states, views, kill mode and preview | Jump to the pane |
 | **Alt-n** | **Paths**: every directory zoxide knows, in zoxide's order; Tab marks several | Type the full paths into the pane you came from, and copy them |
 
-Pickers are declared in [`pickers.toml`](pickers.toml); adding one is
-configuration, not code (see [Add a picker](#add-a-picker)).
+The keys are the owner's `[[keys.command]]` bindings in Herdr's `config.toml`
+(`shadowfax.tools.find` and `shadowfax.tools.find-paths`); see
+[Install](#build-and-install-locally). Pickers are declared in
+[`pickers.toml`](pickers.toml); adding one is configuration, not code (see
+[Add a picker](#add-a-picker)).
 
 ## Panes (Alt-p)
 
@@ -52,31 +57,14 @@ counts marks (including any the current view hides), and **Enter** opens a revie
 listing exactly what will close. **y** kills them; any other key cancels back to
 kill mode with the marks intact. The pane Jump was opened from can never be marked.
 
-Jump searches open panes in the invoking Herdr session, including shells and
-editors, while following the Agents sidebar's workspace visibility. The one
-hidden list lives in the Agents plugin's `config.toml`:
-
-```toml
-[workspace_visibility]
-excluded_labels = ["ft"]
-```
-
-Edit that list in Agents; labels match exactly and case-sensitively. No rebuild
-is needed. The one switch is Agents' `show_excluded`, controlled by Menu's
-workspace visibility action or `herdr-agents workspace-visibility show|hide`.
-When false, Jump removes excluded workspaces from every view, count, search,
-column measurement, and kill target. When true, Jump lists those panes too.
-The source pane follows the same visibility rule. A refresh removes newly hidden
-panes from marks and any open kill review.
-
-Jump reads the policy once on open and **Ctrl-r**, on its catalog worker. When
-panes are omitted it shows a dim count such as `12 hidden`. If the policy cannot
-be read, Jump lists all panes with a dim `Hidden list unavailable` notice. If
-the Agents state directory does not exist, Jump works silently without Agents.
-Discovery uses `${XDG_STATE_HOME:-$HOME/.local/state}/herdr/plugins/shadowfax.agents`,
-overridden by `HERDR_AGENTS_STATE`; Jump never keeps a separate list or parses
-Agents' TOML. It navigates existing panes; archived conversations and other
-Herdr servers are outside its scope.
+Find searches every open pane in the invoking Herdr session, including shells
+and editors, in every workspace. herdr-jump's last release also read the Agents
+plugin's workspace visibility and could hide workspaces such as `ft`; with
+Agents disabled that read always failed open (every pane listed, plus a dim
+`Hidden list unavailable` line). Find drops that adapter: every workspace is
+listed and there is no notice. Herdr's own `[ui.sidebar.agents]
+hidden_workspaces` only affects Herdr's Agents panel. Find navigates existing
+panes; archived conversations and other Herdr servers are outside its scope.
 
 ### Controls
 
@@ -122,8 +110,9 @@ hidden name, alternate title, or path appears when it explains a match. Empty-qu
 unchanged: All sorts by status then age, and filtered views by age alone.
 
 The popup uses 90% of the available terminal height and up to 132 columns (the
-paths popup: 110). On a narrower terminal it opens narrower, keeping 2 columns
-free on each side of Herdr's pane area. Its size is set when it opens: if the
+paths popup: 110), unless `config.toml` sizes it (see
+[Popup size](#popup-size)). On a narrower terminal a width in columns opens
+narrower, keeping 2 columns free on each side of Herdr's pane area. Its size is set when it opens: if the
 terminal grows while it is open, reopen it to use the new room. Preview appears beside results when
 wide enough and below them in a narrow terminal. Slow preview reads never block
 typing or navigation. Preview
@@ -187,6 +176,29 @@ in between is fine), then press **Enter** once.
 | Ctrl-r | Run zoxide again |
 | Escape / Ctrl-c | Close without typing or copying |
 
+## Popup size
+
+Each picker's popup key is its manifest action id: `find` for the pane
+navigator and `find-paths` for paths. Size them in shadowfax.tools'
+`~/.config/herdr/plugins/config/shadowfax.tools/config.toml`; cells are a
+number, percentages a string:
+
+```toml
+[popup.size]
+find = { width = 120, height = "90%" }
+find-paths = { width = 100, height = "80%" }
+
+[[popup.profile]]            # first match wins, on the client's width in cells
+name = "laptop"
+max_client_width = 310
+size.find = { width = "95%", height = "90%" }
+```
+
+A key with no entry keeps the picker's `width` from `pickers.toml` and 90% of
+the height. A width in cells still narrows to keep 2 columns free on each side
+on a smaller terminal; a percentage is already relative to the pane area.
+`[find]` itself has no settings yet and must stay empty.
+
 ## Add a picker
 
 Every picker is a block in [`pickers.toml`](pickers.toml): a source, the shared
@@ -195,9 +207,8 @@ item per line can be a source. For example, git branches typed into the pane:
 
 ```toml
 [[picker]]
-id = "branches"
+id = "branches"                  # action id: find-branches
 title = "Branches"
-key = "alt+b"                    # pick a key that's free in your setup
 command = ["git", "branch", "--format=%(refname:short)"]
 enter = ["paste"]                # "paste", "copy", or both, in order
 empty = "No branches here."
@@ -208,21 +219,28 @@ empty = "No branches here."
    `kind = "path"` adds `~` display, last-directory-first matching, absolute
    paths and shell quoting. `multi = true` lets Tab and Shift-Tab mark several
    items; Enter then delivers them space-separated, in the order marked.
-2. Add its action to `herdr-plugin.toml` (Herdr binds keys only to manifest
-   actions; it rereads manifests on every invoke, so no relink is needed):
+2. Add its action to the `# --- find ---` block of herdr-tools'
+   `herdr-plugin.toml` (Herdr binds keys only to manifest actions; it rereads
+   manifests on every invoke, so no relink is needed):
 
    ```toml
    [[actions]]
-   id = "branches"
+   id = "find-branches"
    title = "Paste a branch"
    contexts = ["pane"]
-   command = ["./target/release/herdr-jump", "open", "branches"]
+   command = ["./bin/herdr-tools", "find", "open", "branches"]
    ```
-3. Rebuild and bind the key:
+3. Rebuild, reinstall, and bind a key in Herdr's `config.toml`:
 
    ```sh
-   cargo build --release --locked
-   herdr plugin action invoke shadowfax.jump.install-keybindings
+   just -f herdr-tools/justfile install
+   ```
+
+   ```toml
+   [[keys.command]]
+   key = "alt+b"                  # pick a key that's free in your setup
+   type = "plugin_action"
+   command = "shadowfax.tools.find-branches"
    ```
 
 `cargo test` fails if a picker and its manifest action disagree. Lines with
@@ -234,48 +252,41 @@ since typing them into a shell could press keys; blank and duplicate lines are d
 Requires macOS or Linux, a Rust toolchain, and a compatible Herdr 0.9+ host with
 `session.snapshot`, native plugin popups, `pane.focus`, and `tab.focus`.
 
-From this checkout:
+Find ships inside `shadowfax.tools`; see herdr-tools' README. From the fork
+checkout:
 
 ```sh
-cargo build --release --locked
-herdr plugin link .
-herdr plugin action invoke shadowfax.jump.install-keybindings
+just -f herdr-tools/justfile install
 ```
 
-The explicit installer binds every picker's `key` from `pickers.toml`: **Alt-p**
-to the pane navigator and **Alt-n** to paths. It migrates Alt-p from the
-built-in `goto` binding, preserves any other `goto` shortcuts, and leaves
-unrelated settings and comments intact. It refuses conflicts with other
-built-in or custom actions (modifier aliases such as `option+n` count). An
-unset built-in `goto` keeps its inherited shortcut, and Alt-Shift-P remains
-distinct from Alt-p.
-Before changing the config, it saves the exact original to a sibling
-`config.toml.jump-backup-*` file, preserves the config's permissions and symlink
-target, and atomically replaces the contents. Repeated installation is a no-op.
-`pickers.toml` owns the keys of Jump's actions: after a picker's `key` changes
-there, rerunning the installer moves that picker's existing binding to the new
-key (an older install's Alt-z becomes Alt-n), so the old key stops opening it.
-Extra keys you bound to a picker yourself are left alone.
-Herdr reloads configuration without restarting the server.
+Then bind the keys in Herdr's `config.toml` (the plugin never edits it):
 
-To try Jump after linking, before replacing Alt-p:
+```toml
+[[keys.command]]
+key = "alt+p"
+type = "plugin_action"
+command = "shadowfax.tools.find"
+description = "Search all open panes"
+
+[[keys.command]]
+key = "alt+n"
+type = "plugin_action"
+command = "shadowfax.tools.find-paths"
+description = "Paste a zoxide path"
+```
+
+A built-in `goto` bound to Alt-p conflicts with the first block; remove it or
+move it. Herdr reloads configuration without restarting the server. To try Find
+without a key:
 
 ```sh
-herdr plugin action invoke shadowfax.jump.open
+herdr plugin action invoke shadowfax.tools.find
 ```
-
-For an offline configuration edit, the binary also supports
-`install-keybindings --config /path/to/config.toml --no-reload`.
-
-To remove the shortcuts, remove the `shadowfax.jump.open` and
-`shadowfax.jump.paths` command blocks and restore `goto = "alt+p"` under
-`[keys]`, then reload Herdr. To unlink the local
-plugin, run `herdr plugin unlink shadowfax.jump`.
 
 ## Architecture
 
 ```text
-key → manifest action → herdr-jump open <picker> → native popup (picker id + source pane in env)
+key → manifest action → herdr-tools find open <picker> → native popup (picker id + source pane in env)
         → pickers::find ─┬─ source = panes → live catalog → query → selected identity → revalidate → focus
                          │                                       → mark → confirm → revalidate each → close
                          │                                       → latest preview worker → selected preview
@@ -324,11 +335,14 @@ shared by every picker: matcher · prompt (query editing) · ui (query line, hig
   Entering confirmation immediately draws and flushes its frame, then drains
   queued input (honoring resize and Ctrl-c) before arming the confirmation key.
   A typed-ahead `y` cannot authorize a kill before this display handoff.
-- `host` uses the inherited `HERDR_SOCKET_PATH` directly. Each newline-delimited
-  JSON request validates its response ID, shares a two-second connect/write/read
-  deadline, and rejects replies above 8 MiB. Nonblocking reads preserve that
-  deadline without resetting socket timeouts on a peer that has already closed
-  (which can reject a buffered reply with EINVAL on macOS).
+- `host` holds Find's Herdr calls on top of tools-core's `Host`, which uses the
+  inherited `HERDR_SOCKET_PATH` directly. Each newline-delimited JSON request
+  validates its response ID, shares a two-second connect/write/read deadline
+  (Find's; core's default is 5 s), and rejects replies above 8 MiB. Nonblocking
+  reads preserve that deadline without resetting socket timeouts on a peer that
+  has already closed (which can reject a buffered reply with EINVAL on macOS).
+  `open` resolves the popup size from `config.toml` (core's `Config`) before
+  applying the 2-column margin, and sends it through core's `open_popup_sized`.
 - `KillExecutor` is a non-Send foreground capability. Only explicit marks can
   enter confirmation; its frozen pane/terminal/tab/workspace identities are
   revalidated with `pane.get` immediately before each `pane.close`. The source
@@ -354,13 +368,17 @@ this client. Confirmation never expands the set the user marked.
 
 ## Verification
 
+From `herdr-tools/`:
+
 ```sh
-cargo fmt --check
-cargo test --locked
-cargo clippy --locked --all-targets -- -D warnings
-cargo build --release --locked
-python3 tests/slow_host.py
+just ci                                   # fmt, clippy -D warnings, every test
+just bin
+python3 crates/find/tests/slow_host.py
+python3 crates/find/tests/real_find.py    # each find action once, sized from config.toml
 ```
+
+`tests/find_cli.rs` (in the root package, which owns the binary) runs the real
+`herdr-tools find`.
 
 Rust tests cover every agent state, bounded transcript fixtures (all roots are
 injected temporary directories), age labels, view membership/counts/order, mark
@@ -371,13 +389,15 @@ panes, error codes, and closed peers with buffered replies. Run repeated
 `cargo test --locked` passes to check the macOS socket regression.
 
 The opt-in acceptance test runs the actual plugin shortcut in a private Herdr
-server with an isolated home, config, state, and PTY. Python and pyte are test
+server with an isolated home, config, state, and PTY. It lays out
+shadowfax.tools from `target/release` under the private `XDG_DATA_HOME`, links
+it, and binds Alt-p in the private Herdr config. Python and pyte are test
 dependencies only; production is entirely Rust.
 
 ```sh
-uv run --with pyte==0.8.2 python tests/real_herdr.py --width 140 --evidence .llm/evidence/p3
-uv run --with pyte==0.8.2 python tests/real_herdr.py --width 70 --evidence .llm/evidence/p3
-uv run --with pyte==0.8.2 python tests/real_herdr.py --width 420 --evidence .llm/evidence/p3
+uv run --with pyte==0.8.2 python crates/find/tests/real_herdr.py --width 140 --evidence .llm/evidence/p3
+uv run --with pyte==0.8.2 python crates/find/tests/real_herdr.py --width 70 --evidence .llm/evidence/p3
+uv run --with pyte==0.8.2 python crates/find/tests/real_herdr.py --width 420 --evidence .llm/evidence/p3
 ```
 
 It checks immediate fuzzy typing, preview, exact shell and agent targets across
@@ -396,7 +416,9 @@ popup, including blank unknown ages. Each ctrl-e step checks the active header
 pill, counts and membership against the private server's agent list. Queries
 stay within their view, and plain shells appear only in All. Empty-query jumps
 also verify age-based ranking through exact pane IDs. Ctrl-r discovers a newly
-created pane before Enter jumps to it.
+created pane before Enter jumps to it. Last, an `ft` workspace's five panes
+appear in every view, count and search with no hidden notice, while a stale
+Agents state directory (as on the owner's machine) exists.
 
 Evidence includes raw terminal updates, reconstructed screens, checked popup
 rows, transcript fixtures, host snapshots and per-view expectations. Narrow
@@ -410,12 +432,11 @@ The paths picker has its own opt-in acceptance test, also in a private Herdr
 server, with a private zoxide database and a file standing in for the clipboard:
 
 ```sh
-uv run --with pyte==0.8.2 python tests/real_paths.py --width 140 --evidence .llm/evidence/paths
+uv run --with pyte==0.8.2 python crates/find/tests/real_paths.py --width 140 --evidence .llm/evidence/paths
 ```
 
-It starts from an older install's Alt-z binding and checks that the installer
-moves it to the key in `pickers.toml` (Alt-z then does nothing). It presses the
-real Alt-n and checks the rows against `zoxide query --list`, a fragment search
+It binds Alt-n to `shadowfax.tools.find-paths` in the private Herdr config,
+presses the real Alt-n and checks the rows against `zoxide query --list`, a fragment search
 with its count, Enter typing the path at a `/bin/sh` prompt without running it
 plus the copy, Escape typing and copying nothing, a path with a space typed
 quoted (`cd` + `pwd` round-trip), multi-select (Tab, a new search, Tab and

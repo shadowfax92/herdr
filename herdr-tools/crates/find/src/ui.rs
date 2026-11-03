@@ -104,9 +104,7 @@ fn render_at(app: &App, frame: &mut Frame<'_>, now_ms: i64) {
         .as_deref()
         .map(|message| wrap_words(message, inner.width as usize))
         .unwrap_or_default();
-    let policy_note = app.visibility_note.text();
-    let notice_height =
-        (message_lines.len().min(3) + usize::from(policy_note.is_some())).max(1) as u16;
+    let notice_height = message_lines.len().clamp(1, 3) as u16;
     let [heading, query, divider, body, details, notice, footer] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
@@ -172,20 +170,17 @@ fn render_at(app: &App, frame: &mut Frame<'_>, now_ms: i64) {
             details,
         );
     }
-    if app.message.is_some() || policy_note.is_some() {
-        // Policy belongs to the loaded catalog, not a transient action error.
-        // Give it one dim line so editing, view changes and kill messages cannot
-        // erase it or accidentally promote the preference to a warning.
-        let mut lines = Vec::new();
-        if let Some(note) = policy_note {
-            lines.push(Line::styled(note, Style::default().fg(MUTED)));
-        }
-        lines.extend(
-            message_lines
-                .into_iter()
-                .map(|line| Line::styled(line, Style::default().fg(ACCENT))),
+    if app.message.is_some() {
+        frame.render_widget(
+            Paragraph::new(
+                message_lines
+                    .into_iter()
+                    .map(Line::from)
+                    .collect::<Vec<_>>(),
+            )
+            .style(Style::default().fg(ACCENT)),
+            notice,
         );
-        frame.render_widget(Paragraph::new(lines), notice);
     }
     frame.render_widget(
         Paragraph::new(hint_line(app, footer.width as usize)),
@@ -2966,50 +2961,6 @@ mod tests {
             if width >= 24 {
                 let cursor = terminal.get_cursor_position().unwrap();
                 assert!(cursor.x > 0 && cursor.x < width && cursor.y < height);
-            }
-        }
-    }
-
-    #[test]
-    fn policy_notes_are_one_dim_line_at_narrow_and_wide_sizes() {
-        use crate::agents_policy::Note;
-        for width in [36, 70, 140, 420] {
-            for (note, expected) in [
-                (Note::Hidden(12), "12 hidden"),
-                (Note::Unavailable, "Hidden list unavailable"),
-            ] {
-                let mut app = fixture();
-                app.visibility_note = note;
-                app.message = Some("Action failed".into());
-                let buffer = draw(&app, width, 40);
-                let lines = text(&buffer);
-                let matches: Vec<_> = lines
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, line)| line.contains(expected))
-                    .collect();
-                assert_eq!(matches.len(), 1, "{width}: {lines:?}");
-                let y = matches[0].0;
-                for position in cells_of(&buffer, y, expected) {
-                    assert_eq!(buffer[position].fg, MUTED);
-                    assert!(!buffer[position].modifier.contains(Modifier::BOLD));
-                }
-                assert!(lines.iter().any(|line| line.contains("Action failed")));
-                app.handle(Event::Paste("missing".into()));
-                app.handle(ctrl('e'));
-                app.handle(ctrl('x'));
-                let lines = text(&draw(&app, width, 40));
-                assert_eq!(
-                    lines.iter().filter(|line| line.contains(expected)).count(),
-                    1
-                );
-            }
-            let mut app = fixture();
-            for note in [Note::None, Note::Hidden(0)] {
-                app.visibility_note = note;
-                assert!(text(&draw(&app, width, 40))
-                    .iter()
-                    .all(|line| !line.contains("hidden") && !line.contains("unavailable")));
             }
         }
     }

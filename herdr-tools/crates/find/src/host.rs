@@ -1,155 +1,73 @@
-//! The only Herdr protocol boundary. Each request has a whole-request deadline,
-//! reply cap, and correlation ID; the inherited socket pins this popup to its host.
+//! Find's Herdr calls, built on [`tools_core::Host`]'s socket primitive, which
+//! gives each request a whole-request deadline, reply cap and correlation ID;
+//! the inherited socket pins this popup to its host. Everything mode-specific
+//! (snapshot, identity checks, focus, preview, kill, paste, popup sizing) stays
+//! here rather than in core.
 use crate::{
     age::Starts,
-    agents_policy,
-    catalog::{self, Candidate, LoadedCatalog, Pane},
+    catalog::{self, Candidate, Pane},
+    pickers::Picker,
 };
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
-use socket2::{Domain, SockAddr, Socket, Type};
 #[cfg(test)]
 use std::path::Path;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
-use std::{
-    io::{Read, Write},
-    os::unix::net::UnixStream,
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::time::Duration;
+use tools_core::{Config, PopupDims, PopupSize};
 
-const MAX_REPLY: usize = 8 * 1024 * 1024;
-static REQUEST_ID: AtomicU64 = AtomicU64::new(0);
+/// Host refusals keep their code across anyhow contexts. Text is presentation,
+/// never the authority for deciding that an absent pane is safe to skip.
+pub(crate) use tools_core::HostError;
 
 #[derive(Clone)]
 /// A session-pinned driver shared by read workers and the foreground navigator.
 pub(crate) struct Host {
-    path: PathBuf,
-    timeout: Duration,
+    inner: tools_core::Host,
 }
 
 /// Columns a narrowed popup leaves free on each side of Herdr's pane area.
 const POPUP_MARGIN: u16 = 2;
+/// The popup pane in herdr-plugin.toml that every picker runs in.
+const ENTRYPOINT: &str = "find";
+/// Jump's own deadline: every read is on a worker, but a jump, kill or paste
+/// waits for its reply on the foreground loop.
+const TIMEOUT: Duration = Duration::from_secs(2);
 
 impl Host {
     pub fn from_environment() -> Result<Self> {
-        let path = PathBuf::from(
-            std::env::var_os("HERDR_SOCKET_PATH")
-                .filter(|p| !p.is_empty())
-                .context("Run Jump as a Herdr plugin action (HERDR_SOCKET_PATH is missing)")?,
-        );
-        if !path.is_absolute() {
-            bail!("HERDR_SOCKET_PATH must be absolute");
+        let inner = tools_core::Host::from_env();
+        if inner.socket_path().is_none() {
+            bail!("Run herdr-tools find as a Herdr plugin action (HERDR_SOCKET_PATH is missing or not absolute)");
         }
         Ok(Self {
-            path,
-            timeout: Duration::from_secs(2),
+            inner: inner.with_timeout(TIMEOUT),
         })
     }
 
     pub fn request(&self, method: &str, params: Value) -> Result<Value> {
-        let deadline = Instant::now() + self.timeout;
-        let remaining = || {
-            deadline
-                .checked_duration_since(Instant::now())
-                .filter(|t| !t.is_zero())
-                .context("Herdr request timed out")
-        };
-        let socket = Socket::new(Domain::UNIX, Type::STREAM, None)?;
-        socket
-            .connect_timeout(&SockAddr::unix(&self.path)?, remaining()?)
-            .context("Herdr is unavailable")?;
-        let fd: std::os::fd::OwnedFd = socket.into();
-        let mut stream = UnixStream::from(fd);
-        // Refreshing SO_RCVTIMEO after a peer closes returns EINVAL on macOS,
-        // even with a complete reply buffered. Nonblocking I/O preserves the
-        // whole-request deadline without touching socket timeouts after connect.
-        stream.set_nonblocking(true)?;
-        let id = format!(
-            "jump-{}-{}",
-            std::process::id(),
-            REQUEST_ID.fetch_add(1, Ordering::Relaxed)
-        );
-        let mut request = serde_json::to_vec(&json!({"id":id,"method":method,"params":params}))?;
-        request.push(b'\n');
-        let mut sent = 0;
-        while sent < request.len() {
-            remaining()?;
-            match stream.write(&request[sent..]) {
-                Ok(0) => bail!("Herdr closed the request"),
-                Ok(count) => sent += count,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(remaining()?.min(Duration::from_millis(1)));
-                    continue;
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(error) => return Err(error).context("writing Herdr request"),
-            }
-        }
-        let mut reply = Vec::new();
-        loop {
-            remaining()?;
-            let mut chunk = [0; 8192];
-            let count = match stream.read(&mut chunk) {
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(remaining()?.min(Duration::from_millis(1)));
-                    continue;
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                result => result.context("reading Herdr reply")?,
-            };
-            if count == 0 {
-                bail!("Herdr reply ended before its newline");
-            }
-            let end = chunk[..count].iter().position(|c| *c == b'\n');
-            reply.extend_from_slice(&chunk[..end.unwrap_or(count)]);
-            if reply.len() > MAX_REPLY {
-                bail!("Herdr reply exceeds 8 MiB");
-            }
-            if end.is_some() {
-                break;
-            }
-        }
-        let value: Value = serde_json::from_slice(&reply).context("invalid Herdr reply")?;
-        if value["id"].as_str() != Some(&id) {
-            bail!("Herdr reply correlation mismatch");
-        }
-        if let Some(error) = value.get("error") {
-            return Err(HostError {
-                method: method.to_owned(),
-                code: error["code"].as_str().unwrap_or("unknown").to_owned(),
-                message: error["message"]
-                    .as_str()
-                    .unwrap_or("host rejected request")
-                    .to_owned(),
-            }
-            .into());
-        }
-        value
-            .get("result")
-            .cloned()
-            .context("Herdr reply omitted result")
+        self.inner.request(method, params)
     }
 
-    pub fn candidates(&self, source: &str, own: &str) -> Result<LoadedCatalog> {
+    /// Every open pane in this session except the popup itself, as rows. Every
+    /// workspace is listed: herdr-jump's last release also asked the Agents
+    /// plugin which workspaces to hide, but with Agents disabled that read
+    /// always failed open and hid nothing, which is what Find keeps.
+    pub fn candidates(&self, source: &str, own: &str) -> Result<Vec<Candidate>> {
         let reply = self.request("session.snapshot", json!({}))?;
         let mut snapshot = reply
             .get("snapshot")
             .cloned()
             .context("Herdr omitted snapshot")?;
-        // The catalog worker owns both reads and publishes them as one result:
-        // rows cannot flash before this load's policy outcome is known. Excluded
-        // sessions need no transcript lookup, and Paths never takes this route.
-        let policy = agents_policy::from_environment();
-        // One recovery context shares directory walks across eligible sessions.
+        // This method is invoked only by the catalog read worker. One recovery
+        // context shares directory walks across all sessions in this snapshot.
         let mut starts = Starts::from_environment();
         // Fall through to catalog's structural validation for malformed
         // snapshots; mutable JSON indexing can panic and strand this worker.
         if let Some(panes) = snapshot.get_mut("panes").and_then(Value::as_array_mut) {
             for pane in panes {
-                if pane["pane_id"].as_str() == Some(own)
-                    || policy.hides(pane["workspace_id"].as_str().unwrap_or_default())
-                {
+                // The popup never becomes a row, so it needs no session start.
+                if pane["pane_id"].as_str() == Some(own) {
                     continue;
                 }
                 let start = starts.resolve(pane["agent"].as_str(), &pane["agent_session"]);
@@ -158,7 +76,7 @@ impl Host {
                     .insert("started_at".into(), json!(start));
             }
         }
-        catalog::catalog_with_policy(snapshot, source, own, policy)
+        catalog::catalog_with_own(snapshot, source, own)
     }
 
     fn validate(&self, target: &Candidate, method: &str) -> Result<()> {
@@ -206,32 +124,51 @@ impl Host {
             .join("\n"))
     }
 
-    /// Opens `picker` as a `width`-column popup over `source`. The popup
-    /// cannot see which pane invoked it (herdr strips HERDR_PANE_ID from
-    /// popups), so the source pane and picker id travel in its environment.
+    /// Opens `picker` as a popup over `source`. The popup cannot see which
+    /// pane invoked it (herdr strips HERDR_PANE_ID from popups), so the source
+    /// pane and picker id travel in its environment.
+    ///
+    /// The size comes from `config`'s `[popup]` for the picker's popup key (its
+    /// manifest action id: `find` for the navigator, `find-paths` for paths),
+    /// matched on the source client's width; unconfigured pickers keep their
+    /// `pickers.toml` width and 90% of the height, as herdr-jump did.
     ///
     /// Herdr fits an oversized popup to the area beside its sidebar flush to
-    /// both edges, so on a terminal too narrow for `width` the request shrinks
-    /// to leave `POPUP_MARGIN` columns on each side. If the area can't be read
-    /// the request goes out as declared and Herdr's own fit applies.
+    /// both edges, so on a terminal too narrow for a width in cells the request
+    /// shrinks to leave `POPUP_MARGIN` columns on each side. If the area can't
+    /// be read the request goes out as declared and Herdr's own fit applies.
     ///
     /// The size is fixed when the popup opens: Herdr has no request to resize
     /// an open popup, and one size can't say "`width` or the area less a
     /// margin". A popup opened on a small terminal keeps its size if the
     /// terminal grows while it is open (shrinking still fits it); reopening
     /// fits it again.
-    pub fn open(&self, source: &str, picker: &str, width: u16) -> Result<()> {
-        let area = self
-            .request("pane.layout", json!({"pane_id":source}))
-            .ok()
-            .and_then(|reply| reply["layout"]["area"]["width"].as_u64())
-            .and_then(|area| u16::try_from(area).ok());
-        let width = area.map_or(width, |area| {
-            width.min(area.saturating_sub(2 * POPUP_MARGIN))
-        });
-        self.request("plugin.pane.open", json!({"plugin_id":"shadowfax.jump", "entrypoint":"picker", "placement":"popup", "width":width, "height":"90%", "focus":true,
-            "env":{"HERDR_JUMP_SOURCE_PANE":source, "HERDR_JUMP_PICKER":picker}}))?;
-        Ok(())
+    pub fn open(&self, source: &str, picker: &Picker, config: &Config) -> Result<()> {
+        // One layout read serves both numbers: profiles match the client's
+        // width (sidebar included), the margin narrows to the pane area.
+        let area = self.inner.pane_area(source).ok();
+        let client_width = area.map(|area| area.x.saturating_add(area.width));
+        let dims = config.popup(&picker.action, client_width).map_or(
+            PopupDims {
+                width: PopupSize::Cells(picker.width),
+                height: PopupSize::Percent(90),
+            },
+            |resolved| resolved.dims,
+        );
+        let width = match (dims.width, area) {
+            (PopupSize::Cells(width), Some(area)) => {
+                PopupSize::Cells(width.min(area.width.saturating_sub(2 * POPUP_MARGIN)))
+            }
+            (width, _) => width,
+        };
+        self.inner.open_popup_sized(
+            ENTRYPOINT,
+            Some(PopupDims { width, ..dims }),
+            &[
+                ("HERDR_JUMP_SOURCE_PANE", source),
+                ("HERDR_JUMP_PICKER", &picker.id),
+            ],
+        )
     }
 
     /// Types `text` into a pane without pressing Enter. herdr wraps it in
@@ -257,64 +194,16 @@ impl Host {
 }
 
 /// A private socket that answers each request with `reply`, for tests of any
-/// module that talks to Herdr. Dropping the tempdir unlinks the socket.
+/// module that talks to Herdr: core's fake host behind find's [`Host`], with
+/// jump's 250 ms deadline. Dropping the tempdir unlinks the socket.
 #[cfg(test)]
 pub(crate) fn fake_host(
     reply: impl Fn(Value) -> Value + Send + 'static,
 ) -> (tempfile::TempDir, Host) {
-    use std::io::{BufRead, BufReader};
-    use std::os::unix::net::UnixListener;
-    let dir = tempfile::Builder::new()
-        .prefix("jump-rpc-")
-        .tempdir_in("/tmp")
-        .unwrap();
-    let path = dir.path().join("s");
-    let listener = UnixListener::bind(&path).unwrap();
-    // Each test's finite reply sequence owns this listener; dropping the
-    // tempdir unlinks its socket so it cannot be confused with a live host.
-    std::thread::spawn(move || {
-        listener.set_nonblocking(true).unwrap();
-        let end = std::time::Instant::now() + Duration::from_secs(1);
-        while std::time::Instant::now() < end {
-            match listener.accept() {
-                Ok((mut stream, _)) => {
-                    stream.set_nonblocking(false).unwrap();
-                    stream
-                        .set_read_timeout(Some(Duration::from_secs(1)))
-                        .unwrap();
-                    let mut line = String::new();
-                    BufReader::new(&stream).read_line(&mut line).unwrap();
-                    let value: Value = serde_json::from_str(&line).unwrap();
-                    let response = reply(value);
-                    let _ = writeln!(stream, "{response}");
-                }
-                Err(_) => std::thread::sleep(Duration::from_millis(1)),
-            }
-        }
-    });
-    (
-        dir,
-        Host {
-            path,
-            timeout: Duration::from_millis(250),
-        },
-    )
+    let (dir, inner) = tools_core::testing::fake_host(reply);
+    let inner = inner.with_timeout(Duration::from_millis(250));
+    (dir, Host { inner })
 }
-
-/// Host refusals retain their code across anyhow contexts. Text is presentation,
-/// never the authority for deciding that an absent pane is safe to skip.
-#[derive(Debug)]
-pub(crate) struct HostError {
-    pub code: String,
-    method: String,
-    message: String,
-}
-impl std::fmt::Display for HostError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} ({}): {}", self.method, self.code, self.message)
-    }
-}
-impl std::error::Error for HostError {}
 
 /// Identity failures carry a type so kill results can use clear action-specific
 /// wording without matching or rewriting the navigation error's display text.
@@ -464,22 +353,6 @@ impl KillExecutor {
     }
 }
 
-pub(crate) fn source_pane() -> Result<String> {
-    let context: Value = match std::env::var("HERDR_PLUGIN_CONTEXT_JSON") {
-        Ok(context) => serde_json::from_str(&context).context("invalid Herdr plugin context")?,
-        Err(_) => Value::Null,
-    };
-    let source = context["focused_pane_id"]
-        .as_str()
-        .map(str::to_owned)
-        .or_else(|| std::env::var("HERDR_PANE_ID").ok())
-        .context("Herdr did not provide a source pane")?;
-    if source.is_empty() || source.chars().any(char::is_control) {
-        bail!("invalid source pane identity");
-    }
-    Ok(source)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -560,7 +433,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(300));
             json!({"id":req["id"], "result":{}})
         });
-        host.timeout = Duration::from_millis(30);
+        host.inner = host.inner.clone().with_timeout(Duration::from_millis(30));
         let started = std::time::Instant::now();
         assert!(host.request("session.snapshot", json!({})).is_err());
         assert!(started.elapsed() < Duration::from_millis(250));
@@ -806,7 +679,7 @@ mod tests {
             json!({"id":req["id"],"result":{}})
         });
         host.send_input("w1:p1", "'/a b'").unwrap();
-        host.open("w1:p1", "paths", 110).unwrap();
+        host.open("w1:p1", &picker("paths"), &no_config()).unwrap();
         let seen = seen.lock().unwrap();
         assert_eq!(seen[0]["method"], "pane.send_input");
         assert_eq!(
@@ -817,11 +690,15 @@ mod tests {
             seen[1],
             json!({"id":seen[1]["id"],"method":"pane.layout","params":{"pane_id":"w1:p1"}})
         );
+        assert_eq!(seen[2]["method"], "plugin.pane.open");
         let open = &seen[2]["params"];
+        assert_eq!(open["plugin_id"], "shadowfax.tools");
+        assert_eq!(open["entrypoint"], "find");
         assert_eq!(open["env"]["HERDR_JUMP_PICKER"], "paths");
         assert_eq!(open["env"]["HERDR_JUMP_SOURCE_PANE"], "w1:p1");
         // No layout in the reply: the declared width goes out unchanged.
         assert_eq!(open["width"], 110);
+        assert_eq!(open["height"], "90%");
     }
 
     #[test]
@@ -837,9 +714,103 @@ mod tests {
                     json!({"id":req["id"],"result":{}})
                 }
             });
-            host.open("w1:p1", "panes", 132).unwrap();
+            host.open("w1:p1", &picker("panes"), &no_config()).unwrap();
             assert_eq!(seen.lock().unwrap()[1]["params"]["width"], width, "{area}");
         }
+    }
+
+    fn picker(id: &str) -> Picker {
+        crate::pickers::find(id).unwrap()
+    }
+
+    fn no_config() -> Config {
+        Config::parse("").unwrap()
+    }
+
+    /// The `plugin.pane.open` params `open` sends for `picker` under `config`,
+    /// with the source pane's area at `x` and `width` cells (None: unreadable).
+    fn opened(picker_id: &str, config: &str, area: Option<(u16, u16)>) -> Value {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let (_dir, host) = server(move |req| {
+            log.lock().unwrap().push(req.clone());
+            match (req["method"].as_str(), area) {
+                (Some("pane.layout"), Some((x, width))) => json!({"id":req["id"],
+                    "result":{"layout":{"area":{"x":x,"y":0,"width":width,"height":40}}}}),
+                _ => json!({"id":req["id"],"result":{}}),
+            }
+        });
+        let config = Config::parse(config).unwrap();
+        host.open("w1:p1", &picker(picker_id), &config).unwrap();
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen[1]["method"], "plugin.pane.open");
+        seen[1]["params"].clone()
+    }
+
+    #[test]
+    fn configured_sizes_win_per_picker_key_and_cells_still_keep_the_margin() {
+        let config = r#"
+[popup.size]
+find = { width = 100, height = 30 }
+find-paths = { width = "70%", height = "80%" }
+"#;
+        let size = |params: &Value| (params["width"].clone(), params["height"].clone());
+        // The navigator's key is `find`, the paths picker's `find-paths`.
+        assert_eq!(
+            size(&opened("panes", config, Some((26, 300)))),
+            (json!(100), json!(30))
+        );
+        assert_eq!(
+            size(&opened("paths", config, Some((26, 300)))),
+            (json!("70%"), json!("80%"))
+        );
+        // A configured width in cells is narrowed like a built-in one; a
+        // percentage is already relative to the area and goes out as written.
+        assert_eq!(
+            size(&opened("panes", config, Some((26, 90)))),
+            (json!(86), json!(30))
+        );
+        assert_eq!(
+            size(&opened("paths", config, Some((26, 90)))),
+            (json!("70%"), json!("80%"))
+        );
+        // Unconfigured keys keep the picker's own width and 90% height.
+        let only_paths = "[popup.size]\nfind-paths = { width = 60, height = 20 }\n";
+        assert_eq!(
+            size(&opened("panes", only_paths, None)),
+            (json!(132), json!("90%"))
+        );
+    }
+
+    #[test]
+    fn profiles_match_the_client_width_including_the_sidebar() {
+        let config = r#"
+[popup.size]
+find = { width = 120, height = "90%" }
+
+[[popup.profile]]
+name = "laptop"
+max_client_width = 200
+size.find = { width = "95%", height = "95%" }
+"#;
+        // x + width = 200: the laptop profile applies.
+        let params = opened("panes", config, Some((26, 174)));
+        assert_eq!(
+            (params["width"].clone(), params["height"].clone()),
+            (json!("95%"), json!("95%"))
+        );
+        // 201 cells: past the profile, so `[popup.size]` applies.
+        let params = opened("panes", config, Some((27, 174)));
+        assert_eq!(
+            (params["width"].clone(), params["height"].clone()),
+            (json!(120), json!("90%"))
+        );
+        // An unreadable layout skips profiles but still uses `[popup.size]`.
+        let params = opened("panes", config, None);
+        assert_eq!(
+            (params["width"].clone(), params["height"].clone()),
+            (json!(120), json!("90%"))
+        );
     }
 
     #[test]

@@ -1,6 +1,5 @@
 //! The popup's local state machine. It never performs host I/O, so query editing
 //! and selection can be tested independently of terminal and worker timing.
-use crate::agents_policy::Note;
 use crate::catalog::{self, AgentState, Candidate, Hit};
 use crate::prompt;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -66,7 +65,6 @@ pub(crate) struct App {
     pub preview: Option<String>,
     pub message: Option<String>,
     pub loading: bool,
-    pub visibility_note: Note,
     catalog_revision: u64,
     jump_armed: bool,
     view: View,
@@ -97,7 +95,6 @@ impl App {
             preview: None,
             message: None,
             loading: true,
-            visibility_note: Note::None,
             catalog_revision: 0,
             jump_armed: true,
             view: View::All,
@@ -227,14 +224,6 @@ impl App {
         Action::None
     }
 
-    #[cfg(test)]
-    pub fn loaded(&mut self, rows: Vec<Candidate>) {
-        self.loaded_catalog(catalog::LoadedCatalog {
-            rows,
-            note: Note::None,
-        });
-    }
-
     /// The foreground owner advances this revision before every catalog read.
     /// A coalescing worker may still finish an older in-flight read, so loading
     /// and confirmation must remain gated until this exact revision completes.
@@ -248,13 +237,13 @@ impl App {
     pub fn catalog_finished(
         &mut self,
         revision: u64,
-        result: Result<catalog::LoadedCatalog, String>,
+        result: Result<Vec<Candidate>, String>,
     ) -> bool {
         if revision != self.catalog_revision {
             return false;
         }
         match result {
-            Ok(loaded) => self.loaded_catalog(loaded),
+            Ok(rows) => self.loaded(rows),
             Err(error) => {
                 self.loading = false;
                 self.message = Some(format!("{} · Ctrl-r retries", catalog::clean(&error)));
@@ -263,14 +252,13 @@ impl App {
         true
     }
 
-    fn loaded_catalog(&mut self, loaded: catalog::LoadedCatalog) {
+    pub fn loaded(&mut self, rows: Vec<Candidate>) {
         let selected = self.selected().cloned();
-        self.candidates = loaded.rows;
-        self.visibility_note = loaded.note;
+        self.candidates = rows;
         self.marks
             .retain(|marked| self.candidates.iter().any(|row| same_identity(marked, row)));
-        // Confirmation identities stay frozen, but visibility may revoke a
-        // target while an earlier refresh finishes. Never leave such a pane in
+        // Confirmation identities stay frozen, but a refresh may drop a closed
+        // or replaced target while an earlier one finishes. Never leave such a pane in
         // either the review or the `y` payload. A smaller review needs a fresh
         // foreground render acknowledgement before it can be confirmed.
         if let Some(targets) = &mut self.confirmation {
@@ -812,15 +800,12 @@ mod tests {
     }
 
     #[test]
-    fn hidden_refresh_removes_marks_and_frozen_confirmation_targets() {
+    fn vanished_refresh_removes_marks_and_frozen_confirmation_targets() {
         let mut app = kill_app();
         app.handle(key(KeyCode::Tab));
         app.handle(key(KeyCode::Enter));
         app.confirmation_shown();
-        app.loaded_catalog(crate::catalog::LoadedCatalog {
-            rows: vec![rows()[1].clone()],
-            note: crate::agents_policy::Note::Hidden(1),
-        });
+        app.loaded(vec![rows()[1].clone()]);
         assert_eq!(app.marked_count(), 0);
         assert_eq!(app.mode(), Mode::Kill);
         assert!(app.confirmation().is_none());
@@ -836,10 +821,7 @@ mod tests {
         app.handle(key(KeyCode::Tab));
         app.handle(key(KeyCode::Enter));
         app.confirmation_shown();
-        app.loaded_catalog(crate::catalog::LoadedCatalog {
-            rows: vec![rows()[1].clone()],
-            note: Note::Hidden(1),
-        });
+        app.loaded(vec![rows()[1].clone()]);
         assert_eq!(app.marked_count(), 1);
         assert_eq!(app.confirmation().unwrap()[0].pane_id, "w1:p2");
         assert_eq!(app.handle(key(KeyCode::Char('y'))), Action::None);
@@ -852,65 +834,45 @@ mod tests {
     }
 
     #[test]
-    fn confirmation_waits_for_pending_catalog_policy_before_arming() {
+    fn confirmation_waits_for_pending_catalog_before_arming() {
         let mut app = kill_app();
         app.handle(key(KeyCode::Tab));
         assert_eq!(app.handle(ctrl('r')), Action::Refresh);
         app.handle(key(KeyCode::Enter));
         app.confirmation_shown();
         assert_eq!(app.handle(key(KeyCode::Char('y'))), Action::None);
-        app.loaded_catalog(crate::catalog::LoadedCatalog {
-            rows: vec![rows()[1].clone()],
-            note: Note::Hidden(1),
-        });
+        app.loaded(vec![rows()[1].clone()]);
         assert_eq!(app.marked_count(), 0);
         assert_eq!(app.mode(), Mode::Kill);
         assert_eq!(app.handle(key(KeyCode::Char('y'))), Action::None);
     }
 
     #[test]
-    fn superseded_catalog_cannot_arm_confirmation_while_latest_policy_is_pending() {
+    fn superseded_catalog_cannot_arm_confirmation_while_latest_is_pending() {
         let mut app = kill_app();
         app.handle(key(KeyCode::Tab));
         let older = app.request_catalog();
         let latest = app.request_catalog();
         app.handle(key(KeyCode::Enter));
-        assert!(!app.catalog_finished(
-            older,
-            Ok(catalog::LoadedCatalog {
-                rows: rows(),
-                note: Note::None
-            })
-        ));
+        assert!(!app.catalog_finished(older, Ok(rows())));
         assert!(app.loading);
         assert!(!app.catalog_finished(older, Err("old error".into())));
         assert!(app.message.is_none());
         app.confirmation_shown();
         assert_eq!(app.handle(key(KeyCode::Char('y'))), Action::None);
         assert_eq!(app.mode(), Mode::Confirm);
-        assert!(app.catalog_finished(
-            latest,
-            Ok(catalog::LoadedCatalog {
-                rows: vec![rows()[1].clone()],
-                note: Note::Hidden(1)
-            })
-        ));
+        assert!(app.catalog_finished(latest, Ok(vec![rows()[1].clone()])));
         assert!(!app.loading);
         assert_eq!(app.mode(), Mode::Kill);
         assert_eq!(app.marked_count(), 0);
-        assert!(!app.catalog_finished(
-            older,
-            Ok(catalog::LoadedCatalog {
-                rows: rows(),
-                note: Note::None
-            })
-        ));
-        assert_eq!(app.visibility_note, Note::Hidden(1));
+        assert!(!app.catalog_finished(older, Ok(rows())));
         assert_eq!(app.candidates.len(), 1);
     }
 
+    /// An `ft` workspace's agents count in every view and match queries in kill
+    /// mode, like any other workspace's: Find hides no workspace.
     #[test]
-    fn excluded_agents_contribute_to_no_view_count_query_or_kill_mark() {
+    fn every_workspace_contributes_to_view_counts_and_queries() {
         let states = ["working", "blocked", "done", "idle", ""];
         let panes: Vec<_> = ["w1", "w2"]
             .into_iter()
@@ -918,41 +880,25 @@ mod tests {
                 states.into_iter().enumerate().map(move |(i, state)| json!({
             "pane_id":format!("{workspace}:p{i}"),"terminal_id":format!("{workspace}:term{i}"),
             "workspace_id":workspace,"tab_id":format!("{workspace}:t1"),
-            "title":if workspace == "w2" { "hidden-only" } else { "visible-only" },
+            "title":if workspace == "w2" { "ft-only" } else { "main-only" },
             "agent":if state.is_empty() { None } else { Some("codex") },"agent_status":state
         }))
             })
             .collect();
         let value = json!({"workspaces":[{"workspace_id":"w1","label":"MAIN"},{"workspace_id":"w2","label":"ft"}],
             "tabs":[{"tab_id":"w1:t1","workspace_id":"w1"},{"tab_id":"w2:t1","workspace_id":"w2"}],"panes":panes});
-        for (show, counts) in [(false, [5, 1, 2, 1]), (true, [10, 2, 4, 2])] {
-            let loaded = catalog::catalog_with_policy(
-                value.clone(),
-                "w2:p0",
-                "",
-                crate::agents_policy::Outcome::Available(crate::agents_policy::test_policy(show)),
-            )
-            .unwrap();
-            let mut app = App::new();
-            app.loaded_catalog(loaded);
-            for (view, count) in View::CYCLE.into_iter().zip(counts) {
-                assert_eq!(app.view_count(view), count);
-            }
-            app.handle(Event::Paste("hidden-only".into()));
-            app.handle(ctrl('x'));
-            for (view, count) in
-                View::CYCLE
-                    .into_iter()
-                    .zip(if show { [5, 1, 2, 1] } else { [0, 0, 0, 0] })
-            {
-                assert_eq!(app.view(), view);
-                assert_eq!(app.hits.len(), count);
-                if !show {
-                    app.handle(key(KeyCode::Tab));
-                    assert_eq!(app.marked_count(), 0);
-                }
-                app.handle(ctrl('e'));
-            }
+        let rows = catalog::catalog_with_own(value, "w2:p0", "").unwrap();
+        let mut app = App::new();
+        app.loaded(rows);
+        for (view, count) in View::CYCLE.into_iter().zip([10, 2, 4, 2]) {
+            assert_eq!(app.view_count(view), count);
+        }
+        app.handle(Event::Paste("ft-only".into()));
+        app.handle(ctrl('x'));
+        for (view, count) in View::CYCLE.into_iter().zip([5, 1, 2, 1]) {
+            assert_eq!(app.view(), view);
+            assert_eq!(app.hits.len(), count);
+            app.handle(ctrl('e'));
         }
     }
 }

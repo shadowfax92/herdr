@@ -1,14 +1,14 @@
-"""Opt-in real acceptance for the paths picker in a private Herdr server.
+"""Opt-in real acceptance for Find's paths picker in a private Herdr server.
 
-It presses the paths key that pickers.toml declares. The private config starts
-with the old Alt-z binding, as an earlier install left it, so install-keybindings
-must move it.
+It presses Alt-n, which the private Herdr config binds to
+shadowfax.tools.find-paths as the owner's does (keys live only in config.toml).
 
-Usage: uv run --with pyte==0.8.2 python tests/real_paths.py [--width 140] [--height 40] [--evidence /absolute/directory]
-Build the release binary first; zoxide and fish must be on PATH. Everything is
-private: HOME, Herdr config (sound off), server socket, zoxide database, and the
-clipboard (HERDR_JUMP_COPY_COMMAND writes a file). The owner's server, clipboard
-and zoxide data are never touched.
+Usage (from herdr-tools/): just bin && uv run --with pyte==0.8.2 python crates/find/tests/real_paths.py [--width 140] [--height 40] [--evidence /absolute/directory]
+It lays out shadowfax.tools from target/release (what `just install` lays out)
+under the private XDG_DATA_HOME and links it there; zoxide and fish must be on
+PATH. Everything is private: HOME, Herdr config (sound off), server socket,
+zoxide database, and the clipboard (HERDR_JUMP_COPY_COMMAND writes a file). The
+owner's server, clipboard and zoxide data are never touched.
 """
 import argparse
 import fcntl
@@ -24,22 +24,19 @@ import subprocess
 import tempfile
 import termios
 import time
-import tomllib
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--width", type=int, default=140)
 parser.add_argument("--height", type=int, default=40)
 parser.add_argument("--evidence", type=Path)
 args = parser.parse_args()
-root_repo = Path(__file__).resolve().parents[1]
-binary = root_repo / "target/release/herdr-jump"
+herdr_tools = Path(__file__).resolve().parents[3]
+binary = herdr_tools / "target/release/herdr-tools"
 herdr, zoxide, fish = shutil.which("herdr"), shutil.which("zoxide"), shutil.which("fish")
 assert herdr and zoxide and fish and binary.is_file(), (herdr, zoxide, fish, binary)
 session = f"jump-paths-{os.getpid()}"
 checks = []
-paths_key = next(p for p in tomllib.loads((root_repo / "pickers.toml").read_text())["picker"]
-                 if p["id"] == "paths")["key"]
-assert paths_key.startswith("alt+") and len(paths_key) == 5 and paths_key != "alt+z", paths_key
+paths_key = "alt+n"
 key_bytes = b"\x1b" + paths_key[4:].encode()  # what a terminal sends for Alt-<key>
 
 with tempfile.TemporaryDirectory(prefix="jump-paths-", dir="/tmp") as directory:
@@ -49,13 +46,13 @@ with tempfile.TemporaryDirectory(prefix="jump-paths-", dir="/tmp") as directory:
     config = root / "config.toml"
     # The owner wants no sounds, ever: off in config and in the environment.
     config.write_text('onboarding = false\n[terminal]\ndefault_shell = "/bin/sh"\n[ui.sound]\nenabled = false\n\n'
-                      '[[keys.command]]\nkey = "alt+z"\ntype = "plugin_action"\n'
-                      'command = "shadowfax.jump.paths"\ndescription = "Paste a zoxide path with Jump"\n')
+                      f'[[keys.command]]\nkey = "{paths_key}"\ntype = "plugin_action"\n'
+                      'command = "shadowfax.tools.find-paths"\ndescription = "Paste a zoxide path"\n')
     env = {k: v for k, v in os.environ.items() if not k.startswith("HERDR_")}
     env.pop("NO_COLOR", None)
     env.update(HOME=str(home), CFFIXED_USER_HOME=str(home),
                XDG_CONFIG_HOME=str(root / "config"), XDG_STATE_HOME=str(root / "state"),
-               XDG_DATA_HOME=str(root / "data"),
+               XDG_DATA_HOME=str(root / "data"), XDG_RUNTIME_DIR=str(root / "run"),
                HERDR_CONFIG_PATH=str(config), TERM="xterm-256color",
                HERDR_DISABLE_SOUND="1",
                _ZO_DATA_DIR=str(root / "zoxide"),
@@ -73,6 +70,15 @@ with tempfile.TemporaryDirectory(prefix="jump-paths-", dir="/tmp") as directory:
     ranked = subprocess.run([zoxide, "query", "--list"], env=env, check=True,
                             capture_output=True, text=True).stdout.split("\n")[:-1]
     expected_rows = ["~/" + str(Path(p).relative_to(home)) for p in ranked]
+
+    plugin_dir = root / "data/herdr/plugins/shadowfax.tools"
+
+    def lay_out_plugin():
+        """What `just install` lays out, from the prebuilt release binary."""
+        (plugin_dir / "bin").mkdir(parents=True)
+        shutil.copy2(herdr_tools / "herdr-plugin.toml", plugin_dir)
+        shutil.copy2(binary, plugin_dir / "bin/herdr-tools")
+        return plugin_dir
 
     def cli(*command):
         result = subprocess.run([herdr, "--session", session, *command], env=env,
@@ -122,10 +128,10 @@ with tempfile.TemporaryDirectory(prefix="jump-paths-", dir="/tmp") as directory:
     def popup(label):
         """The picker's own rows, cropped inside the host's popup border."""
         lines = screens[label].splitlines()
-        top = next((i for i, line in enumerate(lines) if "┌Jump" in line), None)
+        top = next((i for i, line in enumerate(lines) if "┌Find" in line), None)
         if top is None:
             return None
-        left = lines[top].index("┌Jump")
+        left = lines[top].index("┌Find")
         right = lines[top].index("┐", left)
         bottom = next(i for i in range(top + 1, len(lines)) if lines[i][left:left + 1] == "└")
         content = [line[left + 2:right - 1].rstrip() for line in lines[top + 1:bottom]]
@@ -161,23 +167,14 @@ with tempfile.TemporaryDirectory(prefix="jump-paths-", dir="/tmp") as directory:
         origin = cli("api", "snapshot")["result"]["snapshot"]["panes"][0]["pane_id"]
         host_socket = cli("status", "--json")["server"]["socket"]
         assert host_socket.startswith(str(root) + "/"), "Refuse non-test host socket"
-        cli("plugin", "link", str(root_repo))
-        cli("plugin", "action", "invoke", "shadowfax.jump.install-keybindings")
-        deadline = time.monotonic() + 5
-        while f'key = "{paths_key}"' not in config.read_text() and time.monotonic() < deadline:
-            frame("install-wait", 0.1)
+        cli("plugin", "link", str(lay_out_plugin()))
+        linked = next(p for p in cli("plugin", "list", "--json")["result"]["plugins"]
+                      if p["plugin_id"] == "shadowfax.tools")
+        assert Path(linked["plugin_root"]).resolve() == plugin_dir.resolve() and linked["enabled"], linked
+        cli("server", "reload-config")
         cli("config", "check")
-        installed = config.read_text()
-        assert f'key = "{paths_key}"' in installed and installed.count("shadowfax.jump.paths") == 1, installed
-        assert 'key = "alt+z"' not in installed, installed
-        assert 'key = "alt+p"' in installed and "shadowfax.jump.open" in installed, installed
         frame("prepared")
-        os.write(fd, b"\x1bz")
-        frame("old-key", 1.0)
-        assert popup("old-key") is None, "Alt-z no longer opens paths"
-        os.write(fd, b"\x15")
-        frame("old-key-cleared")
-        checks.append(f"install-keybindings moves paths from alt+z to {paths_key} (Alt-z stops opening it) and binds alt+p")
+        checks.append(f"laid-out shadowfax.tools linked; {paths_key} bound to shadowfax.tools.find-paths in config.toml")
 
         content = open_paths("open")
         assert content[0].endswith(f"zoxide · {len(expected_rows)}"), content[0]
@@ -308,7 +305,7 @@ with tempfile.TemporaryDirectory(prefix="jump-paths-", dir="/tmp") as directory:
             ("missing-zoxide", "PATH=/usr/bin:/bin", "zoxide isn't installed or isn't on Herdr's PATH"),
             ("empty-zoxide", f"_ZO_DATA_DIR={empty}", "zoxide has no directories yet. cd around and they appear here."),
         ):
-            cli("pane", "run", probe, f"env {extra} HERDR_JUMP_PICKER=paths HERDR_JUMP_SOURCE_PANE={probe} {binary} picker")
+            cli("pane", "run", probe, f"env {extra} HERDR_JUMP_PICKER=paths HERDR_JUMP_SOURCE_PANE={probe} {binary} find picker")
             # Messages wrap between words in a narrow pane; compare joined text.
             def shows(lines):
                 return needle in " ".join(line.strip() for line in lines)

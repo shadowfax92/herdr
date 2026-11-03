@@ -1,7 +1,11 @@
-"""Opt-in real TUI acceptance, using only a private HOME and named Herdr server.
+"""Opt-in real TUI acceptance of Find's pane navigator, using only a private
+HOME and named Herdr server.
 
-Usage: uv run --with pyte==0.8.2 python tests/real_herdr.py [--width 140] [--height 40] [--evidence /absolute/directory]
-Build the release binary first. No live plugin registry, focus, or config is used.
+Usage (from herdr-tools/): just bin && uv run --with pyte==0.8.2 python crates/find/tests/real_herdr.py [--width 140] [--height 40] [--evidence /absolute/directory]
+It lays out shadowfax.tools from target/release (what `just install` lays out)
+under the private XDG_DATA_HOME, links it there, and binds Alt-p to
+shadowfax.tools.find in the private Herdr config. No live plugin registry,
+focus, or config is used.
 """
 import argparse
 from datetime import datetime, timezone
@@ -19,7 +23,6 @@ import struct
 import subprocess
 import tempfile
 import termios
-import threading
 import time
 import uuid
 
@@ -28,9 +31,10 @@ parser.add_argument("--width", type=int, default=140)
 parser.add_argument("--height", type=int, default=40)
 parser.add_argument("--evidence", type=Path)
 args = parser.parse_args()
-root_repo = Path(__file__).resolve().parents[1]
+herdr_tools = Path(__file__).resolve().parents[3]
+binary = herdr_tools / "target/release/herdr-tools"
 herdr = shutil.which("herdr")
-assert herdr and (root_repo / "target/release/herdr-jump").is_file()
+assert herdr and binary.is_file(), (herdr, binary)
 session = f"jump-test-{os.getpid()}"
 checks = []
 
@@ -44,24 +48,35 @@ with tempfile.TemporaryDirectory(prefix="jump-tui-", dir="/tmp") as directory:
     # by default. The fixture agents change state constantly, so a test run would
     # play sounds through the owner's speakers. The config key and the env var
     # each disable it; both are set so neither alone can regress it.
-    config.write_text('onboarding = false\n[terminal]\ndefault_shell = "/bin/sh"\n[keys]\ngoto = "alt+p"\n'
-                      '[ui.sound]\nenabled = false\n')
+    # Herdr's config.toml is the only place keys are bound: Alt-p runs Find's
+    # navigator, as the owner's [[keys.command]] does.
+    config.write_text('onboarding = false\n[terminal]\ndefault_shell = "/bin/sh"\n'
+                      '[ui.sound]\nenabled = false\n\n'
+                      '[[keys.command]]\nkey = "alt+p"\ntype = "plugin_action"\n'
+                      'command = "shadowfax.tools.find"\ndescription = "Search all open panes"\n')
     env = {k: v for k, v in os.environ.items() if not k.startswith("HERDR_")}
     # This PTY represents a color-capable terminal. The worker's CLI-wide
     # NO_COLOR setting would otherwise erase the active-view pill under test.
     env.pop("NO_COLOR", None)
     env.update(HOME=str(root / "home"), CFFIXED_USER_HOME=str(root / "home"),
                XDG_CONFIG_HOME=str(root / "config"), XDG_STATE_HOME=str(root / "state"),
+               XDG_DATA_HOME=str(root / "data"), XDG_RUNTIME_DIR=str(root / "run"),
                HERDR_CONFIG_PATH=str(config), HERDR_DISABLE_SOUND="1", TERM="xterm-256color",
                CODEX_HOME=str(root / "codex"), CLAUDE_CONFIG_DIR=str(root / "claude"))
-    # This directory starts absent, exercising standalone Jump in all existing
-    # checks. Later a fake Agents owner uses the same inherited discovery path.
+    # The owner's machine still has a stale Agents state directory with no
+    # daemon in it. herdr-jump's last release read workspace visibility from
+    # there and failed open; Find no longer looks, and hides nothing either way.
     agents_state = root / "agents"
+    agents_state.mkdir()
     env["HERDR_AGENTS_STATE"] = str(agents_state)
-    policy_stop = threading.Event()
-    policy_thread = None
-    policy_gates = []
-    policy_evidence = {"requests": [], "scenarios": {}}
+    plugin_dir = root / "data/herdr/plugins/shadowfax.tools"
+
+    def lay_out_plugin():
+        """What `just install` lays out, from the prebuilt release binary."""
+        (plugin_dir / "bin").mkdir(parents=True)
+        shutil.copy2(herdr_tools / "herdr-plugin.toml", plugin_dir)
+        shutil.copy2(binary, plugin_dir / "bin/herdr-tools")
+        return plugin_dir
 
     def cli(*command):
         result = subprocess.run([herdr, "--session", session, *command], env=env,
@@ -144,8 +159,8 @@ with tempfile.TemporaryDirectory(prefix="jump-tui-", dir="/tmp") as directory:
         # Measure the rendered host border, including its two rows. This checks
         # the actual popup geometry rather than only its manifest/request value.
         lines = text.splitlines()
-        top = next(i for i, line in enumerate(lines) if "┌Jump" in line)
-        left = lines[top].index("┌Jump")
+        top = next(i for i, line in enumerate(lines) if "┌Find" in line)
+        left = lines[top].index("┌Find")
         bottom = next(i for i in range(top + 1, len(lines)) if lines[i][left:left+1] == "└")
         assert abs((bottom - top + 1) - args.height * 0.9) <= 2, (top, bottom, args.height)
         # 132 columns wide, or the pane area less 2 columns each side where
@@ -164,8 +179,8 @@ with tempfile.TemporaryDirectory(prefix="jump-tui-", dir="/tmp") as directory:
         The host border and the picker's one-cell side padding are excluded.
         """
         lines = screens[label].splitlines()
-        top = next(i for i, line in enumerate(lines) if "┌Jump" in line)
-        left = lines[top].index("┌Jump")
+        top = next(i for i, line in enumerate(lines) if "┌Find" in line)
+        left = lines[top].index("┌Find")
         right = lines[top].index("┐", left)
         bottom = next(i for i in range(top + 1, len(lines)) if lines[i][left:left+1] == "└")
         content = [line[left + 2:right - 1] for line in lines[top + 1:bottom]]
@@ -543,84 +558,21 @@ with tempfile.TemporaryDirectory(prefix="jump-tui-", dir="/tmp") as directory:
         evidence["views"] = views
         return evidence
 
-    def start_policy_owner(excluded):
-        """Fake only the Agents boundary; all panes, keys and painting are real.
-
-        The owner answers one v1 read per connection using current private host
-        IDs. A lock pins visibility/failure for each reply so a refresh observes
-        one complete policy, even when the input thread is still editing.
-        """
-        agents_state.mkdir()
-        listener = socket.socket(socket.AF_UNIX)
-        listener.bind(str(agents_state / "control.sock"))
-        listener.listen()
-        listener.settimeout(0.1)
-        state = {"excluded": list(excluded), "show": False, "unavailable": False, "gates": []}
-        lock = threading.Lock()
-
-        def serve():
-            with listener:
-                while not policy_stop.is_set():
-                    try:
-                        connection, _ = listener.accept()
-                    except socket.timeout:
-                        continue
-                    with connection:
-                        connection.settimeout(3)
-                        request = json.loads(connection.makefile("rb").readline())
-                        assert request == {"cmd": "workspace_policy", "version": 1,
-                                           "herdr_socket": host_socket}, request
-                        with lock:
-                            policy_evidence["requests"].append(request)
-                            selected = dict(state)
-                            gate = state["gates"].pop(0) if state["gates"] else None
-                        if selected["unavailable"]:
-                            response = {"ok": False, "code": "invalid_policy", "error": "fixture policy unavailable"}
-                        else:
-                            response = {"ok": True, "version": 1, "herdr_socket": host_socket,
-                                        "excluded_labels": ["ft"],
-                                        "workspace_ids": sorted(row["workspace_id"] for row in snapshot()["workspaces"]),
-                                        "excluded_workspace_ids": sorted(selected["excluded"]),
-                                        "show_excluded": selected["show"]}
-                        # Freeze the response before waiting: refresh A can
-                        # finish with shown policy while B is queued with hidden
-                        # policy. Each wait still fits Jump's two-second budget.
-                        if gate is not None:
-                            assert gate.wait(1.5), "delayed policy fixture was not released"
-                        connection.sendall(json.dumps(response).encode() + b"\n")
-
-        thread = threading.Thread(target=serve, name="fake-agents-policy")
-        thread.start()
-        return state, lock, thread
-
-    def assert_policy_note(label, expected):
-        content, _ = popup(label)
-        occurrences = [(y, line.index(expected)) for y, line in enumerate(content) if expected in line]
-        assert len(occurrences) == 1, (label, expected, content)
-        origin_x, origin_y = screen_evidence[label]["content_origin"]
-        y, x = occurrences[0]
-        for offset in range(len(expected)):
-            cell = screen.buffer[origin_y + y][origin_x + x + offset]
-            # Herdr emits an indexed palette; pyte records DarkGray as RGB
-            # 7f7f7f, the same value as the existing dim-chip assertions.
-            assert cell.fg == "7f7f7f" and not cell.bold, (label, expected, cell)
-        policy_evidence["scenarios"][label] = {"note": expected, "popup": content}
-
-    def check_policy_views(prefix, oracle, notice):
+    def check_ft_views(prefix, oracle):
+        """Every view and its search show the `ft` workspace's panes, with no
+        hidden-count or unavailable-list notice anywhere in the popup."""
         open_picker(prefix + "-open")
-        os.write(fd, b"J9 hidden")
+        os.write(fd, b"J9 ft")
         for index, view in enumerate(("All", "In progress", "Unread/Blocked", "Idle")):
             if index:
                 os.write(fd, b"\x05")
             label = f"{prefix}-{index}"
             frame(label)
-            members = [row for row in oracle["views"][view]["rows"] if row["title"].startswith("J9 hidden")]
-            assert_view(label, view, oracle, rows=members, query="J9 hidden")
-            if notice:
-                assert_policy_note(label, notice)
-            else:
-                content, _ = popup(label)
-                assert not any(re.search(r"\b\d+ hidden\b|Hidden list unavailable", line) for line in content[2:]), (label, content)
+            members = [row for row in oracle["views"][view]["rows"] if row["title"].startswith("J9 ft")]
+            assert members, (label, view)
+            assert_view(label, view, oracle, rows=members, query="J9 ft")
+            content, _ = popup(label)
+            assert not any(re.search(r"\b\d+ hidden\b|Hidden list unavailable", line) for line in content[2:]), (label, content)
             assert snapshot()["focused_pane_id"] == origin
         os.write(fd, b"\x1b")
         frame(prefix + "-closed")
@@ -632,14 +584,14 @@ with tempfile.TemporaryDirectory(prefix="jump-tui-", dir="/tmp") as directory:
         origin_tab = initial["panes"][0]["tab_id"]
         host_socket = cli("status", "--json")["server"]["socket"]
         assert host_socket.startswith(str(root) + "/"), "Refuse non-test host socket"
-        cli("plugin", "link", str(root_repo))
-        installation = cli("plugin", "action", "invoke", "shadowfax.jump.install-keybindings")
-        deadline = time.monotonic() + 5
-        while "shadowfax.jump.open" not in config.read_text() and time.monotonic() < deadline:
-            frame("install-wait", 0.1)
+        cli("plugin", "link", str(lay_out_plugin()))
+        linked = next(p for p in cli("plugin", "list", "--json")["result"]["plugins"]
+                      if p["plugin_id"] == "shadowfax.tools")
+        assert Path(linked["plugin_root"]).resolve() == plugin_dir.resolve() and linked["enabled"], linked
+        cli("server", "reload-config")
         cli("config", "check")
-        assert "shadowfax.jump.open" in config.read_text(), (installation, cli("plugin", "log", "list", "--plugin", "shadowfax.jump"))
-        checks.append("actual Alt-p installation")
+        frame("linked")
+        checks.append("laid-out shadowfax.tools linked; Alt-p bound to shadowfax.tools.find in config.toml")
         target = cli("tab", "create", "--label", "jump-shell-target", "--no-focus")["result"]["root_pane"]["pane_id"]
         other = cli("workspace", "create", "--label", "jump-workspace", "--no-focus")["result"]["root_pane"]["pane_id"]
         cli("pane", "rename", target, "inspect-jumper-shell")
@@ -937,133 +889,34 @@ with tempfile.TemporaryDirectory(prefix="jump-tui-", dir="/tmp") as directory:
 
         # Workspace visibility comes last, keeping the old query/order/kill
         # fixtures intact. Every new probe lives in this isolated named server.
-        hidden_workspace = cli("workspace", "create", "--label", "ft", "--no-focus")["result"]["root_pane"]
-        excluded = hidden_workspace["workspace_id"]
-        hidden_panes = []
+        # An `ft` workspace (the one the owner hides from Herdr's Agents panel)
+        # is listed like any other: Find hides no workspace.
+        ft_workspace = cli("workspace", "create", "--label", "ft", "--no-focus")["result"]["root_pane"]
+        ft_panes = []
         for index, state in enumerate(("working", "blocked", "done", "idle", "neutral")):
-            pane = hidden_workspace["pane_id"] if index == 0 else cli("tab", "create", "--workspace", excluded,
-                "--label", "J9 hidden " + state, "--no-focus")["result"]["root_pane"]["pane_id"]
-            title = "J9 hidden " + state
+            pane = ft_workspace["pane_id"] if index == 0 else cli("tab", "create", "--workspace", ft_workspace["workspace_id"],
+                "--label", "J9 ft " + state, "--no-focus")["result"]["root_pane"]["pane_id"]
+            title = "J9 ft " + state
             cli("pane", "rename", pane, title)
             cli("pane", "run", pane, "sleep 300")
             if state != "neutral":
                 # Herdr derives done from an unseen working->idle completion;
                 # it is not a reportable state. Focus only the private idle
                 # fixture to distinguish it from an unread completion.
-                cli("pane", "report-agent", pane, "--agent", "codex", "--state", "working", "--source", "jump:policy")
+                cli("pane", "report-agent", pane, "--agent", "codex", "--state", "working", "--source", "jump:ft")
                 if state != "working":
                     cli("pane", "report-agent", pane, "--agent", "codex", "--state",
-                        "idle" if state in ("done", "idle") else state, "--source", "jump:policy")
+                        "idle" if state in ("done", "idle") else state, "--source", "jump:ft")
                 if state == "idle":
                     cli("agent", "focus", pane)
                     origin_focus()
-            cli("pane", "report-metadata", pane, "--title", title, "--source", "jump:policy-title")
-            hidden_panes.append(pane)
+            cli("pane", "report-metadata", pane, "--title", title, "--source", "jump:ft-title")
+            ft_panes.append(pane)
         origin_focus()
-        policy_state, policy_lock, policy_thread = start_policy_owner([excluded])
-        hidden_oracle = view_expectations("policy-hidden-oracle", excluded=[excluded])
-        before = len(policy_evidence["requests"])
-        check_policy_views("policy-hidden", hidden_oracle, "5 hidden")
-        assert len(policy_evidence["requests"]) == before + 1
-        checks.append("v1 policy hides excluded panes from all four views, API-derived counts and typed search; one dim hidden count")
-
-        with policy_lock:
-            policy_state["show"] = True
-        shown_oracle = view_expectations("policy-shown-oracle")
-        check_policy_views("policy-shown", shown_oracle, None)
-        checks.append("show_excluded=true restores the same panes in every applicable view, count and search")
-
-        # An in-flight shown response must not clear loading for a newer hidden
-        # read. Exercise the real coalescing worker and a fresh y while the
-        # latest read is held; a wrong implementation would leave Confirm.
-        open_picker("policy-overlap-open")
-        os.write(fd, b"J9 hidden neutral\x18\t")
-        frame("policy-overlap-marked")
-        assert_kill("policy-overlap-marked", 1)
-        gate_a, gate_b = threading.Event(), threading.Event()
-        policy_gates.extend((gate_a, gate_b))
-        with policy_lock:
-            policy_state["gates"] = [gate_a, gate_b]
-        before = len(policy_evidence["requests"])
-        os.write(fd, b"\x12")
-        frame("policy-overlap-A", 0.15)
-        assert len(policy_evidence["requests"]) == before + 1
-        with policy_lock:
-            policy_state["show"] = False
-        os.write(fd, b"\x12\r")
-        frame("policy-overlap-B-queued", 0.15)
-        gate_a.set()
-        deadline = time.monotonic() + 0.6
-        while len(policy_evidence["requests"]) < before + 2 and time.monotonic() < deadline:
-            frame("policy-overlap-wait-B", 0.05)
-        assert len(policy_evidence["requests"]) == before + 2
-        frame("policy-overlap-stale-completed", 0.15)
-        os.write(fd, b"y")
-        frame("policy-overlap-y-unarmed", 0.15)
-        neutral = next(row for row in shown_oracle["views"]["All"]["rows"] if row["title"] == "J9 hidden neutral")
-        assert_review("policy-overlap-y-unarmed", [neutral])
-        assert set(hidden_panes) <= {pane["pane_id"] for pane in snapshot()["panes"]}
-        gate_b.set()
-        frame("policy-overlap-latest-completed")
-        assert_kill("policy-overlap-latest-completed", 0)
-        assert_policy_note("policy-overlap-latest-completed", "5 hidden")
-        assert_rows("policy-overlap-latest-completed", [])
-        # Send Escape separately so terminal decoding produces two key events:
-        # first leave kill mode, then close the popup.
-        os.write(fd, b"\x1b")
-        frame("policy-overlap-browse")
-        assert_footer("policy-overlap-browse", "browse")
-        os.write(fd, b"\x1b")
-        frame("policy-overlap-closed")
-        checks.append("overlapping delayed refreshes discard the older shown result; y stays unarmed until the latest hidden policy revokes its target")
-
-        with policy_lock:
-            policy_state["show"] = True
-        open_picker("policy-marks-open")
-        os.write(fd, b"J9 hidden neutral\x18\t")
-        frame("policy-marked")
-        assert_kill("policy-marked", 1)
-        with policy_lock:
-            policy_state["show"] = False
-        before = len(policy_evidence["requests"])
-        os.write(fd, b"\x12\r")
-        frame("policy-hidden-refresh")
-        assert len(policy_evidence["requests"]) == before + 1
-        assert_kill("policy-hidden-refresh", 0)
-        assert_policy_note("policy-hidden-refresh", "5 hidden")
-        assert_rows("policy-hidden-refresh", [])
-        os.write(fd, b"y\r")
-        frame("policy-hidden-no-kill")
-        assert_kill("policy-hidden-no-kill", 0)
-        assert set(hidden_panes) <= {pane["pane_id"] for pane in snapshot()["panes"]}
-        os.write(fd, b"\x1b")
-        frame("policy-marks-browse")
-        assert_footer("policy-marks-browse", "browse")
-        os.write(fd, b"\x1b")
-        frame("policy-marks-closed")
-        checks.append("Ctrl-r rereads policy; newly hidden marked pane leaves the review and y closes none")
-
-        with policy_lock:
-            policy_state["unavailable"] = True
-        check_policy_views("policy-unavailable", shown_oracle, "Hidden list unavailable")
-        checks.append("unavailable policy fails open with all view counts/search rows restored and one dim notice")
-
-        # The invoking pane gets no exemption from the shared workspace policy.
-        cli("pane", "rename", origin, "J9 invoking source")
-        cli("pane", "report-metadata", origin, "--title", "J9 invoking source", "--source", "jump:policy-title")
-        source_workspace = initial["panes"][0]["workspace_id"]
-        with policy_lock:
-            policy_state.update(unavailable=False, excluded=[source_workspace, excluded])
-        source_oracle = view_expectations("policy-source-oracle", excluded=[source_workspace, excluded])
-        hidden_count = sum(pane["workspace_id"] in (source_workspace, excluded) for pane in snapshot()["panes"])
-        open_picker("policy-source-open")
-        os.write(fd, b"J9 invoking source")
-        frame("policy-source-hidden")
-        assert_view("policy-source-hidden", "All", source_oracle, rows=[], query="J9 invoking source")
-        assert_policy_note("policy-source-hidden", f"{hidden_count} hidden")
-        os.write(fd, b"\x1b")
-        frame("policy-source-closed")
-        checks.append("the invoking source pane is hidden too; no source-workspace rows contribute to counts")
+        ft_oracle = view_expectations("ft-oracle")
+        assert sum(row["title"].startswith("J9 ft") for row in ft_oracle["views"]["All"]["rows"]) == 5
+        check_ft_views("ft-shown", ft_oracle)
+        checks.append("an ft workspace's panes appear in all four views, API-derived counts and typed search; no hidden notice")
         print(json.dumps({"width":args.width,"height":args.height,"passed":checks}, indent=2))
     finally:
         if args.evidence:
@@ -1077,16 +930,9 @@ with tempfile.TemporaryDirectory(prefix="jump-tui-", dir="/tmp") as directory:
             (args.evidence / f"{args.width}-view-expectations.json").write_text(json.dumps(view_evidence, indent=2))
             (args.evidence / f"{args.width}-search-fixtures.json").write_text(json.dumps(search_evidence, indent=2))
             (args.evidence / f"{args.width}-screen-assertions.json").write_text(json.dumps(screen_evidence, indent=2, ensure_ascii=False))
-            (args.evidence / f"{args.width}-policy.json").write_text(json.dumps(policy_evidence, indent=2))
             (args.evidence / f"{args.width}-session.ansi").write_bytes(bytes(session_bytes))
             (args.evidence / f"{args.width}-frames.json").write_text(json.dumps(
                 {"width": args.width, "height": args.height, "frames": frame_ends}, indent=2))
-        policy_stop.set()
-        for gate in policy_gates:
-            gate.set()
-        if policy_thread is not None:
-            policy_thread.join(timeout=4)
-            assert not policy_thread.is_alive(), "fake policy owner did not stop"
         # Only this harness's isolated server and PTY are owned for cleanup.
         try:
             subprocess.run([herdr, "--session", session, "server", "stop"], env=env, capture_output=True, timeout=8)

@@ -36,7 +36,9 @@ command = ["./bin/herdr-tools", "find", "open", "paths"]
 id = "find"
 title = "Find"
 placement = "popup"
-# A fallback: `find open` passes each picker's own width.
+# A fallback: `find open` always sends a size, from config's [popup] for the
+# picker's key (`find` for this navigator, `find-paths` for paths), else the
+# picker's own width in crates/find/pickers.toml and 90% height.
 width = 110
 height = "90%"
 command = ["./bin/herdr-tools", "find", "picker"]

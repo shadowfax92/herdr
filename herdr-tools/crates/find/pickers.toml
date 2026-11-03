@@ -1,21 +1,27 @@
-# Herdr Jump's pickers. Each [[picker]] is one popup: a source of items, the
-# shared fuzzy matcher, a row style, and what Enter does.
+# Find's pickers (herdr-tools `find` mode). Each [[picker]] is one popup: a
+# source of items, the shared fuzzy matcher, a row style, and what Enter does.
+# This file is compiled into herdr-tools (include_str!).
 #
 # To add a picker (no Rust needed):
 #   1. Copy the "paths" block below, give it a new id, and point `command` at
 #      any program that prints one item per line.
-#   2. Add a matching [[actions]] block to herdr-plugin.toml:
-#        id = "<id>", command = ["./target/release/herdr-jump", "open", "<id>"]
-#   3. Rebuild (cargo build --release --locked), then bind its `key`:
-#        herdr plugin action invoke shadowfax.jump.install-keybindings
+#   2. Add a matching [[actions]] block to herdr-tools/herdr-plugin.toml, in
+#      its `# --- find ---` block:
+#        id = "find-<id>", command = ["./bin/herdr-tools", "find", "open", "<id>"]
+#   3. Rebuild and reinstall (just -f herdr-tools/justfile install), then bind a
+#      key in Herdr's config.toml:
+#        [[keys.command]]
+#        key = "alt+…"
+#        type = "plugin_action"
+#        command = "shadowfax.tools.find-<id>"
 #
 # Fields:
-#   id       Picker name; also the manifest action id unless `action` says otherwise.
+#   id       Picker name; `herdr-tools find open <id>` opens it.
+#   action   Manifest action id that opens it (default "find-<id>"). It is
+#            also the picker's popup key: `[popup.size]` and
+#            `[[popup.profile]]` in shadowfax.tools' config.toml size it by
+#            this name.
 #   title    Popup heading.
-#   key      Herdr shortcut that install-keybindings binds to this picker. To
-#            change it, edit it here and rerun install-keybindings: the old
-#            key's binding moves to the new one.
-#   description  Optional text for that shortcut in Herdr's key help (default: title).
 #   source   "panes": the built-in pane navigator (only the panes picker uses it).
 #   command  argv, run without a shell in the directory of the pane you came from.
 #            Each output line is one item, in output order (ties keep that order).
@@ -29,16 +35,15 @@
 #            several items; marks survive searching. Enter then delivers every
 #            mark in the order marked, joined by spaces (or the current item if
 #            nothing is marked).
-#   width    Optional popup width in terminal columns (default 110). On a
-#            narrower terminal the popup shrinks to keep 2 columns free on each
-#            side.
+#   width    Optional popup width in terminal columns (default 110), 90% high,
+#            used when config.toml sizes no popup for this picker's key. On a
+#            narrower terminal the popup shrinks to keep 2 columns free on
+#            each side.
 
 [[picker]]
 id = "panes"
-action = "open"
+action = "find"
 title = "Jump to session"
-key = "alt+p"
-description = "Search all open panes with Jump"
 source = "panes"
 # 20% wider than the default, so the Name column doesn't come out of Task.
 width = 132
@@ -46,8 +51,6 @@ width = 132
 [[picker]]
 id = "paths"
 title = "Paths"
-key = "alt+n"
-description = "Paste a zoxide path with Jump"
 command = ["zoxide", "query", "--list"]
 kind = "path"
 enter = ["paste", "copy"]
