@@ -1555,6 +1555,51 @@ impl HeadlessServer {
         .unwrap_or_else(|_| "{}".to_string())
     }
 
+    /// `scope.pick`: asks one client to open its focus/hide picker. Like the
+    /// window title, it goes to the foreground client only; a picker on every
+    /// attached client would leave stray overlays on screens nobody watches.
+    /// When no surface is foreground (the client is viewing another machine,
+    /// which leaves this server's surface inactive), the most recently active
+    /// shell still gets it, since the picker belongs to that client either way.
+    fn handle_scope_pick_api(&mut self, id: String, mode: crate::scope::ScopePickMode) -> String {
+        let attached = |client: &ClientConnection| {
+            matches!(client.mode, ClientConnectionMode::ClientShell) && client.writer.is_some()
+        };
+        let target = self
+            .foreground_client_id
+            .filter(|client_id| self.clients.get(client_id).is_some_and(attached))
+            .or_else(|| {
+                self.clients
+                    .iter()
+                    .filter(|(_, client)| attached(client))
+                    .max_by_key(|(_, client)| client.last_activity)
+                    .map(|(&client_id, _)| client_id)
+            });
+        let sent = match (target, crate::protocol::endpoint::scope_pick_message(mode)) {
+            (Some(client_id), Ok(message)) => self.send_to_client(client_id, message),
+            (_, Err(err)) => {
+                warn!(err = %err, "failed to encode scope pick");
+                false
+            }
+            (None, _) => false,
+        };
+        if sent {
+            serde_json::to_string(&api::schema::SuccessResponse {
+                id,
+                result: api::schema::ResponseResult::Ok {},
+            })
+        } else {
+            serde_json::to_string(&api::schema::ErrorResponse {
+                id,
+                error: api::schema::ErrorBody {
+                    code: "no_client".into(),
+                    message: "no client is attached to open the scope picker".into(),
+                },
+            })
+        }
+        .unwrap_or_else(|_| "{}".to_string())
+    }
+
     fn drain_client_config_reload_request(&mut self) {
         if !self.app.state.request_client_config_reload {
             return;
@@ -1975,6 +2020,20 @@ impl HeadlessServer {
                 );
                 let location =
                     crate::server::clients::ClientShellLocation::from_snapshot(&seed_snapshot);
+                // The scope goes first so the client's first composed frame
+                // already filters by it instead of flashing config-only hides.
+                let scope = self.app.state.scope.clone();
+                let scope_message = match crate::protocol::endpoint::scope_projection_message(
+                    &seed_snapshot.boot_id,
+                    seed_snapshot.revision,
+                    &scope,
+                ) {
+                    Ok(message) => message,
+                    Err(err) => {
+                        warn!(client_id, err = %err, "failed to encode endpoint scope");
+                        return false;
+                    }
+                };
                 let agent_view = self.app.state.agent_view_override.clone();
                 let projection_message = match agent_view.as_ref() {
                     Some(view) => match crate::protocol::endpoint::agent_view_projection_message(
@@ -2011,10 +2070,12 @@ impl HeadlessServer {
                 connection.shell_snapshot = Some(seed_snapshot);
                 connection.shell_agent_completions = Some(completion_projection);
                 connection.shell_agent_view = agent_view;
+                connection.shell_scope = Some(scope);
                 self.clients.insert(client_id, connection);
                 if self.app.state.popup_pane.is_some() && self.popup_owner_tab_id.is_none() {
                     self.popup_owner_tab_id = self.shell_tab_id_for_client(client_id);
                 }
+                self.send_to_client(client_id, scope_message);
                 if let Some(message) = projection_message {
                     self.send_to_client(client_id, message);
                 }
@@ -2973,6 +3034,11 @@ impl HeadlessServer {
                 let response = self.handle_client_window_title_api(msg.request.id.clone(), None);
                 let _ = msg.respond_to.send(response);
                 return true;
+            }
+            api::schema::Method::ScopePick(params) => {
+                let response = self.handle_scope_pick_api(msg.request.id.clone(), params.mode);
+                let _ = msg.respond_to.send(response);
+                return false;
             }
             _ => {}
         }

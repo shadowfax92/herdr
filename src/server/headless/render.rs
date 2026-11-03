@@ -442,6 +442,41 @@ impl HeadlessServer {
         })
     }
 
+    /// Sends `AppState.scope` to a shell client whose last projected scope
+    /// differs. A scope change alone sends only this message: it needs no new
+    /// snapshot. Returns false when the client can no longer be written to.
+    fn project_scope_to_client(&mut self, client_id: u64) -> bool {
+        let Some(client) = self.clients.get_mut(&client_id) else {
+            return true;
+        };
+        let scope = &self.app.state.scope;
+        if client.shell_scope.as_ref() == Some(scope) {
+            return true;
+        }
+        let framed = match crate::protocol::endpoint::scope_projection_message(
+            &self.client_shell_boot_id,
+            client.shell_projection_revision,
+            scope,
+        )
+        .map_err(std::io::Error::other)
+        .and_then(|message| Self::frame_server_message(&message).map_err(std::io::Error::other))
+        {
+            Ok(framed) => framed,
+            Err(err) => {
+                warn!(client_id, err = %err, "failed to frame endpoint scope");
+                return false;
+            }
+        };
+        let Some(writer) = client.writer.as_ref() else {
+            return false;
+        };
+        if writer.control.send(framed).is_err() {
+            return false;
+        }
+        client.shell_scope = Some(scope.clone());
+        true
+    }
+
     pub(super) fn render_and_stream(&mut self) {
         self.render_and_stream_with_graphics_limit(MAX_GRAPHICS_FRAME_SIZE);
     }
@@ -567,6 +602,16 @@ impl HeadlessServer {
                     .is_some_and(|client| client.deferred_render() != DeferredRender::None)
             {
                 // The writer-drained event schedules recovery, even if pane output stops.
+                continue;
+            }
+            // The scope goes ahead of everything else for this client, including a
+            // surface render that may defer the snapshot below, so a client
+            // composes its next snapshot with the new scope. Inactive surfaces
+            // (a client viewing another machine) get it too.
+            if matches!(mode, ClientConnectionMode::ClientShell)
+                && !self.project_scope_to_client(client_id)
+            {
+                broken_clients.push(client_id);
                 continue;
             }
             let area = Rect::new(0, 0, cols, rows);

@@ -3856,6 +3856,101 @@
           ],
           "type": "object"
         },
+        "ScopePickMode": {
+          "description": "Which mark the picker's `space` toggles; both marks stay one key away.",
+          "enum": [
+            "focus",
+            "hide"
+          ],
+          "type": "string"
+        },
+        "ScopePickParams": {
+          "description": "`scope.pick`: open the picker on the foreground client.",
+          "properties": {
+            "mode": {
+              "$ref": "#/schemas/request/$defs/ScopePickMode",
+              "default": "focus"
+            }
+          },
+          "type": "object"
+        },
+        "ScopeSetParams": {
+          "description": "`scope.set`: each field given replaces that part of the scope outright. A\nset is never a flip, so a caller that timed out and retries cannot toggle\ntwice.",
+          "properties": {
+            "focus_active": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "focus_targets": {
+              "items": {
+                "$ref": "#/schemas/request/$defs/ScopeTarget"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "hidden": {
+              "items": {
+                "$ref": "#/schemas/request/$defs/ScopeTarget"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "ScopeTarget": {
+          "description": "One focused or hidden thing: a whole machine, a workspace, or one tab.\n\n`machine` is an endpoint storage key (`local`, `ssh:<hex>`), a machine label\n(`studio`, matched case-insensitively), or `*`. Workspace and tab are each\nmatched by id when one is given (exact, survives renames) and otherwise by\nlabel (exact, re-matches a recreated workspace). A target with no workspace\ncovers its whole machine; one with a workspace but no tab covers that\nworkspace.",
+          "properties": {
+            "config": {
+              "description": "Seeded from `[ui.sidebar.agents].hidden_workspaces`. The server keeps\nthese in step with the config; everything else is runtime-only.",
+              "type": "boolean"
+            },
+            "machine": {
+              "type": "string"
+            },
+            "machine_label": {
+              "description": "The machine's label when the target was made; display only.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tab_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tab_label": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workspace_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workspace_label": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "machine"
+          ],
+          "type": "object"
+        },
         "ServerLiveHandoffParams": {
           "properties": {
             "expected_protocol": {
@@ -4897,6 +4992,73 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/ClientShellSurfaceSetParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Focus and hide (`crate::scope`): the local server owns one runtime\nscope that every attached client filters by.",
+          "properties": {
+            "method": {
+              "const": "scope.get",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "scope.set",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/ScopeSetParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Forgets focus and runtime hides, and restores the config's hides.",
+          "properties": {
+            "method": {
+              "const": "scope.clear",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Opens the focus/hide picker on the foreground client.",
+          "properties": {
+            "method": {
+              "const": "scope.pick",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/ScopePickParams"
             }
           },
           "required": [
@@ -9540,6 +9702,27 @@
               "type": "object"
             },
             {
+              "description": "`scope.get`, `scope.set` and `scope.clear`: the whole scope plus the\nserver's verdict for each local tab, so callers never reimplement the\nadmission rule.",
+              "properties": {
+                "local": {
+                  "$ref": "#/schemas/success_response/$defs/ScopeLocalReport"
+                },
+                "scope": {
+                  "$ref": "#/schemas/success_response/$defs/ScopeState"
+                },
+                "type": {
+                  "const": "scope",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "scope",
+                "local"
+              ],
+              "type": "object"
+            },
+            {
               "properties": {
                 "pane": {
                   "$ref": "#/schemas/success_response/$defs/PaneInfo"
@@ -10417,6 +10600,124 @@
               "type": "object"
             }
           ]
+        },
+        "ScopeFocus": {
+          "properties": {
+            "active": {
+              "default": false,
+              "description": "Focus can be switched off without forgetting its targets.",
+              "type": "boolean"
+            },
+            "targets": {
+              "default": [],
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/ScopeTarget"
+              },
+              "type": "array"
+            }
+          },
+          "type": "object"
+        },
+        "ScopeLocalReport": {
+          "properties": {
+            "tabs": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/ScopeLocalTab"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "tabs"
+          ],
+          "type": "object"
+        },
+        "ScopeLocalTab": {
+          "description": "The server's verdict for one local tab, so plugins filter without\nreimplementing the rule.",
+          "properties": {
+            "admitted": {
+              "type": "boolean"
+            },
+            "tab_id": {
+              "type": "string"
+            },
+            "workspace_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "workspace_id",
+            "tab_id",
+            "admitted"
+          ],
+          "type": "object"
+        },
+        "ScopeState": {
+          "description": "The whole scope, as the server stores it, projects it and returns it.",
+          "properties": {
+            "focus": {
+              "$ref": "#/schemas/success_response/$defs/ScopeFocus",
+              "default": {
+                "active": false,
+                "targets": []
+              }
+            },
+            "hidden": {
+              "default": [],
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/ScopeTarget"
+              },
+              "type": "array"
+            }
+          },
+          "type": "object"
+        },
+        "ScopeTarget": {
+          "description": "One focused or hidden thing: a whole machine, a workspace, or one tab.\n\n`machine` is an endpoint storage key (`local`, `ssh:<hex>`), a machine label\n(`studio`, matched case-insensitively), or `*`. Workspace and tab are each\nmatched by id when one is given (exact, survives renames) and otherwise by\nlabel (exact, re-matches a recreated workspace). A target with no workspace\ncovers its whole machine; one with a workspace but no tab covers that\nworkspace.",
+          "properties": {
+            "config": {
+              "description": "Seeded from `[ui.sidebar.agents].hidden_workspaces`. The server keeps\nthese in step with the config; everything else is runtime-only.",
+              "type": "boolean"
+            },
+            "machine": {
+              "type": "string"
+            },
+            "machine_label": {
+              "description": "The machine's label when the target was made; display only.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tab_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tab_label": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workspace_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workspace_label": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "machine"
+          ],
+          "type": "object"
         },
         "ServerCapabilities": {
           "properties": {

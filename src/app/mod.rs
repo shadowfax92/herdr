@@ -531,6 +531,9 @@ impl App {
             headless_size: config.headless_size(),
             agent_panel_sort,
             agent_view_override: None,
+            scope: crate::scope::ScopeState::from_config_hidden(
+                &config.ui.sidebar.agents.hidden_workspaces,
+            ),
             sidebar_agents: config.ui.sidebar.agents.clone(),
             sidebar_spaces: config.ui.sidebar.spaces.clone(),
             next_agent_state_change_seq: 0,
@@ -912,6 +915,12 @@ impl App {
                 self.configure_window_title(&config.ui.window_title);
                 self.state.agent_panel_sort =
                     agent_panel_sort_from_config(config.ui.agent_panel_sort);
+                // The current list is the previous config's: apply only the diff
+                // so a config hide the owner removed at runtime stays removed.
+                self.state.scope.apply_config_hidden_change(
+                    &self.state.sidebar_agents.hidden_workspaces,
+                    &config.ui.sidebar.agents.hidden_workspaces,
+                );
                 self.state.sidebar_agents = config.ui.sidebar.agents.clone();
                 self.state.sidebar_spaces = config.ui.sidebar.spaces.clone();
                 self.state.sound = config.ui.sound.clone();

@@ -103,6 +103,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | ポップアップ | `popup.close` |
 | レイアウト | `layout.export`、`layout.apply`、`layout.set_split_ratio` |
 | エージェント | `agent.list`、`agent.get`、`agent.read`、`agent.explain`、`agent.send_keys`、`agent.prompt`、`agent.wait`、`agent.rename`、`agent.focus`、`agent.start` |
+| フォーカスと非表示 | `scope.get`、`scope.set`、`scope.clear`、`scope.pick` |
 | イベント | `events.subscribe`、`events.wait` |
 | インテグレーション | `integration.install`、`integration.uninstall` |
 | プラグイン | `plugin.link`、`plugin.list`、`plugin.unlink`、`plugin.enable`、`plugin.disable`、`plugin.action.list`、`plugin.action.invoke`、`plugin.log.list`、`plugin.pane.open`、`plugin.pane.focus`、`plugin.pane.close` |
@@ -365,6 +366,89 @@ uninstall されるか、サーバーが終了するまで有効です。永続�
 
 source が一致しない場合、アクティブなビューは変わりません。set と clear のレスポンスは
 `type: "agent_view"` で、`active`、`source`、任意の `label` を報告します。
+
+## フォーカスと非表示
+
+ローカルサーバーは、接続中のすべてのマシンにわたって Herdr クライアントの表示を絞り込む
+ランタイムのスコープを 1 つ持ちます。フォーカスは表示するワークスペースやタブを、
+非表示は外すものを列挙します。スコープは Spaces と Agents パネル、エージェントと
+ワークスペースのキー、通知に適用されます。`workspace.focus` や `agent.focus` などの
+明示的なジャンプ、タブバー、未読状態、エージェント検出は絞り込まれません。スコープは
+サーバーのメモリにだけあり、ローカルサーバーが再起動するまで続き、保存もライブ
+ハンドオフでの引き継ぎもされません。
+
+スコープのターゲットはマシンと、任意でワークスペースとタブを指定します。
+
+```json
+{"machine": "local", "workspace_label": "setup", "tab_label": "scratch"}
+```
+
+`machine` は `local`、保存済みマシンのラベル (大文字小文字を区別しない) かエンドポイント
+キー、またはすべてのマシンを表す `*` です。`workspace_id` と `tab_id` は完全一致で、
+名前を変えても一致し続けます。`workspace_label` と `tab_label` は大文字小文字を区別して
+完全一致し、作り直したワークスペースにも再び一致します。両方あるときは ID が優先です。
+ワークスペースのないターゲットはマシン全体を、タブのないターゲットはワークスペース全体を
+対象にします。`config: true` は `[ui.sidebar.agents].hidden_workspaces` から作られた
+非表示を示します。
+
+どの非表示にも当たらないタブは表示されます。フォーカスがオンでターゲットがあるときは、
+どの非表示と比べても同じかより具体的 (マシン < ワークスペース < タブ) なフォーカス
+ターゲットに当たるタブだけが表示されます。`setup` にフォーカスして `setup/scratch` を
+非表示にすると `scratch` を除いた `setup` が表示され、`ft` にフォーカスすると設定による
+`ft` の非表示より優先されます。
+
+`scope.get` はパラメーターを取りません。`scope.set` は渡された
+`focus_targets`、`focus_active`、`hidden` の各フィールドだけを置き換えます。切り替えは
+しないので、タイムアウトしたリクエストを再送しても安全です。
+
+```json
+{"id":"scope_focus","method":"scope.set","params":{"focus_targets":[{"machine":"local","workspace_label":"setup"}],"focus_active":true}}
+{"id":"scope_hide","method":"scope.set","params":{"hidden":[{"machine":"*","workspace_label":"ft","config":true},{"machine":"local","workspace_label":"admin"}]}}
+```
+
+ラベルだけで ID のない `local` ターゲットは、そのラベルを持つ稼働中のワークスペース
+(またはその中のタブ) がちょうど 1 つなら、サーバーが ID を補います。ほかのターゲットは
+そのまま保存されます。ターゲットを 1 つ足したり外したりするには、スコープを読み、
+リストを変えて set し直します。
+
+`scope.clear` はパラメーターを取りません。フォーカスと実行時の非表示を空にし、現在の
+設定にある非表示を戻します。サーバーは起動時にそれらの非表示を作り、`server.reload_config`
+では `hidden_workspaces` の差分だけを適用するので、実行時に再表示した設定済みの
+ワークスペースは設定が変わるまで表示されたままです。
+
+`scope.get`、`scope.set`、`scope.clear` はスコープ全体と、サーバー自身の各タブに対する
+判定を返すので、プラグインはルールを再実装せずに一覧を絞り込めます。
+
+```json
+{
+  "id": "scope_get",
+  "result": {
+    "type": "scope",
+    "scope": {
+      "focus": {"active": true, "targets": [{"machine": "local", "workspace_id": "w1", "workspace_label": "setup"}]},
+      "hidden": [{"machine": "*", "workspace_label": "ft", "config": true}]
+    },
+    "local": {
+      "tabs": [
+        {"workspace_id": "w1", "tab_id": "w1:t1", "admitted": true},
+        {"workspace_id": "w2", "tab_id": "w2:t1", "admitted": false}
+      ]
+    }
+  }
+}
+```
+
+`scope.pick` は接続中のクライアントでフォーカスと非表示のピッカーを開きます。
+
+```json
+{"id":"scope_pick","method":"scope.pick","params":{"mode":"hide"}}
+```
+
+`mode` は `focus` (既定) か `hide` で、`space` が切り替える印だけを決めます。
+リクエストは前面のクライアントだけに届き、`type: "ok"` を返します。クライアントが
+接続されていなければ `no_client` で失敗します。クライアントはスコープを読み、
+`scope.pick` に応じるのをローカルサーバーからだけに限り、リモートサーバーのスコープは
+無視します。
 
 ## プラグイン API
 

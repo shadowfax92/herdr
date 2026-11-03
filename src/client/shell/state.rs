@@ -986,6 +986,9 @@ pub(crate) struct ClientShellState {
     /// without a Local server (`submit_scope_set`).
     #[cfg(test)]
     pub(super) scope_set_requests: Vec<crate::scope::ScopeSetParams>,
+    /// `scope.set` requests for Local, queued by `request_scope_set` and drained
+    /// by the client loop's next action dispatch.
+    pub(super) scope_requests: Vec<ClientShellAction>,
 }
 
 pub(super) fn product_announcement_state(
@@ -1159,6 +1162,7 @@ impl ClientShellState {
             scope_projection: None,
             #[cfg(test)]
             scope_set_requests: Vec::new(),
+            scope_requests: Vec::new(),
         }
     }
 

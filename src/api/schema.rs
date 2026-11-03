@@ -73,6 +73,18 @@ pub enum Method {
     ClientWindowTitleClear(EmptyParams),
     #[serde(rename = "client_shell.surface.set")]
     ClientShellSurfaceSet(ClientShellSurfaceSetParams),
+    /// Focus and hide (`crate::scope`): the local server owns one runtime
+    /// scope that every attached client filters by.
+    #[serde(rename = "scope.get")]
+    ScopeGet(EmptyParams),
+    #[serde(rename = "scope.set")]
+    ScopeSet(crate::scope::ScopeSetParams),
+    /// Forgets focus and runtime hides, and restores the config's hides.
+    #[serde(rename = "scope.clear")]
+    ScopeClear(EmptyParams),
+    /// Opens the focus/hide picker on the foreground client.
+    #[serde(rename = "scope.pick")]
+    ScopePick(crate::scope::ScopePickParams),
     #[serde(rename = "session.snapshot")]
     SessionSnapshot(EmptyParams),
     #[serde(rename = "workspace.create")]

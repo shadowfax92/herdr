@@ -826,6 +826,12 @@ pub struct AppState {
     pub agent_panel_sort: AgentPanelSort,
     /// Transient session-wide projection override for the built-in Agents view.
     pub agent_view_override: Option<crate::api::schema::AgentViewSetParams>,
+    /// Focus and hide (`crate::scope`). Pure runtime data owned by this server:
+    /// seeded from `[ui.sidebar.agents].hidden_workspaces` at boot, followed
+    /// through config reloads by diff, never saved to disk or carried across a
+    /// live handoff. Every attached shell client receives it as the
+    /// `scope.projection` endpoint control.
+    pub scope: crate::scope::ScopeState,
     pub sidebar_agents: crate::config::AgentsSidebarConfig,
     pub sidebar_spaces: crate::config::SpacesSidebarConfig,
     pub next_agent_state_change_seq: u64,
@@ -1068,6 +1074,7 @@ impl AppState {
             ),
             agent_panel_sort: AgentPanelSort::Spaces,
             agent_view_override: None,
+            scope: crate::scope::ScopeState::default(),
             sidebar_agents: crate::config::AgentsSidebarConfig::default(),
             sidebar_spaces: crate::config::SpacesSidebarConfig::default(),
             next_agent_state_change_seq: 0,

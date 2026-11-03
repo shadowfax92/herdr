@@ -8,6 +8,7 @@ mod layouts;
 mod panes;
 pub(crate) mod plugins;
 pub(super) mod responses;
+mod scope;
 mod session;
 mod tabs;
 mod workspaces;
@@ -1120,6 +1121,10 @@ impl App {
             Method::AgentViewClear(params) => {
                 return self.handle_agent_view_clear(request.id, params);
             }
+            Method::ScopeGet(_) => return self.handle_scope_get(request.id),
+            Method::ScopeSet(params) => return self.handle_scope_set(request.id, params),
+            Method::ScopeClear(_) => return self.handle_scope_clear(request.id),
+            Method::ScopePick(_) => return Self::handle_scope_pick_without_client(request.id),
             Method::AgentStart(params) => return self.handle_agent_start(request.id, params),
             Method::AgentPrompt(_) => {
                 return responses::encode_error(

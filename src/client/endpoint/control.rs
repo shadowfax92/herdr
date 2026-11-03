@@ -10,6 +10,10 @@ pub(crate) enum EndpointControlMessage {
     HealthPong,
     AgentViewProjection(DecodedAgentViewProjection),
     AgentCompletions(crate::protocol::endpoint::EndpointAgentCompletions),
+    /// Focus/hide scope; the client loop applies it only from Local.
+    ScopeProjection(crate::protocol::endpoint::EndpointScopeProjection),
+    /// Open the focus/hide picker; honored only from Local.
+    ScopePick(crate::scope::ScopePickMode),
     Snapshot(Box<crate::protocol::ClientShellSnapshot>),
     Ignored,
 }
@@ -25,6 +29,21 @@ pub(crate) fn decode_endpoint_control(
         return Ok(serde_json::from_str(data)
             .map(EndpointControlMessage::AgentCompletions)
             .unwrap_or(EndpointControlMessage::Ignored));
+    }
+    // Both scope controls are optional: a payload this client cannot read (a
+    // future scope shape or pick mode) is dropped rather than failing the
+    // endpoint, and the client keeps its last scope.
+    if kind == crate::protocol::endpoint::SCOPE_PROJECTION_KIND {
+        return Ok(serde_json::from_str(data)
+            .map(EndpointControlMessage::ScopeProjection)
+            .unwrap_or(EndpointControlMessage::Ignored));
+    }
+    if kind == crate::protocol::endpoint::SCOPE_PICK_KIND {
+        return Ok(
+            serde_json::from_str::<crate::protocol::endpoint::EndpointScopePick>(data)
+                .map(|pick| EndpointControlMessage::ScopePick(pick.mode))
+                .unwrap_or(EndpointControlMessage::Ignored),
+        );
     }
     if kind == crate::protocol::endpoint::AGENT_VIEW_PROJECTION_KIND {
         let Ok(projection): Result<crate::protocol::endpoint::EndpointAgentViewProjection, _> =
@@ -162,6 +181,61 @@ mod tests {
             .unwrap(),
             EndpointControlMessage::Ignored
         ));
+    }
+
+    #[test]
+    fn scope_controls_round_trip_through_the_decoder() {
+        let scope = crate::scope::ScopeState {
+            focus: crate::scope::ScopeFocus {
+                active: true,
+                targets: vec![crate::scope::ScopeTarget::parse("studio:main/outreach").unwrap()],
+            },
+            hidden: crate::scope::ScopeState::from_config_hidden(&["ft".into()]).hidden,
+        };
+        let crate::protocol::ServerMessage::EndpointControl { kind, data } =
+            crate::protocol::endpoint::scope_projection_message("boot", 3, &scope).unwrap()
+        else {
+            panic!("scope projection control");
+        };
+        let EndpointControlMessage::ScopeProjection(decoded) =
+            decode_endpoint_control(&kind, &data).unwrap()
+        else {
+            panic!("decoded scope projection");
+        };
+        assert_eq!(decoded.boot_id, "boot");
+        assert_eq!(decoded.revision, 3);
+        assert_eq!(decoded.scope, scope);
+
+        for mode in [
+            crate::scope::ScopePickMode::Focus,
+            crate::scope::ScopePickMode::Hide,
+        ] {
+            let crate::protocol::ServerMessage::EndpointControl { kind, data } =
+                crate::protocol::endpoint::scope_pick_message(mode).unwrap()
+            else {
+                panic!("scope pick control");
+            };
+            assert!(matches!(
+                decode_endpoint_control(&kind, &data).unwrap(),
+                EndpointControlMessage::ScopePick(decoded) if decoded == mode
+            ));
+        }
+    }
+
+    #[test]
+    fn unreadable_scope_controls_are_ignored_without_rejecting_the_endpoint() {
+        for (kind, data) in [
+            (crate::protocol::endpoint::SCOPE_PROJECTION_KIND, "not json"),
+            (
+                crate::protocol::endpoint::SCOPE_PICK_KIND,
+                r#"{"mode":"future"}"#,
+            ),
+        ] {
+            assert!(matches!(
+                decode_endpoint_control(kind, data).unwrap(),
+                EndpointControlMessage::Ignored
+            ));
+        }
     }
 
     #[test]

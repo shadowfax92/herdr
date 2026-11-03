@@ -114,6 +114,13 @@ pub enum ResponseResult {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
     },
+    /// `scope.get`, `scope.set` and `scope.clear`: the whole scope plus the
+    /// server's verdict for each local tab, so callers never reimplement the
+    /// admission rule.
+    Scope {
+        scope: crate::scope::ScopeState,
+        local: crate::scope::ScopeLocalReport,
+    },
     PaneInfo {
         pane: PaneInfo,
     },

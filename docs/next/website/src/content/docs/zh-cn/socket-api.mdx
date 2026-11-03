@@ -103,6 +103,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | 弹窗 | `popup.close` |
 | 布局 | `layout.export`、`layout.apply`、`layout.set_split_ratio` |
 | 智能体 | `agent.list`、`agent.get`、`agent.read`、`agent.explain`、`agent.send_keys`、`agent.prompt`、`agent.wait`、`agent.rename`、`agent.focus`、`agent.start` |
+| 聚焦与隐藏 | `scope.get`、`scope.set`、`scope.clear`、`scope.pick` |
 | 事件 | `events.subscribe`、`events.wait` |
 | 集成 | `integration.install`、`integration.uninstall` |
 | 插件 | `plugin.link`、`plugin.list`、`plugin.unlink`、`plugin.enable`、`plugin.disable`、`plugin.action.list`、`plugin.action.invoke`、`plugin.log.list`、`plugin.pane.open`、`plugin.pane.focus`、`plugin.pane.close` |
@@ -361,6 +362,79 @@ disable、unlink 或 uninstall,或者服务器退出。需要持久行为的插�
 
 source 不匹配时,活动视图保持不变。set 和 clear 响应使用
 `type: "agent_view"`,并报告 `active`、`source` 和可选的 `label`。
+
+## 聚焦与隐藏
+
+本地服务器持有一个运行时范围 (scope)，用于在所有已连接的机器上过滤 Herdr 客户端显示的内容。
+聚焦列出要显示的工作区或标签页；隐藏列出要移除的。范围作用于 Spaces 和 Agents 面板、
+智能体与工作区按键以及通知。`workspace.focus`、`agent.focus` 等显式跳转、标签栏、
+未读状态和智能体检测不受过滤。范围只存在于服务器内存中：它一直保留到本地服务器重启，
+不会保存，也不会在热交接时传递。
+
+范围目标指定一台机器，并可选地指定工作区和标签页：
+
+```json
+{"machine": "local", "workspace_label": "setup", "tab_label": "scratch"}
+```
+
+`machine` 是 `local`、已保存机器的标签 (不区分大小写) 或端点键，或者表示所有机器的 `*`。
+`workspace_id` 和 `tab_id` 精确匹配，重命名后仍然匹配；`workspace_label` 和 `tab_label`
+区分大小写地精确匹配，并会重新匹配重建的工作区。两者都有时以 ID 为准。没有工作区的目标
+覆盖整台机器，没有标签页的目标覆盖整个工作区。`config: true` 标记由
+`[ui.sidebar.agents].hidden_workspaces` 生成的隐藏项。
+
+没有任何隐藏项覆盖的标签页会显示。聚焦开启且有目标时，只有当某个聚焦目标覆盖该标签页，
+且其具体程度 (机器 < 工作区 < 标签页) 不低于任何隐藏项时，标签页才会显示。聚焦 `setup`
+并隐藏 `setup/scratch` 会显示不含 `scratch` 的 `setup`；聚焦 `ft` 会覆盖配置中对 `ft`
+的隐藏。
+
+`scope.get` 不带参数。`scope.set` 只替换传入的 `focus_targets`、`focus_active` 或
+`hidden` 字段，其余保持不变。它从不切换，因此重试超时的请求是安全的：
+
+```json
+{"id":"scope_focus","method":"scope.set","params":{"focus_targets":[{"machine":"local","workspace_label":"setup"}],"focus_active":true}}
+{"id":"scope_hide","method":"scope.set","params":{"hidden":[{"machine":"*","workspace_label":"ft","config":true},{"machine":"local","workspace_label":"admin"}]}}
+```
+
+对于只有标签没有 ID 的 `local` 目标，如果恰好有一个运行中的工作区 (或其中的一个标签页)
+使用该标签，服务器会补上 ID。其他目标按原样保存。要增删单个目标，先读取范围，修改列表，
+再整体写回。
+
+`scope.clear` 不带参数。它清空聚焦和运行时隐藏，然后恢复当前配置中的隐藏项。服务器在启动时
+生成这些隐藏项，`server.reload_config` 只应用 `hidden_workspaces` 的变化，因此运行时取消
+隐藏的已配置工作区会一直显示，直到配置本身改变。
+
+`scope.get`、`scope.set` 和 `scope.clear` 返回完整范围以及服务器对自身每个标签页的判定，
+插件无需重新实现规则即可过滤自己的列表：
+
+```json
+{
+  "id": "scope_get",
+  "result": {
+    "type": "scope",
+    "scope": {
+      "focus": {"active": true, "targets": [{"machine": "local", "workspace_id": "w1", "workspace_label": "setup"}]},
+      "hidden": [{"machine": "*", "workspace_label": "ft", "config": true}]
+    },
+    "local": {
+      "tabs": [
+        {"workspace_id": "w1", "tab_id": "w1:t1", "admitted": true},
+        {"workspace_id": "w2", "tab_id": "w2:t1", "admitted": false}
+      ]
+    }
+  }
+}
+```
+
+`scope.pick` 在已连接的客户端中打开聚焦与隐藏选择器：
+
+```json
+{"id":"scope_pick","method":"scope.pick","params":{"mode":"hide"}}
+```
+
+`mode` 为 `focus` (默认) 或 `hide`，只决定 `space` 切换哪种标记。请求只发送给前台客户端，
+并返回 `type: "ok"`；没有客户端连接时以 `no_client` 失败。客户端只从本地服务器读取范围并
+响应 `scope.pick`，远程服务器上的范围会被忽略。
 
 ## 插件 API
 

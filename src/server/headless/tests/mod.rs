@@ -6,6 +6,8 @@ mod native_graphics;
 mod pane_move_tests;
 #[path = "pane_graphics.rs"]
 mod retained_graphics_tests;
+#[path = "scope.rs"]
+mod scope_tests;
 #[path = "surface_delta.rs"]
 mod surface_delta_tests;
 #[path = "surface_interest.rs"]
@@ -19,7 +21,7 @@ fn client_shell_projection(
     Box<protocol::ClientShellSnapshot>,
     protocol::endpoint::EndpointAgentCompletions,
 ) {
-    let read_control = |expected| {
+    let read_control = |expected| loop {
         let ServerMessage::EndpointControl { kind, data } = read_server_message(
             receiver
                 .recv_timeout(Duration::from_secs(1))
@@ -27,8 +29,13 @@ fn client_shell_projection(
         ) else {
             panic!("expected endpoint control {expected}");
         };
+        // Every attach (and scope change) sends the focus/hide scope first; the
+        // scope tests read it with `client_scope_projection`.
+        if kind == protocol::endpoint::SCOPE_PROJECTION_KIND {
+            continue;
+        }
         assert_eq!(kind, expected);
-        data
+        break data;
     };
     let completions: protocol::endpoint::EndpointAgentCompletions =
         serde_json::from_str(&read_control(protocol::endpoint::AGENT_COMPLETIONS_KIND)).unwrap();

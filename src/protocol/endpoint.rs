@@ -31,6 +31,14 @@ pub const AGENT_VIEW_PROJECTION_CAPABILITY: &str = "agent_view_projection";
 pub const AGENT_VIEW_PROJECTION_KIND: &str = "endpoint.agent-view.v1";
 pub const AGENT_COMPLETIONS_CAPABILITY: &str = "agent_completions";
 pub const AGENT_COMPLETIONS_KIND: &str = "endpoint.agent-completions.v1";
+/// Focus and hide (`crate::scope`): the server's whole scope, sent on attach and
+/// on every change, ahead of the snapshot it belongs with. Clients read it
+/// only from their Local endpoint.
+pub const SCOPE_PROJECTION_CAPABILITY: &str = "scope_projection";
+pub const SCOPE_PROJECTION_KIND: &str = "endpoint.scope-projection.v1";
+/// `scope.pick`: asks the foreground client to open its focus/hide picker.
+pub const SCOPE_PICK_CAPABILITY: &str = "scope_pick";
+pub const SCOPE_PICK_KIND: &str = "endpoint.scope-pick.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndpointAgentCompletions {
@@ -90,6 +98,23 @@ pub struct EndpointAgentViewProjection {
     pub view: Option<serde_json::Value>,
 }
 
+/// Optional control advertised by `SCOPE_PROJECTION_CAPABILITY`. Unlike the agent
+/// view, the scope is not paired with one snapshot revision: the client applies
+/// it on arrival. `boot_id` and `revision` name the server boot and the shell
+/// projection revision current when it was sent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointScopeProjection {
+    pub boot_id: String,
+    pub revision: u64,
+    pub scope: crate::scope::ScopeState,
+}
+
+/// Optional control advertised by `SCOPE_PICK_CAPABILITY`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointScopePick {
+    pub mode: crate::scope::ScopePickMode,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndpointServerWelcome {
     pub generation: u32,
@@ -138,6 +163,29 @@ pub fn agent_view_projection_message(
     })
 }
 
+pub fn scope_projection_message(
+    boot_id: &str,
+    revision: u64,
+    scope: &crate::scope::ScopeState,
+) -> serde_json::Result<ServerMessage> {
+    let projection = EndpointScopeProjection {
+        boot_id: boot_id.to_owned(),
+        revision,
+        scope: scope.clone(),
+    };
+    Ok(ServerMessage::EndpointControl {
+        kind: SCOPE_PROJECTION_KIND.into(),
+        data: serde_json::to_string(&projection)?,
+    })
+}
+
+pub fn scope_pick_message(mode: crate::scope::ScopePickMode) -> serde_json::Result<ServerMessage> {
+    Ok(ServerMessage::EndpointControl {
+        kind: SCOPE_PICK_KIND.into(),
+        data: serde_json::to_string(&EndpointScopePick { mode })?,
+    })
+}
+
 impl EndpointClientHello {
     pub fn supports_required_codecs(&self) -> bool {
         self.snapshot_codecs
@@ -174,6 +222,8 @@ impl EndpointServerWelcome {
                 HEALTH_CHECK_CAPABILITY.into(),
                 AGENT_VIEW_PROJECTION_CAPABILITY.into(),
                 AGENT_COMPLETIONS_CAPABILITY.into(),
+                SCOPE_PROJECTION_CAPABILITY.into(),
+                SCOPE_PICK_CAPABILITY.into(),
             ],
             error: None,
         }
@@ -389,8 +439,43 @@ mod tests {
                 HEALTH_CHECK_CAPABILITY.to_string(),
                 AGENT_VIEW_PROJECTION_CAPABILITY.to_string(),
                 AGENT_COMPLETIONS_CAPABILITY.to_string(),
+                SCOPE_PROJECTION_CAPABILITY.to_string(),
+                SCOPE_PICK_CAPABILITY.to_string(),
             ]
         );
+        // An incompatible welcome advertises nothing, so a client that failed
+        // the handshake never waits for a scope.
+        assert!(EndpointServerWelcome::incompatible("x", "y")
+            .capabilities
+            .is_empty());
+    }
+
+    #[test]
+    fn scope_projection_and_pick_are_named_json_controls() {
+        let scope = crate::scope::ScopeState::from_config_hidden(&["ft".into()]);
+        let ServerMessage::EndpointControl { kind, data } =
+            scope_projection_message("boot", 9, &scope).unwrap()
+        else {
+            panic!("scope projection should use endpoint control");
+        };
+        assert_eq!(kind, SCOPE_PROJECTION_KIND);
+        let projection: EndpointScopeProjection = serde_json::from_str(&data).unwrap();
+        assert_eq!(
+            projection,
+            EndpointScopeProjection {
+                boot_id: "boot".into(),
+                revision: 9,
+                scope,
+            }
+        );
+
+        let ServerMessage::EndpointControl { kind, data } =
+            scope_pick_message(crate::scope::ScopePickMode::Hide).unwrap()
+        else {
+            panic!("scope pick should use endpoint control");
+        };
+        assert_eq!(kind, SCOPE_PICK_KIND);
+        assert_eq!(data, r#"{"mode":"hide"}"#);
     }
 
     #[test]

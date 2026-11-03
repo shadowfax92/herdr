@@ -107,6 +107,7 @@ Raw socket method names use dot notation:
 | Popup | `popup.close` |
 | Layout | `layout.export`, `layout.apply`, `layout.set_split_ratio` |
 | Agent | `agent.list`, `agent.get`, `agent.read`, `agent.explain`, `agent.send_keys`, `agent.prompt`, `agent.wait`, `agent.rename`, `agent.focus`, `agent.start`, `agent.view.set`, `agent.view.clear` |
+| Focus and hide | `scope.get`, `scope.set`, `scope.clear`, `scope.pick` |
 | Events | `events.subscribe`, `events.wait` |
 | Integrations | `integration.install`, `integration.uninstall` |
 | Plugins | `plugin.link`, `plugin.list`, `plugin.unlink`, `plugin.enable`, `plugin.disable`, `plugin.action.list`, `plugin.action.invoke`, `plugin.log.list`, `plugin.pane.open`, `plugin.pane.focus`, `plugin.pane.close` |
@@ -445,6 +446,92 @@ Clear unconditionally, or only when the named source still owns the view:
 
 A source mismatch leaves the active view unchanged. Set and clear responses use
 `type: "agent_view"` and report `active`, `source`, and optional `label`.
+
+## Focus and hide
+
+The local server owns one runtime scope that filters what the Herdr client shows
+across every connected machine. Focus lists the workspaces or tabs to show; hide
+lists the ones to drop. The scope applies to the Spaces and Agents panels,
+agent and workspace keys, and notifications. Explicit jumps such as
+`workspace.focus` and `agent.focus`, the tab bar, unread state, and agent
+detection are never filtered. The scope lives in server memory: it lasts until
+the local server restarts and is neither saved nor carried across a live
+handoff.
+
+A scope target names a machine and optionally a workspace and a tab:
+
+```json
+{"machine": "local", "workspace_label": "setup", "tab_label": "scratch"}
+```
+
+`machine` is `local`, a saved machine's label (matched case-insensitively) or
+endpoint key, or `*` for every machine. `workspace_id` and `tab_id` match
+exactly and survive renames; `workspace_label` and `tab_label` match exactly,
+case-sensitively, and match a recreated workspace again. When a target has both,
+the id wins. A target without a workspace covers its whole machine, and one
+without a tab covers its whole workspace. `config: true` marks hides seeded from
+`[ui.sidebar.agents].hidden_workspaces`.
+
+A tab is shown when no hide covers it. While focus is on and lists targets, a
+tab is shown only when a focus target covers it at least as specifically as any
+hide does, with machine below workspace below tab. Focusing `setup` while hiding
+`setup/scratch` shows `setup` without `scratch`, and focusing `ft` overrides a
+configured hide of `ft`.
+
+`scope.get` takes no params. `scope.set` replaces each field it is given,
+`focus_targets`, `focus_active`, or `hidden`, and leaves the others alone. It
+never toggles, so retrying a timed-out request is safe:
+
+```json
+{"id":"scope_focus","method":"scope.set","params":{"focus_targets":[{"machine":"local","workspace_label":"setup"}],"focus_active":true}}
+{"id":"scope_hide","method":"scope.set","params":{"hidden":[{"machine":"*","workspace_label":"ft","config":true},{"machine":"local","workspace_label":"admin"}]}}
+```
+
+For a `local` target with a label but no id, the server fills in the id when
+exactly one live workspace, or one tab in it, has that label. Other targets are
+stored as given. To add or remove one target, read the scope, change the list,
+and set it back.
+
+`scope.clear` takes no params. It empties focus and the runtime hides, then
+restores the hides from the current config. The server seeds those hides at
+startup, and `server.reload_config` applies only what changed in
+`hidden_workspaces`, so a configured workspace un-hidden at runtime stays shown
+until the config itself changes.
+
+`scope.get`, `scope.set`, and `scope.clear` return the whole scope and the
+server's verdict for each of its own tabs, so a plugin can filter its lists
+without reimplementing the rule:
+
+```json
+{
+  "id": "scope_get",
+  "result": {
+    "type": "scope",
+    "scope": {
+      "focus": {"active": true, "targets": [{"machine": "local", "workspace_id": "w1", "workspace_label": "setup"}]},
+      "hidden": [{"machine": "*", "workspace_label": "ft", "config": true}]
+    },
+    "local": {
+      "tabs": [
+        {"workspace_id": "w1", "tab_id": "w1:t1", "admitted": true},
+        {"workspace_id": "w2", "tab_id": "w2:t1", "admitted": false}
+      ]
+    }
+  }
+}
+```
+
+`scope.pick` opens the focus and hide picker in the attached client:
+
+```json
+{"id":"scope_pick","method":"scope.pick","params":{"mode":"hide"}}
+```
+
+`mode` is `focus` (the default) or `hide` and only chooses which mark `space`
+toggles. The request goes to the foreground client only and returns
+`type: "ok"`. With no client attached it fails with `no_client`. A client reads
+the scope, and honors `scope.pick`, only from its local server; scopes on
+remote servers are ignored.
 
 ## Plugin APIs
 

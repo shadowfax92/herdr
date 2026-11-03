@@ -36,6 +36,43 @@ impl HeadlessServer {
             return false;
         }
         let surface_active = client.shell_surface_active;
+        if matches!(
+            &request.method,
+            api::schema::Method::ScopeGet(_) | api::schema::Method::ScopeSet(_)
+        ) {
+            // The scope lives only on the Local server, and a client changes it
+            // while another machine's surface is active, which leaves this
+            // connection's surface inactive. Scope requests touch no surface or
+            // focus, so they skip the surface gate, the in-flight lease (a lease
+            // retired by an endpoint switch may still be held here) and the
+            // navigation bookkeeping, and are answered at once. The changed
+            // scope reaches every client through the render pass.
+            if self.shutting_down || self.host_shutdown_requested() {
+                let message = crate::server::client_commands::error_message(
+                    boot_id,
+                    request_id,
+                    "server_unavailable",
+                    "server is shutting down",
+                );
+                self.send_to_client(client_id, message);
+                return false;
+            }
+            let changes_ui = api::request_changes_ui(&request);
+            request.id = request_id.clone();
+            let response = self
+                .app
+                .handle_api_request_after_internal_events_drained(*request);
+            self.send_to_client(
+                client_id,
+                ServerMessage::ClientShellEndpointResponseChunk {
+                    boot_id,
+                    request_id,
+                    final_chunk: true,
+                    data: response.into_bytes(),
+                },
+            );
+            return changes_ui;
+        }
         if let api::schema::Method::ClientShellSurfaceSet(params) = &request.method {
             let Some((changed, projection_revision)) =
                 self.set_client_shell_surface_active(client_id, params.active)

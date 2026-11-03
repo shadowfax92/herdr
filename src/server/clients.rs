@@ -180,6 +180,10 @@ pub(crate) struct ClientConnection {
     pub(crate) shell_agent_completions: Option<crate::protocol::endpoint::EndpointAgentCompletions>,
     /// View policy paired with the last coherent shell replacement.
     pub(crate) shell_agent_view: Option<crate::api::schema::AgentViewSetParams>,
+    /// Focus/hide scope last projected to this shell. The render pass resends
+    /// `AppState.scope` whenever it differs, whether or not the surface is active,
+    /// so a client viewing another machine still filters by the current scope.
+    pub(crate) shell_scope: Option<crate::scope::ScopeState>,
     /// Monotonic shell replacement revision for this connection.
     pub(crate) shell_projection_revision: u64,
     /// Whether this shell is waiting for one ordered endpoint command response.
@@ -249,6 +253,7 @@ impl ClientConnection {
             shell_snapshot: None,
             shell_agent_completions: None,
             shell_agent_view: None,
+            shell_scope: None,
             shell_projection_revision: 0,
             shell_endpoint_command_in_flight: false,
             shell_endpoint_command_surface_revision: None,

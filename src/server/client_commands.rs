@@ -37,6 +37,10 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "pane.zoom",
     "product_announcement.dismiss",
     "release_notes.dismiss",
+    // Additive methods; the local client sends them to Local even while another
+    // machine is active (see `handle_client_shell_endpoint_request`).
+    "scope.get",
+    "scope.set",
     "server.reload_config",
     "tab.close",
     "tab.create",
@@ -296,6 +300,14 @@ mod tests {
         assert_eq!(
             actual.remove("pane.link.resolve").as_deref(),
             Some("f5e4a3e01453ae7b188f127ce951c12c20e0bebcc17cc364eeb6d1a01fd5bf81")
+        );
+        assert_eq!(
+            actual.remove("scope.get").as_deref(),
+            Some("c7513844898aae4e3eac67fddcdfe54e7624bcb7a6e538af59e325557d863c06")
+        );
+        assert_eq!(
+            actual.remove("scope.set").as_deref(),
+            Some("eec3a75f11dca73e109616f0f29d7ed9e8876eaeb5a4eddd005d5ccc7d9bd9ea")
         );
 
         assert_eq!(
