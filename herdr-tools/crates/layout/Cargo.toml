@@ -10,8 +10,8 @@ publish.workspace = true
 name = "tools_layout"
 path = "src/lib.rs"
 
-# The old plugin's own dependencies, already in Cargo.lock so the port needs no
-# lockfile change; drop any the port ends up not using.
+# The old plugin's own dependencies, minus toml_edit, which only its dropped
+# `install-menu` used.
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
@@ -21,7 +21,6 @@ fs4.workspace = true
 ratatui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-toml_edit.workspace = true
 
 [dev-dependencies]
 tools-core = { workspace = true, features = ["test-util"] }

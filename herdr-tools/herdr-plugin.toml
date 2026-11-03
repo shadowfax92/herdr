@@ -134,6 +134,9 @@ height = "85%"
 command = ["./bin/herdr-tools", "comment", "review-popup"]
 
 # --- layout ---
+# `open-grid` opens the `layout-grid` popup sized by `[popup.size].layout-grid`
+# (else 80x24 below). A foreground menu item can host the same dialog with
+# `herdr-tools layout grid-dialog --pane "$HERDR_MENU_SOURCE_PANE_ID"`.
 
 [[actions]]
 id = "layout-split-left"
