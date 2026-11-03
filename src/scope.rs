@@ -24,9 +24,6 @@
 //!
 //! Visibility is presentation only: out-of-scope agents keep their state, and
 //! an explicit jump to an out-of-scope pane still works.
-// Skeleton: the server, the client gates and the picker call these as their
-// tickets land; the integration removes this allow.
-#![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 

@@ -4,9 +4,6 @@
 //! applies to every endpoint's rows, keys and notifications. Remote servers'
 //! scopes are never read: the owner's local server is the one place focus and
 //! hide live.
-// Skeleton: the projection decoder, the surface gates and the picker call
-// these as their tickets land.
-#![allow(dead_code)]
 
 use std::borrow::Cow;
 
