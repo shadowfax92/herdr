@@ -1,0 +1,55 @@
+# Herdr Jump's pickers. Each [[picker]] is one popup: a source of items, the
+# shared fuzzy matcher, a row style, and what Enter does.
+#
+# To add a picker (no Rust needed):
+#   1. Copy the "paths" block below, give it a new id, and point `command` at
+#      any program that prints one item per line.
+#   2. Add a matching [[actions]] block to herdr-plugin.toml:
+#        id = "<id>", command = ["./target/release/herdr-jump", "open", "<id>"]
+#   3. Rebuild (cargo build --release --locked), then bind its `key`:
+#        herdr plugin action invoke shadowfax.jump.install-keybindings
+#
+# Fields:
+#   id       Picker name; also the manifest action id unless `action` says otherwise.
+#   title    Popup heading.
+#   key      Herdr shortcut that install-keybindings binds to this picker. To
+#            change it, edit it here and rerun install-keybindings: the old
+#            key's binding moves to the new one.
+#   description  Optional text for that shortcut in Herdr's key help (default: title).
+#   source   "panes": the built-in pane navigator (only the panes picker uses it).
+#   command  argv, run without a shell in the directory of the pane you came from.
+#            Each output line is one item, in output order (ties keep that order).
+#   kind     "text" (default) or "path": paths show ~ for $HOME, match the last
+#            directory first, become absolute, and are typed shell-quoted if needed.
+#   enter    What Enter does with the selected item, in order:
+#            "paste" types it into the pane you came from (never presses Enter);
+#            "copy" puts it on the clipboard.
+#   empty    Optional message when the command prints nothing.
+#   multi    true lets Tab (mark, move down) and Shift-Tab (mark, move up) pick
+#            several items; marks survive searching. Enter then delivers every
+#            mark in the order marked, joined by spaces (or the current item if
+#            nothing is marked).
+#   width    Optional popup width in terminal columns (default 110). On a
+#            narrower terminal the popup shrinks to keep 2 columns free on each
+#            side.
+
+[[picker]]
+id = "panes"
+action = "open"
+title = "Jump to session"
+key = "alt+p"
+description = "Search all open panes with Jump"
+source = "panes"
+# 20% wider than the default, so the Name column doesn't come out of Task.
+width = 132
+
+[[picker]]
+id = "paths"
+title = "Paths"
+key = "alt+n"
+description = "Paste a zoxide path with Jump"
+command = ["zoxide", "query", "--list"]
+kind = "path"
+enter = ["paste", "copy"]
+multi = true
+empty = "zoxide has no directories yet. cd around and they appear here."
