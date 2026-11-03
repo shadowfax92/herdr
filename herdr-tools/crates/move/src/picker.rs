@@ -14,7 +14,9 @@ pub fn run_from_environment() -> Result<()> {
         let source_pane_id = std::env::var(SOURCE_PANE_ENV)
             .with_context(|| format!("{SOURCE_PANE_ENV} is not set"))?;
         let topology = herdr.topology()?;
-        let mut app = App::new(topology, source_pane_id)?;
+        // Read after the topology, so its tabs most likely have verdicts; a tab the scope
+        // report misses is admitted.
+        let mut app = App::new(topology, source_pane_id)?.with_scope(herdr.scope_filter());
         let mover = Mover::new(herdr.clone());
         ratatui::run(|terminal| run_picker(terminal, &mut app, &mover, &herdr))
             .context("Move picker failed")

@@ -57,14 +57,20 @@ herdr-tools never stores or judges scope. It only does two things with it:
   the owner's client to flip focus (`scope.toggle`). The menu's server can be
   a remote machine's, whose scope no client applies, so the menu never reads
   or sets the scope itself. See `crates/menu/README.md`.
-- **Filters by it.** Find's pane navigator drops panes whose tab Herdr judges
-  out of scope, from `scope.get`'s per-tab verdict ([`scope`](#scope-scopers)).
+- **Filters by it.** Every list of panes, tabs or workspaces to pick from drops
+  what Herdr judges out of scope, from `scope.get`'s per-tab verdict
+  ([`scope`](#scope-scopers)): Find's pane navigator, and Move's source,
+  destination and kill-target lists. Move keeps the tab it was opened from
+  (and its workspace) listed, since that is on screen. On a remote machine's
+  pane the verdict follows the attached client's scope once that server
+  supports `scope.mirror`; an older one judges by its own config hides.
 
-Everything else stays unscoped on purpose. Move and layout list hidden
-workspaces as destinations, because moving into one is legitimate. History
-captures only the pane it was invoked from, an explicit action like a jump,
-so it has no list to filter. On a Herdr without `scope.get` nothing is
-filtered and nothing is said; the menu's scope rows read "(unavailable)".
+The rest has no list to filter. Layout, comment, history, scratch and the
+menu's fork rows act on the pane or tab they were invoked from, an explicit
+action like a jump; scratch's cleanup reaps by Herdr's full pane list, so a
+hidden pane's scratch session is never reaped. On a Herdr without `scope.get`
+nothing is filtered and nothing is said; the menu's scope rows read
+"(unavailable)".
 
 ### Directory layout
 

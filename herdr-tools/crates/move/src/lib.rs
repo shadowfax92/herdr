@@ -18,6 +18,13 @@
 //!
 //! Moves and merges run inside the popup ([`move_ops`]); a confirmed kill is handed to a
 //! detached executor ([`kill_ops`]) because it may close the popup's own tab.
+//!
+//! Every list the picker offers (sources, destinations, kill targets) follows Herdr's
+//! focus/hide scope, read once per popup as the server's per-tab verdict
+//! ([`tools_core::ScopeFilter`]). The tab the popup was opened from and its workspace stay
+//! listed whatever the scope says, since the user is looking at them. Validation, kill
+//! plans and the review's "what else dies" count use the full topology: scope narrows what
+//! can be picked, never what a picked target contains.
 
 use std::path::Path;
 

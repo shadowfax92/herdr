@@ -5,6 +5,8 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
+use tools_core::ScopeFilter;
+
 use crate::fuzzy;
 use crate::herdr::{PaneInfo, TabInfo, Topology, WorkspaceInfo};
 use crate::kill::{KillPlan, KillScope};
@@ -127,7 +129,10 @@ struct Candidate {
 
 #[derive(Clone, Debug)]
 pub struct App {
+    /// Everything Herdr reported, unfiltered: validation and kill plans need all of it.
     topology: Topology,
+    /// Which tabs the lists may offer (see [`App::with_scope`]). Admits everything by default.
+    scope: ScopeFilter,
     invoked_pane_id: String,
     invoked_tab_id: String,
     invoked_workspace_id: String,
@@ -151,6 +156,7 @@ impl App {
         let invoked_workspace_id = invoked.workspace_id.clone();
         Ok(Self {
             topology,
+            scope: ScopeFilter::default(),
             invoked_pane_id,
             invoked_tab_id,
             invoked_workspace_id,
@@ -161,6 +167,14 @@ impl App {
             failure: None,
             working: None,
         })
+    }
+
+    /// Limits every source, destination and kill-target list to Herdr's focus/hide scope.
+    /// The server judged it (`scope.get`), so Move never reimplements the rule; a default
+    /// filter (an older Herdr, no socket) lists everything, as before scope existed.
+    pub fn with_scope(mut self, scope: ScopeFilter) -> Self {
+        self.scope = scope;
+        self
     }
 
     pub fn handle_event(&mut self, event: Event) -> InputOutcome {
@@ -991,7 +1005,13 @@ impl App {
         let invoked_workspace = invoked
             .map(|pane| pane.workspace_id.as_str())
             .unwrap_or_default();
-        let mut panes = self.topology.panes.clone();
+        let mut panes = self
+            .topology
+            .panes
+            .iter()
+            .filter(|pane| self.lists_tab(&pane.tab_id))
+            .cloned()
+            .collect::<Vec<_>>();
         panes.sort_by_key(|pane| {
             let scope = if pane.pane_id == self.invoked_pane_id {
                 0
@@ -1059,7 +1079,13 @@ impl App {
             .find(|tab| tab.tab_id == self.invoked_tab_id)
             .map(|tab| tab.workspace_id.as_str())
             .unwrap_or_default();
-        let mut tabs = self.topology.tabs.clone();
+        let mut tabs = self
+            .topology
+            .tabs
+            .iter()
+            .filter(|tab| self.lists_tab(&tab.tab_id))
+            .cloned()
+            .collect::<Vec<_>>();
         tabs.sort_by_key(|tab| {
             let scope = if tab.tab_id == self.invoked_tab_id {
                 0
@@ -1099,7 +1125,13 @@ impl App {
     }
 
     fn workspace_source_candidates(&self) -> Vec<Candidate> {
-        let mut workspaces = self.topology.workspaces.clone();
+        let mut workspaces = self
+            .topology
+            .workspaces
+            .iter()
+            .filter(|workspace| self.lists_workspace(&workspace.workspace_id))
+            .cloned()
+            .collect::<Vec<_>>();
         workspaces.sort_by_key(|workspace| {
             (
                 usize::from(workspace.workspace_id != self.invoked_workspace_id),
@@ -1162,7 +1194,9 @@ impl App {
             .topology
             .tabs
             .iter()
-            .filter(|tab| !source_tabs.contains(&tab.tab_id.as_str()))
+            .filter(|tab| {
+                !source_tabs.contains(&tab.tab_id.as_str()) && self.lists_tab(&tab.tab_id)
+            })
             .cloned()
             .collect::<Vec<_>>();
         tabs.sort_by_key(|tab| {
@@ -1197,7 +1231,13 @@ impl App {
             .as_deref()
             .map(|name| format!("create “{name}”"))
             .unwrap_or_else(|| "type to name it".into());
-        let mut workspaces = self.topology.workspaces.clone();
+        let mut workspaces = self
+            .topology
+            .workspaces
+            .iter()
+            .filter(|workspace| self.lists_workspace(&workspace.workspace_id))
+            .cloned()
+            .collect::<Vec<_>>();
         workspaces.sort_by_key(|workspace| {
             (
                 usize::from(!source_workspaces.contains(&workspace.workspace_id.as_str())),
@@ -1240,7 +1280,10 @@ impl App {
             .topology
             .workspaces
             .iter()
-            .filter(|workspace| !source_workspaces.contains(&workspace.workspace_id.as_str()))
+            .filter(|workspace| {
+                !source_workspaces.contains(&workspace.workspace_id.as_str())
+                    && self.lists_workspace(&workspace.workspace_id)
+            })
             .cloned()
             .collect::<Vec<_>>();
         workspaces.sort_by_key(|workspace| workspace.number);
@@ -1291,7 +1334,10 @@ impl App {
             .topology
             .workspaces
             .iter()
-            .filter(|workspace| workspace.workspace_id != source.workspace_id)
+            .filter(|workspace| {
+                workspace.workspace_id != source.workspace_id
+                    && self.lists_workspace(&workspace.workspace_id)
+            })
             .cloned()
             .collect::<Vec<_>>();
         workspaces.sort_by_key(|workspace| workspace.number);
@@ -1317,6 +1363,27 @@ impl App {
                 }
             })
             .collect()
+    }
+
+    /// Whether a tab (and so its panes) may be listed: in scope, or the tab Move was opened
+    /// from, which is on screen whatever the scope says.
+    fn lists_tab(&self, tab_id: &str) -> bool {
+        tab_id == self.invoked_tab_id || self.scope.admits_tab(tab_id)
+    }
+
+    /// A workspace is listed while any of its tabs is, the rule Herdr's own rows follow, and
+    /// always when it holds the invoked tab. One with no known tabs fails open and is listed.
+    fn lists_workspace(&self, workspace_id: &str) -> bool {
+        if workspace_id == self.invoked_workspace_id || self.scope.admits_everything() {
+            return true;
+        }
+        let mut tabs = self
+            .topology
+            .tabs
+            .iter()
+            .filter(|tab| tab.workspace_id == workspace_id)
+            .peekable();
+        tabs.peek().is_none() || tabs.any(|tab| self.lists_tab(&tab.tab_id))
     }
 
     fn pane_label(&self, pane: &PaneInfo) -> String {
@@ -2116,5 +2183,191 @@ mod tests {
 
         assert_eq!(app.handle_key(key(KeyCode::Enter)), InputOutcome::Continue);
         assert!(!app.heading().starts_with("Move"));
+    }
+
+    /// The fixture plus `extra` (w3), a workspace whose one tab is in scope.
+    fn scoped_topology() -> Topology {
+        let mut topology = topology();
+        topology.workspaces.push(WorkspaceInfo {
+            workspace_id: "w3".into(),
+            label: "extra".into(),
+            number: 3,
+            tab_count: 1,
+            pane_count: 1,
+            focused: false,
+            worktree: None,
+        });
+        topology.tabs.push(TabInfo {
+            tab_id: "w3:t1".into(),
+            workspace_id: "w3".into(),
+            label: "ops".into(),
+            number: 1,
+            pane_count: 1,
+            focused: false,
+        });
+        let mut ops = topology.panes[3].clone();
+        ops.pane_id = "w3:p1".into();
+        ops.tab_id = "w3:t1".into();
+        ops.workspace_id = "w3".into();
+        ops.label = Some("ops-pane".into());
+        topology.panes.push(ops);
+        topology
+    }
+
+    /// The scope a live Herdr reports through `scope.get`, read the way the picker reads it:
+    /// `source/logs` and all of `target` are out.
+    fn scope_from_herdr(admitted: &[(&str, bool)]) -> ScopeFilter {
+        let tabs = admitted
+            .iter()
+            .map(|(tab_id, admitted)| {
+                serde_json::json!({"workspace_id": tab_id.split(':').next().unwrap(),
+                                   "tab_id": tab_id, "admitted": admitted})
+            })
+            .collect::<Vec<_>>();
+        let (_dir, host) = tools_core::testing::fake_host(move |request| {
+            assert_eq!(request["method"], "scope.get");
+            tools_core::testing::ok(
+                &request,
+                serde_json::json!({"type": "scope", "scope": {}, "local": {"tabs": tabs}}),
+            )
+        });
+        crate::herdr::Herdr::new(host).scope_filter()
+    }
+
+    const LOGS_AND_TARGET_OUT: &[(&str, bool)] = &[
+        ("w1:t1", true),
+        ("w1:t2", false),
+        ("w2:t1", false),
+        ("w3:t1", true),
+    ];
+
+    #[test]
+    fn every_source_list_follows_herdrs_scope() {
+        let scope = scope_from_herdr(LOGS_AND_TARGET_OUT);
+        let mut app = App::new(scoped_topology(), "w1:p1")
+            .unwrap()
+            .with_scope(scope.clone());
+        app.handle_key(key(KeyCode::Char('p')));
+        assert_eq!(titles(&app), ["focused-pane", "other-pane", "ops-pane"]);
+
+        let mut app = App::new(scoped_topology(), "w1:p1")
+            .unwrap()
+            .with_scope(scope.clone());
+        app.handle_key(key(KeyCode::Char('t')));
+        assert_eq!(titles(&app), ["source / main", "extra / ops"]);
+
+        let mut app = App::new(scoped_topology(), "w1:p1")
+            .unwrap()
+            .with_scope(scope.clone());
+        app.handle_key(key(KeyCode::Char('w')));
+        assert_eq!(titles(&app), ["source", "extra"]);
+
+        // Kill pickers are the same lists, so nothing out of scope can be checked for a kill.
+        for (kill, expected) in [
+            ('P', vec!["focused-pane", "other-pane", "ops-pane"]),
+            ('T', vec!["source / main", "extra / ops"]),
+            ('W', vec!["source", "extra"]),
+        ] {
+            let mut app = App::new(scoped_topology(), "w1:p1")
+                .unwrap()
+                .with_scope(scope.clone());
+            app.handle_key(shift(kill));
+            assert_eq!(titles(&app), expected, "kill {kill}");
+        }
+    }
+
+    #[test]
+    fn every_destination_list_follows_herdrs_scope() {
+        let scope = scope_from_herdr(LOGS_AND_TARGET_OUT);
+        let mut app = App::new(scoped_topology(), "w1:p1")
+            .unwrap()
+            .with_scope(scope.clone());
+        app.handle_key(key(KeyCode::Char('p')));
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(
+            titles(&app),
+            [
+                "extra / ops",
+                "New tab in source",
+                "New tab in extra",
+                "New workspace"
+            ]
+        );
+
+        let mut app = App::new(scoped_topology(), "w1:p1")
+            .unwrap()
+            .with_scope(scope.clone());
+        app.handle_key(key(KeyCode::Char('t')));
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(titles(&app), ["extra", "New workspace"]);
+
+        let mut app = App::new(scoped_topology(), "w1:p1")
+            .unwrap()
+            .with_scope(scope);
+        app.handle_key(key(KeyCode::Char('w')));
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(titles(&app), ["extra"]);
+    }
+
+    #[test]
+    fn the_tab_move_was_opened_from_stays_listed_out_of_scope() {
+        // Focus elsewhere, then an explicit jump here: the user is looking at this tab.
+        let scope = scope_from_herdr(&[
+            ("w1:t1", false),
+            ("w1:t2", false),
+            ("w2:t1", false),
+            ("w3:t1", true),
+        ]);
+        let mut app = App::new(scoped_topology(), "w1:p1")
+            .unwrap()
+            .with_scope(scope.clone());
+        app.handle_key(key(KeyCode::Char('p')));
+        assert_eq!(titles(&app), ["focused-pane", "other-pane", "ops-pane"]);
+
+        let mut app = App::new(scoped_topology(), "w1:p1")
+            .unwrap()
+            .with_scope(scope);
+        app.handle_key(key(KeyCode::Char('w')));
+        assert_eq!(titles(&app), ["source", "extra"]);
+    }
+
+    #[test]
+    fn a_herdr_without_scope_lists_everything() {
+        let (_dir, host) = tools_core::testing::fake_host(|request| {
+            // Herdr 0.9.5's refusal of a method it does not know.
+            serde_json::json!({"id": request["id"], "error": {"code": "invalid_request",
+                "message": "invalid request: unknown variant `scope.get`, expected one of `ping`"}})
+        });
+        let scope = crate::herdr::Herdr::new(host).scope_filter();
+        assert!(scope.admits_everything());
+        let mut app = App::new(scoped_topology(), "w1:p1")
+            .unwrap()
+            .with_scope(scope);
+        app.handle_key(key(KeyCode::Char('p')));
+        assert_eq!(
+            titles(&app),
+            [
+                "focused-pane",
+                "other-pane",
+                "logger",
+                "api-server",
+                "ops-pane"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_kill_review_still_counts_what_scope_hides_inside_a_listed_workspace() {
+        // `source/logs` is out of scope, but killing `source` closes it too: the review must
+        // say so, so it counts from the full topology.
+        let mut app = App::new(scoped_topology(), "w1:p1")
+            .unwrap()
+            .with_scope(scope_from_herdr(LOGS_AND_TARGET_OUT));
+        app.handle_key(shift('W'));
+        app.handle_key(key(KeyCode::Enter));
+        assert_eq!(titles(&app), ["source"]);
+        let notice = app.notice().unwrap();
+        assert!(notice.contains("2 tabs"), "{notice}");
+        assert!(notice.contains("3 panes"), "{notice}");
     }
 }

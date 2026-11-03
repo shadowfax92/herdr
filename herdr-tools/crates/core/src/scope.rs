@@ -4,11 +4,14 @@
 //! `ScopeState`, and the client applies it to every machine. A plugin only sees
 //! the local server, so it never judges scope itself. `scope.get` returns the
 //! server's verdict for each local tab (`local.tabs[].admitted`), and popups
-//! that list local panes (find) drop the panes whose tab is out of scope.
+//! that list panes, tabs or workspaces to pick from (find, move) drop what is out
+//! of scope.
 //!
 //! ```text
 //!  find catalog ── session.snapshot ──▶ panes ─┐
 //!               ── scope.get ─▶ local.tabs ────┴─▶ ScopeFilter::admits_tab ─▶ rows
+//!  move picker ─── pane/tab/workspace list ──┐
+//!               ── scope.get ─▶ local.tabs ──┴─▶ ScopeFilter ─▶ source/destination rows
 //!  menu ─────────── scope.get ─▶ Some / None (whether its scope rows are usable)
 //! ```
 //!

@@ -9,7 +9,7 @@ use std::path::Path;
 
 use anyhow::{bail, Result};
 use serde::Deserialize;
-use tools_core::{Config, Envelope, Host, HostError, Invocation};
+use tools_core::{Config, Envelope, Host, HostError, Invocation, ScopeFilter};
 
 use crate::layout::{LayoutSnapshot, SplitDirection};
 use crate::{NOTIFICATION_TITLE, PICKER_ENTRYPOINT, POPUP_KEY};
@@ -129,6 +129,13 @@ impl Herdr {
             tabs: tabs.result.tabs,
             panes: panes.result.panes,
         })
+    }
+
+    /// Which tabs the picker may list, as Herdr's server judges focus and hide (`scope.get`,
+    /// over the socket). Fails open: no socket, a Herdr without scope or a failed read
+    /// admits every tab, so scope can never cost a working picker.
+    pub fn scope_filter(&self) -> ScopeFilter {
+        self.host.scope_filter()
     }
 
     pub fn pane(&self, pane_id: &str) -> Result<PaneInfo> {
