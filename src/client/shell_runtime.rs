@@ -30,9 +30,19 @@ pub(super) fn dispatch_client_shell_actions(
                                     request.method,
                                     crate::api::schema::Method::WorkspaceFocus(_)
                                 ))))
-                        || is_local_scope_request(&endpoint_id, &request.method)
+                        || is_scope_lane_request(&endpoint_id, &request.method)
                 }) {
-                    endpoint_commands.enqueue(endpoint_id, connection.generation, boot_id, request);
+                    let superseded = endpoint_commands.enqueue(
+                        endpoint_id,
+                        connection.generation,
+                        boot_id,
+                        request,
+                    );
+                    if let Some(shell) = shell.as_deref_mut() {
+                        for request_id in superseded {
+                            repaint |= shell.cancel_endpoint_request(&request_id);
+                        }
+                    }
                 } else if let Some(shell) = shell.as_deref_mut() {
                     repaint |= shell.cancel_endpoint_request(&request.id);
                 }
@@ -80,7 +90,7 @@ pub(super) fn dispatch_client_shell_actions(
             }
         }
     }
-    repaint |= pump_local_scope_lane(endpoint_commands, endpoints, shell);
+    repaint |= pump_scope_lanes(endpoint_commands, endpoints, shell);
     Ok((replay_mouse, repaint))
 }
 
@@ -110,37 +120,44 @@ pub(super) fn settle_completed_command(
     }
 }
 
-/// Sends Local's next scope write while another endpoint is active. Local's lane
-/// then holds only scope writes: an activation retires everything else on it, and
-/// only `is_local_scope_request` enqueues into an inactive Local. The Local server
-/// answers them with its surface off. Returns whether a cancellation needs a frame.
-pub(super) fn pump_local_scope_lane(
+/// Sends the next scope request on every lane but the active one: Local's scope
+/// writes while another endpoint is active, and each remote server's scope
+/// mirror while it is not presented. Those lanes hold only scope requests: an
+/// activation retires everything else on them, and only `is_scope_lane_request`
+/// enqueues into an inactive lane. The servers answer them with their surface
+/// off. Returns whether a cancellation needs a frame.
+pub(super) fn pump_scope_lanes(
     endpoint_commands: &mut endpoint_commands::EndpointCommands,
     endpoints: &mut endpoint::EndpointRegistry,
-    shell: Option<&mut shell::ClientShellState>,
+    mut shell: Option<&mut shell::ClientShellState>,
 ) -> bool {
-    if endpoints.active_id().is_local() {
-        return false;
-    }
-    let cancelled = endpoint_commands.send_next(&endpoint::ClientEndpointId::Local, endpoints);
-    let Some(shell) = shell else {
-        return false;
-    };
+    let active = endpoints.active_id().clone();
     let mut repaint = false;
-    for request_id in cancelled {
-        repaint |= shell.cancel_endpoint_request(&request_id);
+    for endpoint_id in endpoint_commands.inactive_lanes_with_queued(&active) {
+        let cancelled = endpoint_commands.send_next(&endpoint_id, endpoints);
+        if let Some(shell) = shell.as_deref_mut() {
+            for request_id in cancelled {
+                repaint |= shell.cancel_endpoint_request(&request_id);
+            }
+        }
     }
     repaint
 }
 
-/// Focus and hide live only on the Local server, so its `scope.set` is the one
-/// request the shell sends to an endpoint other than the active one (see
-/// `ClientShellState::request_scope_set`).
-fn is_local_scope_request(
+/// The requests the shell sends to an endpoint other than the active one. Focus
+/// and hide live only on the Local server, so its `scope.set` goes there
+/// (`ClientShellState::request_scope_set`); and every remote server gets this
+/// client's scope as `scope.mirror` (`ClientShellState::sync_scope_mirrors`),
+/// so its plugins filter as the panels do.
+fn is_scope_lane_request(
     endpoint_id: &endpoint::ClientEndpointId,
     method: &crate::api::schema::Method,
 ) -> bool {
-    endpoint_id.is_local() && matches!(method, crate::api::schema::Method::ScopeSet(_))
+    match method {
+        crate::api::schema::Method::ScopeSet(_) => endpoint_id.is_local(),
+        crate::api::schema::Method::ScopeMirror(_) => !endpoint_id.is_local(),
+        _ => false,
+    }
 }
 
 /// Applies one scope control to the shell and returns the input outcome to
@@ -608,9 +625,10 @@ pub(super) fn complete_endpoint_activation(
             }
         }
     }
-    // The retired source lane kept its scope writes; Local takes them now, even
-    // while the newly active machine (or a successor handoff) owns the surface.
-    pump_local_scope_lane(endpoint_commands, endpoints, state.shell.as_mut());
+    // The retired source lane kept its scope requests; Local's writes and remote
+    // mirrors leave now, even while the newly active machine (or a successor
+    // handoff) owns the surface.
+    pump_scope_lanes(endpoint_commands, endpoints, state.shell.as_mut());
     let (cleanup, frame) = {
         let shell = state.shell.as_mut().expect("checked client shell");
         (
@@ -1429,7 +1447,7 @@ mod tests {
             assert!(local_sent.lock().unwrap().is_empty());
 
             switch_to_the_remote(&mut state, &mut endpoints, &mut endpoint_commands);
-            pump_local_scope_lane(&mut endpoint_commands, &mut endpoints, state.shell.as_mut());
+            pump_scope_lanes(&mut endpoint_commands, &mut endpoints, state.shell.as_mut());
 
             assert_eq!(scope_sets(&local_sent), [params]);
             assert_eq!(state.shell.as_ref().unwrap().endpoint_notice_text(), None);
@@ -1622,6 +1640,239 @@ mod tests {
                 }),
             );
             assert_eq!(toggled(shell).1, Some(true));
+        }
+
+        mod mirror {
+            //! `scope.mirror` rides each remote server's own lane whichever
+            //! machine is presented, survives machine switches, and a newer
+            //! mirror supersedes one still queued.
+            use super::*;
+            use crate::scope::ScopeMirrorParams;
+
+            /// Local presented; studio online beside it with its surface off,
+            /// advertising `scope.mirror`. The shell has already queued studio's
+            /// first mirror (the config scope).
+            fn presenting_local_beside_studio() -> (
+                ClientState,
+                endpoint::EndpointRegistry,
+                Sent,
+                endpoint_commands::EndpointCommands,
+            ) {
+                let negotiation = |methods: &[&str]| {
+                    endpoint::EndpointNegotiation::new(
+                        methods.iter().map(|method| method.to_string()).collect(),
+                        Vec::new(),
+                    )
+                };
+                let local_sent = Sent::default();
+                let remote_sent = Sent::default();
+                let mut endpoints = endpoint::EndpointRegistry::new(
+                    Capture(local_sent),
+                    1,
+                    negotiation(&["scope.set"]),
+                );
+                endpoints.insert(
+                    remote(),
+                    Capture(remote_sent.clone()),
+                    1,
+                    negotiation(&["scope.mirror"]),
+                    false,
+                );
+                assert!(endpoints.active_id().is_local());
+
+                let mut state = ClientState::test_new();
+                let shell = state.shell.as_mut().unwrap();
+                shell.set_endpoint_catalog(&[endpoint::SavedSshEndpoint {
+                    id: endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef").unwrap(),
+                    label: "studio".into(),
+                    target: "dev@studio.example".into(),
+                    session: "agents".into(),
+                    enabled: true,
+                }]);
+                shell.set_endpoint_methods_for(&remote(), Some(vec!["scope.mirror".into()]));
+                let fixture = || -> crate::protocol::ClientShellSnapshot {
+                    serde_json::from_str(include_str!(concat!(
+                        env!("CARGO_MANIFEST_DIR"),
+                        "/tests/fixtures/endpoint-snapshot-v1.json"
+                    )))
+                    .unwrap()
+                };
+                shell.set_snapshot(Box::new(fixture()));
+                shell.set_endpoint_status(
+                    &endpoint::ClientEndpointId::Local,
+                    endpoint::ClientEndpointStatus::Online,
+                );
+                let mut studio = fixture();
+                studio.boot_id = "studio-boot".into();
+                shell.cache_endpoint_snapshot_inactive_for_generation(
+                    &remote(),
+                    1,
+                    Box::new(studio),
+                );
+                shell.set_endpoint_status(&remote(), endpoint::ClientEndpointStatus::Online);
+                (
+                    state,
+                    endpoints,
+                    remote_sent,
+                    endpoint_commands::EndpointCommands::default(),
+                )
+            }
+
+            fn dispatch(
+                state: &mut ClientState,
+                endpoints: &mut endpoint::EndpointRegistry,
+                endpoint_commands: &mut endpoint_commands::EndpointCommands,
+            ) {
+                dispatch_client_shell_actions(
+                    Vec::new(),
+                    endpoint_commands,
+                    endpoints,
+                    state.shell.as_mut(),
+                    &mut Vec::new(),
+                    &mut None,
+                )
+                .unwrap();
+            }
+
+            /// `(request id, params)` of every mirror studio was sent.
+            fn mirrors(sent: &Sent) -> Vec<(String, ScopeMirrorParams)> {
+                sent.lock()
+                    .unwrap()
+                    .iter()
+                    .map(|message| {
+                        let ClientMessage::ClientShellEndpointRequest { boot_id, request } =
+                            message
+                        else {
+                            panic!("expected an endpoint request, got {message:?}");
+                        };
+                        assert_eq!(boot_id, "studio-boot");
+                        let request: crate::api::schema::Request =
+                            serde_json::from_str(request).unwrap();
+                        let crate::api::schema::Method::ScopeMirror(params) = request.method else {
+                            panic!("expected scope.mirror, got {:?}", request.method);
+                        };
+                        (request.id, params)
+                    })
+                    .collect()
+            }
+
+            fn project(state: &mut ClientState, scope: ScopeState) {
+                route_endpoint_scope_control(
+                    state.shell.as_mut().unwrap(),
+                    &endpoint::ClientEndpointId::Local,
+                    projection(scope),
+                )
+                .expect("Local projection applies");
+            }
+
+            /// Answers studio's in-flight mirror the way the client loop does.
+            fn answer(
+                state: &mut ClientState,
+                endpoint_commands: &mut endpoint_commands::EndpointCommands,
+                request_id: &str,
+            ) {
+                let answer = serde_json::to_vec(&crate::api::schema::SuccessResponse {
+                    id: request_id.into(),
+                    result: crate::api::schema::ResponseResult::Ok {},
+                })
+                .unwrap();
+                let completed = endpoint_commands
+                    .receive_chunk(&remote(), 1, "studio-boot", request_id, true, answer)
+                    .unwrap()
+                    .expect("the mirror completes");
+                let (repaint, actions) =
+                    settle_completed_command(state.shell.as_mut().unwrap(), completed, 1);
+                assert!(!repaint && actions.is_empty());
+            }
+
+            fn switch(
+                state: &mut ClientState,
+                endpoints: &mut endpoint::EndpointRegistry,
+                endpoint_commands: &mut endpoint_commands::EndpointCommands,
+                to: &endpoint::ClientEndpointId,
+            ) {
+                let mut retired = endpoint_commands.retire_lane(&remote());
+                retired.extend(endpoint_commands.retire_lane(&endpoint::ClientEndpointId::Local));
+                assert!(retired.is_empty(), "scope requests survive: {retired:?}");
+                let from = endpoints.active_id().clone();
+                assert!(endpoints.set_surface_active(to, true));
+                assert!(endpoints.set_active(to));
+                assert!(endpoints.set_surface_active(&from, false));
+                pump_scope_lanes(endpoint_commands, endpoints, state.shell.as_mut());
+            }
+
+            #[test]
+            fn a_mirror_rides_an_inactive_remotes_lane_and_survives_machine_switches() {
+                let (mut state, mut endpoints, remote_sent, mut endpoint_commands) =
+                    presenting_local_beside_studio();
+                // Studio is not presented, yet its first mirror leaves at once.
+                dispatch(&mut state, &mut endpoints, &mut endpoint_commands);
+                let sent = mirrors(&remote_sent);
+                assert_eq!(sent.len(), 1);
+                assert_eq!(sent[0].1.machine_label, "studio");
+                assert_eq!(sent[0].1.machine, remote().storage_key());
+
+                // A scope change queues behind the mirror still in flight.
+                project(&mut state, focused("studio:main"));
+                dispatch(&mut state, &mut endpoints, &mut endpoint_commands);
+                assert_eq!(mirrors(&remote_sent).len(), 1);
+
+                // Jumping to studio retires both lanes; the mirrors stay.
+                switch(
+                    &mut state,
+                    &mut endpoints,
+                    &mut endpoint_commands,
+                    &remote(),
+                );
+                answer(&mut state, &mut endpoint_commands, &sent[0].0);
+                dispatch(&mut state, &mut endpoints, &mut endpoint_commands);
+                let sent = mirrors(&remote_sent);
+                assert_eq!(sent.len(), 2);
+                assert_eq!(sent[1].1.scope, Some(focused("studio:main")));
+
+                // Back on Local, studio's lane is inactive again and still takes
+                // the next mirror.
+                answer(&mut state, &mut endpoint_commands, &sent[1].0);
+                switch(
+                    &mut state,
+                    &mut endpoints,
+                    &mut endpoint_commands,
+                    &endpoint::ClientEndpointId::Local,
+                );
+                project(&mut state, focused("studio:ops"));
+                dispatch(&mut state, &mut endpoints, &mut endpoint_commands);
+                let sent = mirrors(&remote_sent);
+                assert_eq!(sent.len(), 3);
+                assert_eq!(sent[2].1.scope, Some(focused("studio:ops")));
+                assert_eq!(state.shell.as_ref().unwrap().endpoint_notice_text(), None);
+            }
+
+            #[test]
+            fn a_newer_mirror_supersedes_one_still_queued_on_the_lane() {
+                let (mut state, mut endpoints, remote_sent, mut endpoint_commands) =
+                    presenting_local_beside_studio();
+                dispatch(&mut state, &mut endpoints, &mut endpoint_commands);
+                let first = mirrors(&remote_sent).remove(0).0;
+
+                project(&mut state, focused("studio:main"));
+                dispatch(&mut state, &mut endpoints, &mut endpoint_commands);
+                project(&mut state, focused("studio:ops"));
+                dispatch(&mut state, &mut endpoints, &mut endpoint_commands);
+                // Both newer mirrors reached the lane behind the first; only the
+                // newest is left there.
+                assert_eq!(mirrors(&remote_sent).len(), 1);
+
+                answer(&mut state, &mut endpoint_commands, &first);
+                dispatch(&mut state, &mut endpoints, &mut endpoint_commands);
+                let scopes: Vec<_> = mirrors(&remote_sent)
+                    .into_iter()
+                    .skip(1)
+                    .map(|(_, params)| params.scope)
+                    .collect();
+                assert_eq!(scopes, [Some(focused("studio:ops"))]);
+                // The superseded one settled silently.
+                assert_eq!(state.shell.as_ref().unwrap().endpoint_notice_text(), None);
+            }
         }
     }
 }

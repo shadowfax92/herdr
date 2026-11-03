@@ -24,17 +24,26 @@ struct InFlightCommand {
     request_id: String,
     response: Vec<u8>,
     sent_at: Instant,
-    /// A Local scope write, which a lane retirement keeps (see `retire_lane`).
+    /// A Local scope write or a remote scope mirror, which a lane retirement
+    /// keeps (see `retire_lane`).
     survives_retire: bool,
 }
 
-/// Focus and hide writes go to the Local server whatever machine is presented:
-/// they belong to no presentation epoch, and Local takes them with its surface
-/// off. Applying focus can jump to another machine, which retires Local's lane in
-/// the same breath, so a retirement must neither drop a queued write nor orphan
-/// one in flight.
+/// Focus and hide writes go to the Local server whatever machine is presented,
+/// and scope mirrors go to every remote server, presented or not: they belong to
+/// no presentation epoch, and servers take them with their surface off. Applying
+/// focus can jump to another machine, which retires the source and target lanes
+/// in the same breath, so a retirement must neither drop a queued scope request
+/// nor orphan one in flight.
 fn survives_retire(request: &Request) -> bool {
-    matches!(request.method, crate::api::schema::Method::ScopeSet(_))
+    matches!(
+        request.method,
+        crate::api::schema::Method::ScopeSet(_) | crate::api::schema::Method::ScopeMirror(_)
+    )
+}
+
+fn is_scope_mirror(request: &Request) -> bool {
+    matches!(request.method, crate::api::schema::Method::ScopeMirror(_))
 }
 
 pub(super) struct EndpointCommandResult {
@@ -80,22 +89,49 @@ pub(super) struct EndpointCommands {
 }
 
 impl EndpointCommands {
+    /// Queues `request` on `endpoint_id`'s lane. A scope mirror supersedes any
+    /// mirror still queued for that endpoint (one in flight is left to finish:
+    /// lanes are ordered, so the newer one lands after it). Returns the ids of
+    /// the superseded requests, which the caller settles as cancelled.
     pub(super) fn enqueue(
         &mut self,
         endpoint_id: ClientEndpointId,
         generation: u64,
         boot_id: String,
         request: Box<Request>,
-    ) {
-        self.lanes
-            .entry(endpoint_id)
-            .or_default()
-            .queued
-            .push_back(QueuedCommand {
-                generation,
-                boot_id,
-                request,
+    ) -> Vec<String> {
+        let lane = self.lanes.entry(endpoint_id).or_default();
+        let mut superseded = Vec::new();
+        if is_scope_mirror(&request) {
+            lane.queued.retain(|queued| {
+                let stale = is_scope_mirror(&queued.request);
+                if stale {
+                    superseded.push(queued.request.id.clone());
+                }
+                !stale
             });
+        }
+        lane.queued.push_back(QueuedCommand {
+            generation,
+            boot_id,
+            request,
+        });
+        superseded
+    }
+
+    /// Lanes other than `active` with queued requests. After a retirement an
+    /// inactive lane holds only scope requests (`survives_retire`), and only
+    /// scope requests are enqueued into an inactive lane, so the client loop
+    /// may drain each of these while another endpoint is presented.
+    pub(super) fn inactive_lanes_with_queued(
+        &self,
+        active: &ClientEndpointId,
+    ) -> Vec<ClientEndpointId> {
+        self.lanes
+            .iter()
+            .filter(|(endpoint_id, lane)| *endpoint_id != active && !lane.queued.is_empty())
+            .map(|(endpoint_id, _)| endpoint_id.clone())
+            .collect()
     }
 
     pub(super) fn send_next(
@@ -162,9 +198,9 @@ impl EndpointCommands {
 
     /// Retire the complete source lane at source-off. The in-flight request is tombstoned for a
     /// late endpoint-local response; every queued request is cancelled before it can run in a
-    /// later presentation epoch. Other endpoint lanes are deliberately untouched. Scope writes
+    /// later presentation epoch. Other endpoint lanes are deliberately untouched. Scope requests
     /// are the exception (`survives_retire`): they stay in flight or queued, in order, and the
-    /// client loop pumps Local's lane while another endpoint is active.
+    /// client loop pumps every inactive lane that still holds them.
     pub(super) fn retire_lane(&mut self, endpoint_id: &ClientEndpointId) -> Vec<String> {
         let Some(lane) = self.lanes.get_mut(endpoint_id) else {
             return Vec::new();

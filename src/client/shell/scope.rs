@@ -3,7 +3,8 @@
 //! The scope comes only from the Local endpoint's `scope.projection` and
 //! applies to every endpoint's rows, keys and notifications. Remote servers'
 //! scopes are never read: the owner's local server is the one place focus and
-//! hide live.
+//! hide live. The client hands its scope to each remote server instead
+//! (`super::scope_mirror`), so plugins there filter as the panels do.
 //!
 //! Surfaces ask in one of two ways:
 //!
@@ -441,6 +442,9 @@ impl ClientShellState {
     /// Pending notifications stay, since they are judged again on delivery.
     fn scope_changed(&mut self) {
         self.retire_out_of_scope_notifications();
+        // Remote servers judge their plugins' `scope.get` by this client's
+        // scope; hand them the new one.
+        self.sync_scope_mirrors();
         // Rows above the scroll position may have left or returned; the next
         // compose clamps both lists and brings the focused workspace back into
         // view instead of leaving the old offset over a shorter list.
@@ -547,14 +551,17 @@ impl ClientShellState {
         });
     }
 
-    /// Hands queued `scope.set` requests to the client loop's dispatcher.
+    /// Hands queued `scope.set` requests for Local and `scope.mirror` requests
+    /// for remote servers to the client loop's dispatcher.
     pub(crate) fn take_scope_requests(&mut self) -> Vec<ClientShellAction> {
         std::mem::take(&mut self.scope_requests)
     }
 
-    /// Whether `request_id` is an unsettled `scope.set` for Local.
+    /// Whether `request_id` is an unsettled scope request: a `scope.set` for
+    /// Local or a `scope.mirror` for a remote server. Both are settled by
+    /// `finish_scope_request` whichever endpoint is active.
     pub(crate) fn owns_scope_request(&self, request_id: &str) -> bool {
-        self.scope_request_ids.contains(request_id)
+        self.scope_request_ids.contains(request_id) || self.owns_scope_mirror_request(request_id)
     }
 
     /// Settles one of Local's `scope.set` requests, from a response, a timeout,
@@ -562,12 +569,16 @@ impl ClientShellState {
     /// nothing: the projection shows it. Any failure tells the user that focus
     /// and hide did not change, in the endpoint notice banner, and drops the
     /// pending toggle state so the next toggle flips from what Local reports.
+    /// A remote `scope.mirror` settles silently (`finish_scope_mirror`).
     /// Returns whether a frame is needed; `false` for ids it does not own.
     pub(crate) fn finish_scope_request(
         &mut self,
         request_id: &str,
         result: &Result<crate::api::schema::ResponseResult, ClientShellEndpointError>,
     ) -> bool {
+        if let Some(repaint) = self.finish_scope_mirror(request_id, result) {
+            return repaint;
+        }
         if !self.scope_request_ids.remove(request_id) {
             return false;
         }

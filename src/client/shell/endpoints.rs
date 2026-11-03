@@ -102,6 +102,14 @@ impl ClientShellState {
                 .any(|endpoint| &endpoint.endpoint_id == endpoint_id)
         });
         self.endpoints = next;
+        let endpoints = &self.endpoints;
+        self.scope_mirrors_sent.retain(|endpoint_id, _| {
+            endpoints
+                .iter()
+                .any(|endpoint| &endpoint.endpoint_id == endpoint_id)
+        });
+        // A renamed machine is judged by its new label on its own server too.
+        self.sync_scope_mirrors();
     }
 
     pub(crate) fn select_unavailable_local(&mut self) {
@@ -157,6 +165,14 @@ impl ClientShellState {
         {
             endpoint.status = status;
         }
+        // A server-side connection's mirror ends with it, so an endpoint that
+        // leaves Online is owed a fresh one on its next connection, whatever
+        // generation and boot that connection reports.
+        if status == ClientEndpointStatus::Online {
+            self.sync_scope_mirrors();
+        } else {
+            self.scope_mirrors_sent.remove(endpoint_id);
+        }
     }
 
     pub(crate) fn mark_endpoint_disconnected(&mut self, endpoint_id: &ClientEndpointId) {
@@ -203,6 +219,7 @@ impl ClientShellState {
         {
             endpoint.methods = methods;
         }
+        self.sync_scope_mirrors();
     }
 
     pub(crate) fn endpoint_projection_available(&self, endpoint_id: &ClientEndpointId) -> bool {
@@ -574,6 +591,12 @@ impl ClientShellState {
         if boot_changed {
             self.retire_endpoint_notifications(endpoint_id);
         }
+        // The first snapshot of a connection or a server boot: that server has
+        // no mirror of this client's scope yet (synced below, once stored).
+        let mirror_due = !endpoint_id.is_local()
+            && (boot_changed
+                || self.endpoints[index].snapshot.is_none()
+                || self.endpoints[index].snapshot_generation != generation);
         self.endpoints[index]
             .agent_presentation
             .project_snapshot_for_generation(&mut snapshot, generation);
@@ -650,6 +673,9 @@ impl ClientShellState {
             {
                 endpoint.agent_view_projection = None;
             }
+        }
+        if mirror_due {
+            self.sync_scope_mirrors();
         }
     }
 

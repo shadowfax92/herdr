@@ -996,6 +996,16 @@ pub(crate) struct ClientShellState {
     /// The `focus_active` last asked of Local and not yet seen in a projection,
     /// so a second toggle before the projection returns flips from it.
     pub(super) scope_focus_pending: Option<bool>,
+    /// The last `scope.mirror` queued for each remote endpoint, so an unchanged
+    /// mirror is never resent (`super::scope_mirror`).
+    pub(super) scope_mirrors_sent: HashMap<ClientEndpointId, super::scope_mirror::ScopeMirrorSent>,
+    /// The boot id of each remote server that refused `scope.mirror`; that
+    /// boot is never asked again.
+    pub(super) scope_mirror_refused: HashMap<ClientEndpointId, String>,
+    /// Unsettled `scope.mirror` request ids, with the endpoint and boot each
+    /// went to. Tracked apart from `pending_requests` (the active endpoint's),
+    /// like `scope_request_ids`, and settled silently.
+    pub(super) scope_mirror_request_ids: HashMap<String, (ClientEndpointId, String)>,
 }
 
 pub(super) fn product_announcement_state(
@@ -1172,6 +1182,9 @@ impl ClientShellState {
             scope_requests: Vec::new(),
             scope_request_ids: std::collections::HashSet::new(),
             scope_focus_pending: None,
+            scope_mirrors_sent: HashMap::new(),
+            scope_mirror_refused: HashMap::new(),
+            scope_mirror_request_ids: HashMap::new(),
         }
     }
 

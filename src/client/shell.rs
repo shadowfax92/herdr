@@ -32,6 +32,7 @@ mod overlay_input;
 mod preferences;
 mod render;
 mod scope;
+mod scope_mirror;
 mod scope_picker;
 mod scroll;
 mod settings;

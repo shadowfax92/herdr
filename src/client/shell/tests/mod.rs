@@ -266,5 +266,6 @@ mod mobile;
 mod mouse_selection;
 mod popup_focus_projection;
 mod scope_filter;
+mod scope_mirror;
 mod scope_picker_overlay;
 mod startup_overlays;

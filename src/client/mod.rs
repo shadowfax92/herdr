@@ -777,6 +777,33 @@ async fn run_client_loop(
                 }
             }
         }
+        // Scope requests queued outside an input path leave here: remote scope
+        // mirrors queued when a machine's snapshot, status or label arrived, and
+        // anything else the previous event left in the shell's scope queue.
+        if state
+            .shell
+            .as_ref()
+            .is_some_and(shell::ClientShellState::has_scope_requests)
+        {
+            let (_, repaint) = dispatch_client_shell_actions(
+                Vec::new(),
+                &mut endpoint_commands,
+                &mut write_stream,
+                state.shell.as_mut(),
+                &mut state.detached_process_children,
+                &mut scheduled_activation,
+            )?;
+            if let Some(frame) = repaint
+                .then(|| {
+                    state.shell.as_mut().and_then(|shell| {
+                        shell.compose(state.reported_size.0, state.reported_size.1)
+                    })
+                })
+                .flatten()
+            {
+                state.present_frame(frame);
+            }
+        }
         if let Some(shell) = state.shell.as_ref() {
             supervisors.spawn_due(
                 std::time::Instant::now(),
