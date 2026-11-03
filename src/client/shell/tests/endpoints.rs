@@ -530,7 +530,7 @@ fn agent_navigation_keeps_scroll_when_target_is_visible() {
         &state.endpoints,
         &state.active_endpoint_id,
         state.config.agent_panel_sort,
-        &state.config.agents,
+        &state.scope_view(),
     );
     let index = targets
         .iter()
@@ -1724,6 +1724,7 @@ fn selected_position_sort_uses_public_tab_and_pane_numbers() {
         &state.endpoints,
         &state.active_endpoint_id,
         crate::config::AgentPanelSortConfig::Priority,
+        &state.scope_view(),
     )
     .into_iter()
     .map(|row| row.agent.name.as_deref().expect("agent name"))
@@ -2324,8 +2325,12 @@ fn navigator_uses_machine_parents_only_for_federated_clients() {
     else {
         panic!("expected navigator");
     };
-    let rows =
-        render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
+    let rows = render::client_navigator_rows(
+        &state.endpoints,
+        &state.active_endpoint_id,
+        navigator,
+        &Default::default(),
+    );
     let machines = rows
         .iter()
         .filter(|row| matches!(row.target, ClientNavigatorTarget::Machine { .. }))
@@ -2384,8 +2389,12 @@ fn navigator_uses_machine_parents_only_for_federated_clients() {
     else {
         panic!("expected navigator");
     };
-    let rows =
-        render::client_navigator_rows(&local.endpoints, &local.active_endpoint_id, navigator);
+    let rows = render::client_navigator_rows(
+        &local.endpoints,
+        &local.active_endpoint_id,
+        navigator,
+        &Default::default(),
+    );
     assert!(rows
         .iter()
         .all(|row| !matches!(row.target, ClientNavigatorTarget::Machine { .. })));
@@ -2412,8 +2421,12 @@ fn navigator_keeps_saved_machine_visible_before_metadata_arrives() {
         panic!("expected navigator");
     };
 
-    let rows =
-        render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
+    let rows = render::client_navigator_rows(
+        &state.endpoints,
+        &state.active_endpoint_id,
+        navigator,
+        &Default::default(),
+    );
 
     assert!(rows.iter().any(|row| {
         matches!(
@@ -2444,16 +2457,21 @@ fn navigator_machine_selection_opens_its_remembered_view() {
         else {
             panic!("expected navigator");
         };
-        render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator)
-            .into_iter()
-            .find(|row| {
-                matches!(
-                    &row.target,
-                    ClientNavigatorTarget::Machine { endpoint_id: target } if target == &endpoint_id
-                )
-            })
-            .map(|row| row.target)
-            .expect("remote machine row")
+        render::client_navigator_rows(
+            &state.endpoints,
+            &state.active_endpoint_id,
+            navigator,
+            &Default::default(),
+        )
+        .into_iter()
+        .find(|row| {
+            matches!(
+                &row.target,
+                ClientNavigatorTarget::Machine { endpoint_id: target } if target == &endpoint_id
+            )
+        })
+        .map(|row| row.target)
+        .expect("remote machine row")
     };
     if let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() {
         navigator.selected = Some(selected);
@@ -2481,19 +2499,24 @@ fn navigator_foreign_pane_selection_activates_its_endpoint() {
         else {
             panic!("expected navigator");
         };
-        render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator)
-            .iter()
-            .find(|row| {
-                matches!(
-                    &row.target,
-                    ClientNavigatorTarget::Pane {
-                        endpoint_id: target_endpoint,
-                        pane_id,
-                    } if target_endpoint == &endpoint_id && pane_id == "pane_1"
-                )
-            })
-            .map(|row| row.target.clone())
-            .expect("remote pane row")
+        render::client_navigator_rows(
+            &state.endpoints,
+            &state.active_endpoint_id,
+            navigator,
+            &Default::default(),
+        )
+        .iter()
+        .find(|row| {
+            matches!(
+                &row.target,
+                ClientNavigatorTarget::Pane {
+                    endpoint_id: target_endpoint,
+                    pane_id,
+                } if target_endpoint == &endpoint_id && pane_id == "pane_1"
+            )
+        })
+        .map(|row| row.target.clone())
+        .expect("remote pane row")
     };
     if let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() {
         navigator.selected = Some(selected);
@@ -2615,8 +2638,12 @@ fn cached_offline_navigator_and_mobile_targets_are_dimmed_and_disabled() {
         else {
             panic!("expected navigator");
         };
-        let rows =
-            render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
+        let rows = render::client_navigator_rows(
+            &state.endpoints,
+            &state.active_endpoint_id,
+            navigator,
+            &Default::default(),
+        );
         let machine = rows
             .iter()
             .find(|row| {
@@ -2811,19 +2838,24 @@ fn navigator_foreign_workspace_heading_keeps_the_workspace_target() {
         else {
             panic!("expected navigator");
         };
-        render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator)
-            .iter()
-            .find(|row| {
-                matches!(
-                    &row.target,
-                    ClientNavigatorTarget::Workspace {
-                        endpoint_id: target_endpoint,
-                        workspace_id,
-                    } if target_endpoint == &endpoint_id && workspace_id == "ws_1"
-                )
-            })
-            .map(|row| row.target.clone())
-            .expect("remote workspace heading")
+        render::client_navigator_rows(
+            &state.endpoints,
+            &state.active_endpoint_id,
+            navigator,
+            &Default::default(),
+        )
+        .iter()
+        .find(|row| {
+            matches!(
+                &row.target,
+                ClientNavigatorTarget::Workspace {
+                    endpoint_id: target_endpoint,
+                    workspace_id,
+                } if target_endpoint == &endpoint_id && workspace_id == "ws_1"
+            )
+        })
+        .map(|row| row.target.clone())
+        .expect("remote workspace heading")
     };
     if let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() {
         navigator.selected = Some(selected);

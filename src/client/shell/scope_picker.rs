@@ -161,9 +161,15 @@ fn tab_ref<'a>(workspace: ScopeWorkspaceRef<'a>, tab: &'a ClientShellTab) -> Sco
 /// (the picker must list hidden workspaces) and with no worktree group
 /// collapsed. The jump on focus walks the same order.
 fn panel_workspaces(snapshot: &ClientShellSnapshot) -> impl Iterator<Item = &ClientShellWorkspace> {
-    render::workspace_entries(snapshot, &HashSet::new())
-        .into_iter()
-        .map(|entry| &snapshot.workspaces[entry.index])
+    // An admit-everything scope: the picker lists hidden rows so they can be
+    // shown again.
+    render::workspace_entries(
+        snapshot,
+        &HashSet::new(),
+        &super::scope::EndpointScope::default(),
+    )
+    .into_iter()
+    .map(|entry| &snapshot.workspaces[entry.index])
 }
 
 fn workspace_shown(

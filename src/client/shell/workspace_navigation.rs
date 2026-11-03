@@ -100,6 +100,9 @@ impl ClientShellState {
         let mobile = self.mobile_layout_active();
         let surface_available = self.snapshot.is_some() && self.pane_surface.is_some();
         let empty_collapsed_groups = HashSet::new();
+        // The picker walks the rows the sidebar draws, so out-of-scope
+        // workspaces (focus and hide) are skipped like they are hidden there.
+        let scope = self.scope_view();
         let mut targets = Vec::new();
         for endpoint in &self.endpoints {
             if endpoint.status != ClientEndpointStatus::Online {
@@ -108,11 +111,15 @@ impl ClientShellState {
             let Some(snapshot) = endpoint.snapshot.as_deref() else {
                 continue;
             };
+            let endpoint_scope = scope.endpoint(&endpoint.endpoint_id);
             let entries = if self.sidebar_collapsed && !mobile && surface_available {
                 snapshot
                     .workspaces
                     .iter()
                     .enumerate()
+                    .filter(|(_, workspace)| {
+                        endpoint_scope.shows_workspace(&workspace.workspace_id)
+                    })
                     .map(|(index, _)| WorkspaceEntry {
                         index,
                         indented: false,
@@ -126,7 +133,7 @@ impl ClientShellState {
                     self.collapsed_groups_for_endpoint(&endpoint.endpoint_id)
                         .unwrap_or(&empty_collapsed_groups)
                 };
-                render::workspace_entries(snapshot, collapsed_groups)
+                render::workspace_entries(snapshot, collapsed_groups, endpoint_scope)
             };
             for entry in entries {
                 targets.push(WorkspaceNavigationTarget {

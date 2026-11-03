@@ -50,6 +50,7 @@ pub(crate) fn render_collapsed_sidebar(
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
     selected_workspace_id: Option<&str>,
+    scope: &super::scope::EndpointScope<'_>,
     hits: &mut ShellHitMap,
 ) {
     let palette = &config.palette;
@@ -60,6 +61,7 @@ pub(crate) fn render_collapsed_sidebar(
     for (index, workspace) in snapshot
         .workspaces
         .iter()
+        .filter(|workspace| scope.shows_workspace(&workspace.workspace_id))
         .take(workspace_area.height as usize)
         .enumerate()
     {
@@ -92,7 +94,7 @@ pub(crate) fn render_collapsed_sidebar(
             &format!("{:<2}", index + 1),
             number_style,
         );
-        let status = workspace.agent_status;
+        let status = scope.workspace_status(workspace);
         put_text(
             buffer,
             rect.x.saturating_add(2),
@@ -127,7 +129,8 @@ pub(crate) fn render_collapsed_sidebar(
         detail_area.width,
         detail_area.height.saturating_sub(1),
     );
-    for (index, pane_id) in super::ordered_agent_pane_ids(snapshot, config.agent_panel_sort)
+    // The panel's own list, so the numbers match `focus_agent` keys.
+    for (index, pane_id) in super::agent_sidebar::listed_agent_pane_ids(snapshot, config, scope)
         .into_iter()
         .take(detail_content.height as usize)
         .enumerate()
@@ -226,7 +229,8 @@ pub(crate) fn render_sidebar(
             .add_modifier(Modifier::BOLD),
     );
 
-    let entries = workspace_entries(snapshot, state.collapsed_groups);
+    let scope = state.scope.endpoint(state.active_endpoint_id);
+    let entries = workspace_entries(snapshot, state.collapsed_groups, scope);
     let body = Rect::new(
         workspace_area.x,
         workspace_area.y.saturating_add(WORKSPACE_HEADER_ROWS),
@@ -245,7 +249,12 @@ pub(crate) fn render_sidebar(
                 .map(|workspace| {
                     workspace_rows(
                         workspace,
-                        displayed_workspace_status(snapshot, workspace, state.collapsed_groups),
+                        displayed_workspace_status(
+                            snapshot,
+                            workspace,
+                            state.collapsed_groups,
+                            scope,
+                        ),
                         entry.indented,
                         &config.spaces,
                     )
@@ -303,7 +312,7 @@ pub(crate) fn render_sidebar(
         let Some(workspace) = snapshot.workspaces.get(entry.index) else {
             continue;
         };
-        let status = displayed_workspace_status(snapshot, workspace, state.collapsed_groups);
+        let status = displayed_workspace_status(snapshot, workspace, state.collapsed_groups, scope);
         let rows = workspace_rows(workspace, status, entry.indented, &config.spaces);
         let row_height = (rows.len().max(1).min(u16::MAX as usize) as u16).min(body.height);
         if y.saturating_add(row_height) > body.bottom() {
@@ -340,6 +349,7 @@ pub(crate) fn render_sidebar(
             snapshot,
             entry.index,
             state.collapsed_groups,
+            scope,
             palette,
         );
         hits.workspaces.push(WorkspaceHit {
@@ -435,6 +445,7 @@ pub(crate) fn render_sidebar(
         detail_area,
         snapshot,
         config,
+        scope,
         state.agent_scroll,
         hits,
     );
@@ -455,13 +466,19 @@ pub(crate) fn render_sidebar(
     );
 }
 
+/// The workspace rows one machine's panel draws, in order, with linked
+/// worktrees grouped under their parent. Workspaces out of `scope` are treated
+/// as absent: a group whose parent is out of scope lists its children as plain
+/// rows, and one whose children are all out of scope is no group.
 pub(crate) fn workspace_entries(
     snapshot: &ClientShellSnapshot,
     collapsed_groups: &HashSet<String>,
+    scope: &super::scope::EndpointScope<'_>,
 ) -> Vec<WorkspaceEntry> {
+    let shown = |workspace: &ClientShellWorkspace| scope.shows_workspace(&workspace.workspace_id);
     let mut members = HashMap::<&str, Vec<usize>>::new();
     for (index, workspace) in snapshot.workspaces.iter().enumerate() {
-        if let Some(worktree) = &workspace.worktree {
+        if let Some(worktree) = workspace.worktree.as_ref().filter(|_| shown(workspace)) {
             members.entry(&worktree.key).or_default().push(index);
         }
     }
@@ -485,6 +502,9 @@ pub(crate) fn workspace_entries(
     let mut emitted = HashSet::<&str>::new();
     let mut entries = Vec::new();
     for (index, workspace) in snapshot.workspaces.iter().enumerate() {
+        if !shown(workspace) {
+            continue;
+        }
         let Some(worktree) = workspace
             .worktree
             .as_ref()
@@ -553,7 +573,13 @@ pub(crate) fn workspace_entries(
     entries
 }
 
-fn parent_group_key(snapshot: &ClientShellSnapshot, index: usize) -> Option<String> {
+/// The group key of a parent workspace with at least one linked child in
+/// scope; it owns the row's collapse toggle.
+fn parent_group_key(
+    snapshot: &ClientShellSnapshot,
+    index: usize,
+    scope: &super::scope::EndpointScope<'_>,
+) -> Option<String> {
     let workspace = snapshot.workspaces.get(index)?;
     let worktree = workspace.worktree.as_ref()?;
     if worktree.is_linked_worktree {
@@ -563,9 +589,10 @@ fn parent_group_key(snapshot: &ClientShellSnapshot, index: usize) -> Option<Stri
         .workspaces
         .iter()
         .any(|candidate| {
-            candidate.worktree.as_ref().is_some_and(|candidate| {
-                candidate.key == worktree.key && candidate.is_linked_worktree
-            })
+            scope.shows_workspace(&candidate.workspace_id)
+                && candidate.worktree.as_ref().is_some_and(|candidate| {
+                    candidate.key == worktree.key && candidate.is_linked_worktree
+                })
         })
         .then(|| worktree.key.clone())
 }
@@ -606,9 +633,10 @@ pub(in crate::client::shell) fn render_parent_group_toggle(
     snapshot: &ClientShellSnapshot,
     workspace_index: usize,
     collapsed_groups: &HashSet<String>,
+    scope: &super::scope::EndpointScope<'_>,
     palette: &Palette,
 ) -> Option<(Rect, String)> {
-    let key = parent_group_key(snapshot, workspace_index)?;
+    let key = parent_group_key(snapshot, workspace_index, scope)?;
     let toggle = Rect::new(
         workspace_rect.right().saturating_sub(1),
         workspace_rect.y,
@@ -630,34 +658,40 @@ pub(in crate::client::shell) fn render_parent_group_toggle(
     Some((toggle, key))
 }
 
+/// The status a workspace row shows. Only admitted tabs count, so a row never
+/// lights up for an out-of-scope tab, and a collapsed parent rolls up only the
+/// children still in scope.
 pub(in crate::client::shell) fn displayed_workspace_status(
     snapshot: &ClientShellSnapshot,
     workspace: &ClientShellWorkspace,
     collapsed_groups: &HashSet<String>,
+    scope: &super::scope::EndpointScope<'_>,
 ) -> crate::api::schema::AgentStatus {
+    let own = scope.workspace_status(workspace);
     let Some(worktree) = workspace
         .worktree
         .as_ref()
         .filter(|worktree| !worktree.is_linked_worktree)
     else {
-        return workspace.agent_status;
+        return own;
     };
     if !collapsed_groups.contains(&worktree.key) {
-        return workspace.agent_status;
+        return own;
     }
     snapshot
         .workspaces
         .iter()
         .filter(|candidate| {
-            candidate.worktree.as_ref().is_some_and(|member| {
-                member.key == worktree.key
-                    && (member.is_linked_worktree
-                        || candidate.workspace_id == workspace.workspace_id)
-            })
+            scope.shows_workspace(&candidate.workspace_id)
+                && candidate.worktree.as_ref().is_some_and(|member| {
+                    member.key == worktree.key
+                        && (member.is_linked_worktree
+                            || candidate.workspace_id == workspace.workspace_id)
+                })
         })
-        .map(|candidate| candidate.agent_status)
+        .map(|candidate| scope.workspace_status(candidate))
         .max_by_key(|status| status_priority(*status))
-        .unwrap_or(workspace.agent_status)
+        .unwrap_or(own)
 }
 
 pub(in crate::client::shell) fn workspace_rows(

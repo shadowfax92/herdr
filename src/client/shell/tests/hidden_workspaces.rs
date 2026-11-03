@@ -1,5 +1,7 @@
-//! `[ui.sidebar.agents].hidden_workspaces` keeps background workspaces' agents
-//! out of every Agents panel layout while the workspaces stay in Spaces.
+//! `[ui.sidebar.agents].hidden_workspaces` is a full hide: while the Local
+//! server projects no scope, the client seeds the scope from it (`crate::scope`),
+//! so the workspaces leave the Spaces panel and every Agents panel layout, and
+//! their keys skip them. `scope_filter.rs` covers the runtime scope itself.
 use super::*;
 use crate::config::AgentSidebarToken;
 
@@ -69,6 +71,64 @@ fn agents_in_hidden_workspaces_leave_the_sidebar() {
     // Labels match exactly, so a workspace that merely starts with `ft` stays.
     assert!(text.contains("similar agent"), "frame: {text}");
     assert!(!text.contains("worker agent"), "frame: {text}");
+}
+
+#[test]
+fn hidden_workspaces_leave_the_spaces_panel() {
+    let mut state = shell(&["ft"]);
+    frame_text(&mut state, 100, 28);
+    let rows = state
+        .hits
+        .workspaces
+        .iter()
+        .map(|hit| hit.workspace_id.as_str())
+        .collect::<Vec<_>>();
+    // Labels match exactly, so `ft-2` (ws_3) keeps its row.
+    assert_eq!(rows, ["ws_1", "ws_3"]);
+
+    let mut unfiltered = shell(&[]);
+    frame_text(&mut unfiltered, 100, 28);
+    assert_eq!(unfiltered.hits.workspaces.len(), 3);
+}
+
+#[test]
+fn hidden_workspaces_leave_the_mobile_switcher_spaces() {
+    let mut state = shell(&["ft"]);
+    state.mode = ClientShellMode::Navigate;
+    frame_text(&mut state, 50, 30);
+    let spaces = state
+        .hits
+        .mobile_targets
+        .iter()
+        .filter_map(|(_, target)| match target {
+            ClientMobileTarget::Workspace { workspace_id, .. } => Some(workspace_id.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(spaces, ["ws_1", "ws_3"]);
+}
+
+#[test]
+fn workspace_keys_skip_hidden_workspaces() {
+    let mut state = shell(&["ft"]);
+    let mut outcome = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::NextWorkspace),
+        &mut outcome,
+    );
+    assert!(
+        matches!(
+            &outcome.actions[..],
+            [ClientShellAction::Endpoint { request, .. }]
+                if matches!(
+                    &request.method,
+                    crate::api::schema::Method::WorkspaceFocus(target)
+                        if target.workspace_id == "ws_3"
+                )
+        ),
+        "{:?}",
+        outcome.actions
+    );
 }
 
 #[test]

@@ -444,9 +444,12 @@ pub struct AgentsSidebarConfig {
     #[serde(default, deserialize_with = "deserialize_rows_by_agent")]
     pub rows_by_agent: BTreeMap<String, AgentSidebarRows>,
     pub row_gap: u16,
-    /// Workspace labels, matched exactly, whose agents stay out of the Agents
-    /// panel, e.g. a workspace of background workers. The workspaces themselves
-    /// remain in the Spaces panel. Presentation only: the API still lists them.
+    /// Workspace labels, matched exactly on every machine, hidden from the
+    /// start: they leave the Spaces/machines panel and the Agents panel, their
+    /// keys skip them, and they stop notifying, e.g. a workspace of background
+    /// workers. They seed the scope's hide list (`crate::scope`), so the focus
+    /// and hide picker can show one again at runtime, and focusing one shows
+    /// it. Presentation only: the API still lists them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub hidden_workspaces: Vec<String>,
     /// Agent statuses `next_attention_agent` stops at, from `blocked`, `done`,
@@ -464,10 +467,6 @@ impl AgentsSidebarConfig {
         agent
             .and_then(|agent| self.rows_by_agent.get(crate::detect::agent_label(agent)))
             .unwrap_or(&self.rows)
-    }
-
-    pub(crate) fn hides_workspace(&self, label: &str) -> bool {
-        self.hidden_workspaces.iter().any(|hidden| hidden == label)
     }
 }
 

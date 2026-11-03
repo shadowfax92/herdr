@@ -198,8 +198,12 @@ impl ClientShellState {
             scroll: 0,
             filter: None,
         };
-        let rows =
-            render::client_navigator_rows(&self.endpoints, &self.active_endpoint_id, &navigator);
+        let rows = render::client_navigator_rows(
+            &self.endpoints,
+            &self.active_endpoint_id,
+            &navigator,
+            &self.scope_view(),
+        );
         navigator.selected = rows
             .iter()
             .find(|row| row.current)
@@ -208,11 +212,17 @@ impl ClientShellState {
     }
 
     pub(super) fn move_navigator_selection(&mut self, delta: isize) {
+        // Built before borrowing the overlay: the view borrows only endpoints.
+        let scope = super::scope::ScopeView::new(&self.effective_scope(), &self.endpoints);
         let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() else {
             return;
         };
-        let rows =
-            render::client_navigator_rows(&self.endpoints, &self.active_endpoint_id, navigator);
+        let rows = render::client_navigator_rows(
+            &self.endpoints,
+            &self.active_endpoint_id,
+            navigator,
+            &scope,
+        );
         if rows.is_empty() {
             navigator.selected = None;
             return;
@@ -225,11 +235,16 @@ impl ClientShellState {
     }
 
     pub(super) fn scroll_navigator_to(&mut self, scroll: usize, viewport_rows: usize) {
+        let scope = super::scope::ScopeView::new(&self.effective_scope(), &self.endpoints);
         let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() else {
             return;
         };
-        let rows =
-            render::client_navigator_rows(&self.endpoints, &self.active_endpoint_id, navigator);
+        let rows = render::client_navigator_rows(
+            &self.endpoints,
+            &self.active_endpoint_id,
+            navigator,
+            &scope,
+        );
         let viewport_rows = viewport_rows.max(1);
         navigator.scroll = scroll.min(rows.len().saturating_sub(viewport_rows));
         let selected =
@@ -240,11 +255,16 @@ impl ClientShellState {
     }
 
     fn move_navigator_workspace(&mut self, forward: bool) {
+        let scope = super::scope::ScopeView::new(&self.effective_scope(), &self.endpoints);
         let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() else {
             return;
         };
-        let rows =
-            render::client_navigator_rows(&self.endpoints, &self.active_endpoint_id, navigator);
+        let rows = render::client_navigator_rows(
+            &self.endpoints,
+            &self.active_endpoint_id,
+            navigator,
+            &scope,
+        );
         let Some(selected) =
             super::aggregate_navigation::navigator_selected_index(&rows, navigator)
         else {
@@ -280,6 +300,7 @@ impl ClientShellState {
                     &self.endpoints,
                     &self.active_endpoint_id,
                     navigator,
+                    &self.scope_view(),
                 );
                 super::aggregate_navigation::selected_navigator_target(&rows, navigator)
             }
@@ -711,6 +732,7 @@ impl ClientShellState {
                         &self.endpoints,
                         &self.active_endpoint_id,
                         navigator,
+                        &self.scope_view(),
                     )
                     .last()
                     .map(|row| row.target.clone()),

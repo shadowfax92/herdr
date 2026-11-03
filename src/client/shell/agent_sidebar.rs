@@ -49,29 +49,25 @@ pub(super) fn ordered_agent_pane_ids(
         .collect()
 }
 
-/// The agents one machine's panel lists, in panel order: everything outside
-/// `[ui.sidebar.agents].hidden_workspaces`. Agent keys walk this list, so they
+/// The agents one machine's panel lists, in panel order: those whose tab is in
+/// scope (focus and hide, `super::scope`). Agent keys walk this list, so they
 /// never land on an agent the panel doesn't draw.
 pub(super) fn listed_agent_pane_ids(
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
+    scope: &super::scope::EndpointScope<'_>,
 ) -> Vec<String> {
-    ordered_agent_pane_ids(snapshot, config.agent_panel_sort)
-        .into_iter()
-        .filter(|pane_id| {
-            !snapshot
+    let mut pane_ids = ordered_agent_pane_ids(snapshot, config.agent_panel_sort);
+    if !scope.admits_everything() {
+        pane_ids.retain(|pane_id| {
+            snapshot
                 .agents
                 .iter()
                 .find(|agent| &agent.pane_id == pane_id)
-                .and_then(|agent| {
-                    snapshot
-                        .workspaces
-                        .iter()
-                        .find(|workspace| workspace.workspace_id == agent.workspace_id)
-                })
-                .is_some_and(|workspace| config.agents.hides_workspace(&workspace.label))
-        })
-        .collect()
+                .is_some_and(|agent| scope.admits_agent(agent))
+        });
+    }
+    pane_ids
 }
 
 pub(super) fn render_agent_panel(
@@ -79,6 +75,7 @@ pub(super) fn render_agent_panel(
     area: Rect,
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
+    scope: &super::scope::EndpointScope<'_>,
     agent_scroll: &mut usize,
     hits: &mut ShellHitMap,
 ) {
@@ -92,7 +89,7 @@ pub(super) fn render_agent_panel(
         return;
     }
 
-    let rows = agent_rows(snapshot, config, None);
+    let rows = agent_rows(snapshot, config, None, scope);
     render_agent_list(
         buffer,
         area,
@@ -263,13 +260,17 @@ pub(super) fn agent_rows(
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
     machine: Option<&str>,
+    scope: &super::scope::EndpointScope<'_>,
 ) -> Vec<AgentRow> {
-    ordered_agent_pane_ids(snapshot, config.agent_panel_sort)
+    listed_agent_pane_ids(snapshot, config, scope)
         .into_iter()
         .filter_map(|pane_id| agent_row(snapshot, &pane_id, config, machine))
         .collect()
 }
 
+/// Builds one agent's panel row. It does not judge the scope: every caller
+/// lists agents through a scope-filtered list (`listed_agent_pane_ids` or
+/// `aggregate_agent_rows`).
 pub(super) fn agent_row(
     snapshot: &ClientShellSnapshot,
     pane_id: &str,
@@ -284,12 +285,6 @@ pub(super) fn agent_row(
         .workspaces
         .iter()
         .find(|workspace| workspace.workspace_id == agent.workspace_id)?;
-    // Every desktop layout, single- or multi-machine and collapsed, renders
-    // through here. Matching the label on each compose keeps a recreated
-    // workspace hidden under its new ID.
-    if config.agents.hides_workspace(&workspace.label) {
-        return None;
-    }
     let tab = snapshot.tabs.iter().find(|tab| tab.tab_id == agent.tab_id);
     let pane = snapshot
         .panes

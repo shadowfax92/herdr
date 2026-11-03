@@ -1401,8 +1401,12 @@ fn navigator_search_matches_non_adjacent_words_without_losing_the_pane_target() 
     ] {
         navigator.query = query.into();
         navigator.selected = None;
-        let rows =
-            render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
+        let rows = render::client_navigator_rows(
+            &state.endpoints,
+            &state.active_endpoint_id,
+            navigator,
+            &Default::default(),
+        );
         let target =
             super::super::aggregate_navigation::selected_navigator_target(&rows, navigator);
         assert_eq!(
@@ -1476,8 +1480,12 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
         navigator.query = query.into();
         navigator.filter = filter;
         navigator.selected = None;
-        let rows =
-            render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
+        let rows = render::client_navigator_rows(
+            &state.endpoints,
+            &state.active_endpoint_id,
+            navigator,
+            &Default::default(),
+        );
         let pane_ids = rows
             .iter()
             .filter_map(|row| match &row.target {
@@ -1561,8 +1569,12 @@ fn navigator_distinguishes_unnamed_terminals_on_numbered_tabs() {
     let Some(ClientShellOverlay::Navigator(navigator)) = &state.overlay else {
         panic!("navigator");
     };
-    let rows =
-        render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
+    let rows = render::client_navigator_rows(
+        &state.endpoints,
+        &state.active_endpoint_id,
+        navigator,
+        &Default::default(),
+    );
     let labels = rows
         .iter()
         .filter(|row| matches!(row.target, ClientNavigatorTarget::Pane { .. }))
@@ -1592,8 +1604,12 @@ fn navigator_keeps_empty_workspaces_searchable_without_status_filters() {
         };
         navigator.query = query.into();
         navigator.filter = filter;
-        let rows =
-            render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
+        let rows = render::client_navigator_rows(
+            &state.endpoints,
+            &state.active_endpoint_id,
+            navigator,
+            &Default::default(),
+        );
         assert_eq!(
             rows.len(),
             usize::from(expected),
@@ -1944,8 +1960,12 @@ fn navigator_grouping_keeps_snapshot_order_with_interleaved_tabs_and_panes() {
     let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_ref() else {
         panic!("navigator")
     };
-    let rows =
-        render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
+    let rows = render::client_navigator_rows(
+        &state.endpoints,
+        &state.active_endpoint_id,
+        navigator,
+        &Default::default(),
+    );
     let actual = rows
         .iter()
         .filter_map(|row| match &row.target {
@@ -2064,11 +2084,16 @@ fn navigator_owns_search_mouse_selection_and_stable_target_focus() {
         else {
             panic!("expected navigator");
         };
-        render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator)
-            .iter()
-            .find(|row| matches!(row.target, ClientNavigatorTarget::Pane { .. }))
-            .map(|row| row.target.clone())
-            .expect("pane row")
+        render::client_navigator_rows(
+            &state.endpoints,
+            &state.active_endpoint_id,
+            navigator,
+            &Default::default(),
+        )
+        .iter()
+        .find(|row| matches!(row.target, ClientNavigatorTarget::Pane { .. }))
+        .map(|row| row.target.clone())
+        .expect("pane row")
     };
     let pane_rect = state
         .hits

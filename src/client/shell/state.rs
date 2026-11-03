@@ -1219,18 +1219,23 @@ impl ClientShellState {
         }
     }
 
+    /// The active machine's workspace rows that workspace keys walk: the
+    /// sidebar's own list, so out-of-scope workspaces (focus and hide) are
+    /// skipped.
     pub(super) fn navigation_workspace_entries(
         &self,
         snapshot: &ClientShellSnapshot,
     ) -> Vec<WorkspaceEntry> {
         let empty_collapsed_groups = HashSet::new();
+        let scope = self.active_endpoint_scope(snapshot);
         if self.mobile_layout_active() {
-            render::workspace_entries(snapshot, &empty_collapsed_groups)
+            render::workspace_entries(snapshot, &empty_collapsed_groups, &scope)
         } else {
             render::workspace_entries(
                 snapshot,
                 self.collapsed_groups_for_endpoint(&self.active_endpoint_id)
                     .unwrap_or(&empty_collapsed_groups),
+                &scope,
             )
         }
     }

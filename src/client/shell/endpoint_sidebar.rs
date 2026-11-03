@@ -25,25 +25,35 @@ pub(super) fn render_collapsed(
     let mut total_rows = 0usize;
     let mut selected_row = None;
     let reveal = std::mem::take(state.reveal_navigation_workspace);
+    // Focus and hide drop machine headers and workspace rows; this pass and the
+    // drawing pass below skip the same ones, so scroll math matches the rows.
+    let scope = state.scope;
     for endpoint in state.endpoints {
+        let endpoint_scope = scope.endpoint(&endpoint.endpoint_id);
+        if !endpoint_scope.shows_machine() {
+            continue;
+        }
         total_rows += 1;
         if state.collapsed_endpoints.contains(&endpoint.endpoint_id) {
             continue;
         }
         if let Some(snapshot) = endpoint.snapshot.as_deref() {
+            let shown = snapshot
+                .workspaces
+                .iter()
+                .filter(|workspace| endpoint_scope.shows_workspace(&workspace.workspace_id));
             if reveal {
                 if let Some(target) = state
                     .selected_workspace_id
                     .filter(|target| target.endpoint_id == endpoint.endpoint_id)
                 {
-                    selected_row = snapshot
-                        .workspaces
-                        .iter()
+                    selected_row = shown
+                        .clone()
                         .position(|workspace| workspace.workspace_id == target.workspace_id)
                         .map(|index| total_rows + index);
                 }
             }
-            total_rows += snapshot.workspaces.len();
+            total_rows += shown.count();
         }
     }
     let height = usize::from(workspace_area.height);
@@ -62,6 +72,10 @@ pub(super) fn render_collapsed(
     for (index, endpoint) in state.endpoints.iter().enumerate() {
         if y >= workspace_area.bottom() {
             break;
+        }
+        let endpoint_scope = scope.endpoint(&endpoint.endpoint_id);
+        if !endpoint_scope.shows_machine() {
+            continue;
         }
         let rect = Rect::new(workspace_area.x, y, workspace_area.width, 1);
         let active = &endpoint.endpoint_id == state.active_endpoint_id;
@@ -121,7 +135,11 @@ pub(super) fn render_collapsed(
         let Some(snapshot) = endpoint.snapshot.as_deref() else {
             continue;
         };
-        for workspace in &snapshot.workspaces {
+        for workspace in snapshot
+            .workspaces
+            .iter()
+            .filter(|workspace| endpoint_scope.shows_workspace(&workspace.workspace_id))
+        {
             if skip > 0 {
                 skip -= 1;
                 continue;
@@ -151,6 +169,7 @@ pub(super) fn render_collapsed(
                 );
             }
             let stale = endpoint.status != ClientEndpointStatus::Online;
+            let status = endpoint_scope.workspace_status(workspace);
             let number = format!(" {}", workspace.number);
             let number_width = super::render::display_width(&number).min(rect.width);
             let dim = if stale {
@@ -177,12 +196,12 @@ pub(super) fn render_collapsed(
                 rect.x.saturating_add(number_width),
                 rect.y,
                 rect.width.saturating_sub(number_width),
-                status_icon(workspace.agent_status, config.status_indicators),
+                status_icon(status, config.status_indicators),
                 Style::default()
                     .fg(if stale {
                         palette.overlay0
                     } else {
-                        status_color(workspace.agent_status, palette)
+                        status_color(status, palette)
                     })
                     .add_modifier(dim),
             );
@@ -212,6 +231,7 @@ pub(super) fn render_collapsed(
         state.endpoints,
         state.active_endpoint_id,
         config,
+        scope,
         hits,
     );
     hits.sidebar_toggle = if area.is_empty() || workspace_area.width == 0 {
@@ -273,8 +293,15 @@ pub(super) fn render_expanded(
             entry: WorkspaceEntry,
         },
     }
+    // Machine headers and workspace rows outside the scope (focus and hide)
+    // never enter `rows`, so heights, gaps, scrolling and hits all agree.
+    let scope = state.scope;
     let mut rows = Vec::new();
     for (endpoint_index, endpoint) in state.endpoints.iter().enumerate() {
+        let endpoint_scope = scope.endpoint(&endpoint.endpoint_id);
+        if !endpoint_scope.shows_machine() {
+            continue;
+        }
         rows.push(Row::Endpoint(endpoint_index));
         if state.collapsed_endpoints.contains(&endpoint.endpoint_id) {
             continue;
@@ -283,7 +310,7 @@ pub(super) fn render_expanded(
             let collapsed_groups = collapsed_groups_for_endpoint(state, &endpoint.endpoint_id)
                 .unwrap_or(&empty_collapsed_groups);
             rows.extend(
-                super::sidebar::workspace_entries(snapshot, collapsed_groups)
+                super::sidebar::workspace_entries(snapshot, collapsed_groups, endpoint_scope)
                     .into_iter()
                     .map(|entry| Row::Workspace {
                         endpoint: endpoint_index,
@@ -321,6 +348,7 @@ pub(super) fn render_expanded(
                                     snapshot,
                                     workspace,
                                     collapsed_groups,
+                                    scope.endpoint(&endpoint.endpoint_id),
                                 ),
                                 entry.indented,
                                 &config.spaces,
@@ -442,10 +470,12 @@ pub(super) fn render_expanded(
                 };
                 let collapsed_groups = collapsed_groups_for_endpoint(state, &endpoint.endpoint_id)
                     .unwrap_or(&empty_collapsed_groups);
+                let endpoint_scope = scope.endpoint(&endpoint.endpoint_id);
                 let status = super::sidebar::displayed_workspace_status(
                     snapshot,
                     workspace,
                     collapsed_groups,
+                    endpoint_scope,
                 );
                 let tokens = super::sidebar::workspace_rows(
                     workspace,
@@ -495,6 +525,7 @@ pub(super) fn render_expanded(
                     snapshot,
                     entry.index,
                     collapsed_groups,
+                    endpoint_scope,
                     palette,
                 );
                 hits.workspaces.push(WorkspaceHit {
@@ -560,6 +591,7 @@ pub(super) fn render_expanded(
         state.endpoints,
         state.active_endpoint_id,
         config,
+        scope,
         state.agent_scroll,
         hits,
     );

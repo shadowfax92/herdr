@@ -4,12 +4,242 @@
 //! applies to every endpoint's rows, keys and notifications. Remote servers'
 //! scopes are never read: the owner's local server is the one place focus and
 //! hide live.
-
+//!
+//! Surfaces ask in one of two ways:
+//!
+//! ```text
+//!  effective_scope() ──► scope_admits_tab / scope_shows_workspace / scope_shows_machine
+//!         │                one question: a notification, LastWorkspace
+//!         └──────────────► ScopeView::new(scope, endpoints)   once per frame or key action
+//!                            └─ EndpointScope per machine: verdicts by workspace and tab id
+//!                               rows, agent keys, workspace keys, navigator, status rollups
+//! ```
+//!
+//! Row loops run per render × workspaces × machines, so they never run the
+//! predicates themselves: an `EndpointScope` judges each tab once and rows look
+//! verdicts up. A scope that hides nothing on a machine (the usual case)
+//! builds no verdicts at all and every gate answers yes.
+//!
+//! The scope is presentation only. Snapshots keep every agent's real status
+//! (`endpoint_agent_state` stays unscoped, so unread marks survive a focus),
+//! and explicit jumps, the tab bar and the bell ignore it.
 use std::borrow::Cow;
 
-use crate::scope::{ScopePickMode, ScopeState};
+use crate::api::schema::AgentStatus;
+use crate::protocol::ClientShellAgent;
+use crate::scope::{ScopeMachineRef, ScopePickMode, ScopeState, ScopeTabRef, ScopeWorkspaceRef};
 
 use super::*;
+
+/// One endpoint's snapshot judged against the scope once, so per-row gates are
+/// lookups. Borrows ids from the snapshot it was built from; build a fresh one
+/// per frame or key action rather than keeping it across snapshot updates.
+#[derive(Debug, Default)]
+pub(crate) struct EndpointScope<'a> {
+    /// `None` while nothing on this machine can be out of scope: every gate is
+    /// a constant yes, with no lookups and no allocation.
+    restricted: Option<RestrictedEndpoint<'a>>,
+}
+
+#[derive(Debug)]
+struct RestrictedEndpoint<'a> {
+    machine_shown: bool,
+    /// The verdict for a workspace id the snapshot does not list.
+    unlisted_workspace: bool,
+    workspaces: HashMap<&'a str, WorkspaceScope<'a>>,
+}
+
+#[derive(Debug)]
+struct WorkspaceScope<'a> {
+    shown: bool,
+    /// The workspace judged as a whole, for a tab the snapshot does not list
+    /// (an agent reported before its tab).
+    whole: bool,
+    tabs: Vec<(&'a str, bool)>,
+    /// The status rollup over admitted tabs, so a workspace never lights up
+    /// for an out-of-scope tab. `None` when every tab is admitted and the
+    /// snapshot's own rollup stands.
+    status: Option<AgentStatus>,
+}
+
+/// Shared by every endpoint a `ScopeView` has no verdicts for.
+static ADMITS_EVERYTHING: EndpointScope<'static> = EndpointScope { restricted: None };
+
+impl<'a> EndpointScope<'a> {
+    /// Judges every workspace and tab of one machine's snapshot. A machine with
+    /// no snapshot (connecting, offline) gets only its header verdict.
+    pub(super) fn new(
+        scope: &ScopeState,
+        endpoint_id: &ClientEndpointId,
+        label: &str,
+        snapshot: Option<&'a ClientShellSnapshot>,
+    ) -> Self {
+        let key = endpoint_id.storage_key();
+        let machine = ScopeMachineRef { key: &key, label };
+        if !scope.focus_engaged()
+            && !scope
+                .hidden
+                .iter()
+                .any(|target| target.covers_machine(machine))
+        {
+            return Self::default();
+        }
+        let mut workspaces = HashMap::new();
+        let mut any_shown = false;
+        if let Some(snapshot) = snapshot {
+            let mut tabs_by_workspace = HashMap::<&str, Vec<&ClientShellTab>>::new();
+            for tab in &snapshot.tabs {
+                tabs_by_workspace
+                    .entry(tab.workspace_id.as_str())
+                    .or_default()
+                    .push(tab);
+            }
+            for workspace in &snapshot.workspaces {
+                let workspace_ref = ScopeWorkspaceRef {
+                    machine,
+                    id: &workspace.workspace_id,
+                    label: &workspace.label,
+                };
+                let tabs = tabs_by_workspace
+                    .get(workspace.workspace_id.as_str())
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
+                let tab_ref = |tab: &&'a ClientShellTab| ScopeTabRef {
+                    workspace: workspace_ref,
+                    id: &tab.tab_id,
+                    label: &tab.label,
+                };
+                let verdicts = tabs
+                    .iter()
+                    .map(|tab| (tab.tab_id.as_str(), scope.admits_tab(tab_ref(tab))))
+                    .collect::<Vec<_>>();
+                let shown = scope.shows_workspace(workspace_ref, tabs.iter().map(tab_ref));
+                let status = verdicts.iter().any(|(_, admitted)| !admitted).then(|| {
+                    tabs.iter()
+                        .zip(&verdicts)
+                        .filter(|(_, (_, admitted))| *admitted)
+                        .map(|(tab, _)| tab.agent_status)
+                        .max_by_key(|status| super::status_priority(*status))
+                        .unwrap_or(AgentStatus::Unknown)
+                });
+                any_shown |= shown;
+                workspaces.insert(
+                    workspace.workspace_id.as_str(),
+                    WorkspaceScope {
+                        shown,
+                        whole: scope.shows_workspace(workspace_ref, []),
+                        tabs: verdicts,
+                        status,
+                    },
+                );
+            }
+        }
+        let unlisted = ScopeWorkspaceRef {
+            machine,
+            id: "",
+            label: "",
+        };
+        Self {
+            restricted: Some(RestrictedEndpoint {
+                machine_shown: scope.shows_machine(machine, any_shown),
+                unlisted_workspace: scope.shows_workspace(unlisted, []),
+                workspaces,
+            }),
+        }
+    }
+
+    pub(super) fn admits_everything(&self) -> bool {
+        self.restricted.is_none()
+    }
+
+    /// Whether the machine's header row shows.
+    pub(super) fn shows_machine(&self) -> bool {
+        self.restricted
+            .as_ref()
+            .is_none_or(|restricted| restricted.machine_shown)
+    }
+
+    /// Whether the workspace's row shows: any of its tabs is admitted.
+    pub(super) fn shows_workspace(&self, workspace_id: &str) -> bool {
+        self.restricted.as_ref().is_none_or(|restricted| {
+            restricted
+                .workspaces
+                .get(workspace_id)
+                .map_or(restricted.unlisted_workspace, |workspace| workspace.shown)
+        })
+    }
+
+    pub(super) fn admits_tab(&self, workspace_id: &str, tab_id: &str) -> bool {
+        self.restricted.as_ref().is_none_or(|restricted| {
+            restricted.workspaces.get(workspace_id).map_or(
+                restricted.unlisted_workspace,
+                |workspace| {
+                    workspace
+                        .tabs
+                        .iter()
+                        .find(|(id, _)| *id == tab_id)
+                        .map_or(workspace.whole, |(_, admitted)| *admitted)
+                },
+            )
+        })
+    }
+
+    /// An agent is in scope exactly when its tab is.
+    pub(super) fn admits_agent(&self, agent: &ClientShellAgent) -> bool {
+        self.admits_tab(&agent.workspace_id, &agent.tab_id)
+    }
+
+    /// The workspace's status counting only admitted tabs.
+    pub(super) fn workspace_status(&self, workspace: &ClientShellWorkspace) -> AgentStatus {
+        self.restricted
+            .as_ref()
+            .and_then(|restricted| restricted.workspaces.get(workspace.workspace_id.as_str()))
+            .and_then(|scoped| scoped.status)
+            .unwrap_or(workspace.agent_status)
+    }
+}
+
+/// Every endpoint judged once, for one frame or one key action.
+#[derive(Debug, Default)]
+pub(crate) struct ScopeView<'a> {
+    /// Empty when the scope hides and focuses nothing, the common case.
+    endpoints: Vec<(&'a ClientEndpointId, EndpointScope<'a>)>,
+}
+
+impl<'a> ScopeView<'a> {
+    /// Takes the scope by reference only while judging: the view borrows the
+    /// endpoints alone, so callers can hold it beside `&mut` shell fields.
+    pub(super) fn new(scope: &ScopeState, endpoints: &'a [ClientShellEndpoint]) -> Self {
+        if !scope.focus_engaged() && scope.hidden.is_empty() {
+            return Self::default();
+        }
+        Self {
+            endpoints: endpoints
+                .iter()
+                .map(|endpoint| {
+                    (
+                        &endpoint.endpoint_id,
+                        EndpointScope::new(
+                            scope,
+                            &endpoint.endpoint_id,
+                            &endpoint.label,
+                            endpoint.snapshot.as_deref(),
+                        ),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    /// One endpoint's verdicts. An endpoint the view was not built with is
+    /// unfiltered.
+    pub(super) fn endpoint(&self, endpoint_id: &ClientEndpointId) -> &EndpointScope<'a> {
+        self.endpoints
+            .iter()
+            .find(|(id, _)| *id == endpoint_id)
+            .map_or(&ADMITS_EVERYTHING, |(_, scope)| scope)
+    }
+}
 
 impl ClientShellState {
     /// The scope every surface filters by. A Local server without the
@@ -24,8 +254,176 @@ impl ClientShellState {
         }
     }
 
+    /// Every endpoint judged against the effective scope. Build it once per
+    /// frame or key action; it borrows only `self.endpoints`.
+    pub(super) fn scope_view(&self) -> ScopeView<'_> {
+        ScopeView::new(&self.effective_scope(), &self.endpoints)
+    }
+
+    /// The active endpoint judged against the effective scope, over `snapshot`
+    /// (normally `self.snapshot`, the active endpoint's mirror).
+    pub(super) fn active_endpoint_scope<'a>(
+        &self,
+        snapshot: &'a ClientShellSnapshot,
+    ) -> EndpointScope<'a> {
+        EndpointScope::new(
+            &self.effective_scope(),
+            &self.active_endpoint_id,
+            self.endpoint_label(&self.active_endpoint_id),
+            Some(snapshot),
+        )
+    }
+
+    /// One tab of `endpoint_id`'s snapshot, judged on its own. For a single
+    /// question; loops use a `ScopeView`.
+    // A one-off gate for the picker's jump on focus and later surfaces; only
+    // tests call it so far.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(super) fn scope_admits_tab(
+        &self,
+        endpoint_id: &ClientEndpointId,
+        workspace: &ClientShellWorkspace,
+        tab: &ClientShellTab,
+    ) -> bool {
+        let key = endpoint_id.storage_key();
+        let workspace = ScopeWorkspaceRef {
+            machine: ScopeMachineRef {
+                key: &key,
+                label: self.endpoint_label(endpoint_id),
+            },
+            id: &workspace.workspace_id,
+            label: &workspace.label,
+        };
+        self.effective_scope().admits_tab(ScopeTabRef {
+            workspace,
+            id: &tab.tab_id,
+            label: &tab.label,
+        })
+    }
+
+    /// Whether `workspace`'s row shows: any of its tabs in `snapshot` is
+    /// admitted.
+    pub(super) fn scope_shows_workspace(
+        &self,
+        endpoint_id: &ClientEndpointId,
+        snapshot: &ClientShellSnapshot,
+        workspace: &ClientShellWorkspace,
+    ) -> bool {
+        let key = endpoint_id.storage_key();
+        let workspace_ref = ScopeWorkspaceRef {
+            machine: ScopeMachineRef {
+                key: &key,
+                label: self.endpoint_label(endpoint_id),
+            },
+            id: &workspace.workspace_id,
+            label: &workspace.label,
+        };
+        self.effective_scope().shows_workspace(
+            workspace_ref,
+            snapshot
+                .tabs
+                .iter()
+                .filter(|tab| tab.workspace_id == workspace.workspace_id)
+                .map(|tab| ScopeTabRef {
+                    workspace: workspace_ref,
+                    id: &tab.tab_id,
+                    label: &tab.label,
+                }),
+        )
+    }
+
+    /// Whether `endpoint_id`'s machine header shows, judged over its cached
+    /// snapshot.
+    // A one-off gate like `scope_admits_tab`; only tests call it so far.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(super) fn scope_shows_machine(&self, endpoint_id: &ClientEndpointId) -> bool {
+        let endpoint = self
+            .endpoints
+            .iter()
+            .find(|endpoint| &endpoint.endpoint_id == endpoint_id);
+        EndpointScope::new(
+            &self.effective_scope(),
+            endpoint_id,
+            self.endpoint_label(endpoint_id),
+            endpoint.and_then(|endpoint| endpoint.snapshot.as_deref()),
+        )
+        .shows_machine()
+    }
+
+    /// Whether a semantic notification is in scope. One that names no
+    /// workspace, tab or pane (a plugin's `notification.show`, update ready) is
+    /// unscoped and always passes. A target the snapshot does not list yet is
+    /// judged by its ids alone.
+    pub(super) fn scope_admits_notification(
+        &self,
+        scope: &ScopeState,
+        endpoint_id: &ClientEndpointId,
+        event: &SemanticNotification,
+    ) -> bool {
+        if event.workspace_id.is_none() && event.tab_id.is_none() && event.pane_id.is_none() {
+            return true;
+        }
+        let snapshot = self
+            .endpoints
+            .iter()
+            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
+            .and_then(|endpoint| endpoint.snapshot.as_deref());
+        // Resolve the most specific location the event names: its tab, else
+        // the pane's tab, else its workspace.
+        let pane = event.pane_id.as_deref().and_then(|pane_id| {
+            snapshot.and_then(|snapshot| snapshot.panes.iter().find(|pane| pane.pane_id == pane_id))
+        });
+        let tab_id = event
+            .tab_id
+            .as_deref()
+            .or_else(|| pane.map(|pane| pane.tab_id.as_str()));
+        let tab = tab_id.and_then(|tab_id| {
+            snapshot.and_then(|snapshot| {
+                snapshot.tabs.iter().find(|tab| {
+                    tab.tab_id == tab_id
+                        && event
+                            .workspace_id
+                            .as_deref()
+                            .is_none_or(|workspace_id| tab.workspace_id == workspace_id)
+                })
+            })
+        });
+        let workspace_id = event
+            .workspace_id
+            .as_deref()
+            .or_else(|| tab.map(|tab| tab.workspace_id.as_str()))
+            .or_else(|| pane.map(|pane| pane.workspace_id.as_str()));
+        let workspace = workspace_id.and_then(|workspace_id| {
+            snapshot.and_then(|snapshot| {
+                snapshot
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.workspace_id == workspace_id)
+            })
+        });
+        let key = endpoint_id.storage_key();
+        let workspace_ref = ScopeWorkspaceRef {
+            machine: ScopeMachineRef {
+                key: &key,
+                label: self.endpoint_label(endpoint_id),
+            },
+            id: workspace_id.unwrap_or_default(),
+            label: workspace.map_or("", |workspace| workspace.label.as_str()),
+        };
+        match tab_id {
+            Some(tab_id) => scope.admits_tab(ScopeTabRef {
+                workspace: workspace_ref,
+                id: tab_id,
+                label: tab.map_or("", |tab| tab.label.as_str()),
+            }),
+            None => scope.shows_workspace(workspace_ref, []),
+        }
+    }
+
     /// Takes the Local endpoint's latest projection: `None` when Local has
     /// none, or lost the capability on reconnect.
+    // The projection decoder (server/wire ticket) is the production caller.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn set_scope_projection(&mut self, scope: Option<ScopeState>) {
         if self.scope_projection == scope {
             return;
@@ -34,8 +432,18 @@ impl ClientShellState {
         self.scope_changed();
     }
 
-    /// Runs after every scope change, before the next frame.
-    fn scope_changed(&mut self) {}
+    /// Runs after every scope change, before the next frame. Rows re-filter on
+    /// their own at the next compose; what outlives a frame is cleaned here:
+    /// toasts already queued or showing for something now out of scope go.
+    /// Pending notifications stay, since they are judged again on delivery.
+    fn scope_changed(&mut self) {
+        self.retire_out_of_scope_notifications();
+        // Rows above the scroll position may have left or returned; the next
+        // compose clamps both lists and brings the focused workspace back into
+        // view instead of leaving the old offset over a shorter list.
+        self.reveal_focused_workspace = true;
+        self.reveal_mobile_workspace = true;
+    }
 
     /// Opens the focus/hide picker, from a keybind, a menu, or a plugin's
     /// `scope.pick` (`super::scope_picker` owns the overlay).

@@ -54,6 +54,8 @@ impl ClientShellState {
                 && self.endpoint_status(&self.active_endpoint_id)
                     == Some(ClientEndpointStatus::Online)
         });
+        // Focus and hide, judged once for this frame (`super::scope`).
+        let scope = super::scope::ScopeView::new(&self.effective_scope(), &self.endpoints);
         let mut render_state = render::ShellRenderState {
             machine_diagnostics: &self.machine_diagnostics,
             endpoints: &self.endpoints,
@@ -77,6 +79,7 @@ impl ClientShellState {
             reveal_navigation_workspace: &mut self.reveal_navigation_workspace,
             dragged_workspace_id: None,
             workspace_drop_indicator_row: None,
+            scope: &scope,
         };
         if let Some(snapshot) = local_snapshot {
             render::render_sidebar(
@@ -205,6 +208,9 @@ impl ClientShellState {
             _ => (None, None),
         };
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
+        // Focus and hide, judged once for this frame and shared by the sidebar,
+        // the mobile switcher and the navigator (`super::scope`).
+        let scope = super::scope::ScopeView::new(&self.effective_scope(), &self.endpoints);
         self.hits = render::render_shell(
             &mut buffer,
             layout,
@@ -233,6 +239,7 @@ impl ClientShellState {
                 reveal_navigation_workspace: &mut self.reveal_navigation_workspace,
                 dragged_workspace_id,
                 workspace_drop_indicator_row,
+                scope: &scope,
             },
         );
         self.hits.panes = surface
@@ -621,6 +628,7 @@ impl ClientShellState {
                     .as_ref()
                     .filter(|_| valid_navigation_target),
                 focus_active,
+                &scope,
                 &mut self.mobile_switcher_scroll,
                 &mut self.reveal_mobile_workspace,
                 &mut self.hits,
@@ -680,6 +688,7 @@ impl ClientShellState {
                     snapshot,
                     &self.endpoints,
                     &self.active_endpoint_id,
+                    &scope,
                     &self.config.keybinds,
                     &self.config.palette,
                 )?;

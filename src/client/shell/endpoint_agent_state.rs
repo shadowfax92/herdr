@@ -183,6 +183,12 @@ impl EndpointAgentPresentation {
     }
 }
 
+/// Rolls agents' projected statuses up into their tabs and workspaces. The
+/// rollup is deliberately unscoped: it is stored in the cached snapshot, which
+/// outlives scope changes, and the tab bar shows it as is. Focus and hide apply
+/// at display time instead (`EndpointScope::workspace_status`), so a workspace
+/// row never lights up for an out-of-scope tab and nothing needs re-projecting
+/// when the scope changes.
 fn project_aggregate_status(snapshot: &mut ClientShellSnapshot) {
     for tab in &mut snapshot.tabs {
         if let Some(status) = snapshot

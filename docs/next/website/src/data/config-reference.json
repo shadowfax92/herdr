@@ -1112,7 +1112,7 @@
           "key": "ui.sidebar.agents.hidden_workspaces",
           "type": "list of strings",
           "default": "[]",
-          "description": "Workspace labels, matched exactly, whose agents stay out of the Agents panel and its navigation keys. The workspaces stay in the Spaces panel, and the API still lists their agents."
+          "description": "Workspace labels, matched exactly on every machine, hidden from startup: they leave the Spaces and machines panel and the Agents panel, workspace and agent keys skip them, and they stop notifying. The focus and hide picker can show one again until the server restarts, and focusing a hidden workspace shows it. The API still lists them."
         },
         {
           "key": "ui.sidebar.agents.row_gap",

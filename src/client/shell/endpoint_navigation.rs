@@ -113,6 +113,9 @@ impl ClientShellState {
             action,
             KeybindAction::PreviousWorkspace | KeybindAction::NextWorkspace
         ) {
+            // Workspace keys walk the rows the machines panel draws: online
+            // machines, in-scope workspaces.
+            let scope = self.scope_view();
             let workspaces = self
                 .endpoints
                 .iter()
@@ -122,17 +125,18 @@ impl ClientShellState {
                         .snapshot
                         .as_deref()
                         .map_or_else(Vec::new, |snapshot| {
-                            render::workspace_entries(snapshot, &HashSet::new())
-                                .into_iter()
-                                .filter_map(|entry| {
-                                    snapshot.workspaces.get(entry.index).map(|workspace| {
-                                        (
-                                            endpoint.endpoint_id.clone(),
-                                            workspace.workspace_id.clone(),
-                                        )
-                                    })
+                            render::workspace_entries(
+                                snapshot,
+                                &HashSet::new(),
+                                scope.endpoint(&endpoint.endpoint_id),
+                            )
+                            .into_iter()
+                            .filter_map(|entry| {
+                                snapshot.workspaces.get(entry.index).map(|workspace| {
+                                    (endpoint.endpoint_id.clone(), workspace.workspace_id.clone())
                                 })
-                                .collect()
+                            })
+                            .collect()
                         })
                 })
                 .collect::<Vec<_>>();
@@ -171,7 +175,7 @@ impl ClientShellState {
                 &self.endpoints,
                 &self.active_endpoint_id,
                 self.config.agent_panel_sort,
-                &self.config.agents,
+                &self.scope_view(),
             );
             if agents.is_empty() {
                 return true;

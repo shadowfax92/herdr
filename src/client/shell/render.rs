@@ -7,7 +7,7 @@ pub(in crate::client::shell) mod sidebar;
 #[path = "../shell/tabs.rs"]
 mod tabs;
 
-pub(super) use super::agent_sidebar::{ordered_agent_pane_ids, render_agent_panel};
+pub(super) use super::agent_sidebar::render_agent_panel;
 pub(super) use super::aggregate_navigation::navigator_rows as client_navigator_rows;
 pub(super) use overlays::{render_client_overlay, render_context_menu, render_global_menu};
 pub(super) use sidebar::{render_collapsed_sidebar, render_sidebar, workspace_entries};
@@ -260,6 +260,8 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) reveal_navigation_workspace: &'a mut bool,
     pub(super) dragged_workspace_id: Option<&'a str>,
     pub(super) workspace_drop_indicator_row: Option<u16>,
+    /// Focus and hide, judged once for this frame over every endpoint.
+    pub(super) scope: &'a super::scope::ScopeView<'a>,
 }
 
 pub(super) fn render_shell(
@@ -276,6 +278,7 @@ pub(super) fn render_shell(
             layout.mobile_header,
             snapshot,
             config,
+            state.scope.endpoint(state.active_endpoint_id),
             &mut hits,
         );
     }
@@ -308,6 +311,7 @@ pub(super) fn render_shell(
                 state
                     .selected_workspace_id
                     .map(|target| target.workspace_id.as_str()),
+                state.scope.endpoint(state.active_endpoint_id),
                 &mut hits,
             );
         } else {

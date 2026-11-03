@@ -9,9 +9,7 @@
 //! presses keep moving down the panel and wrap, instead of returning to an
 //! agent that stays blocked until it is answered.
 
-use super::aggregate_navigation::{
-    aggregate_agent_rows, in_hidden_workspace, AggregateAgentRow, AggregateAgentTarget,
-};
+use super::aggregate_navigation::{aggregate_agent_rows, AggregateAgentRow, AggregateAgentTarget};
 use super::*;
 
 /// The first row after `focused`, wrapping, whose status is listed in
@@ -49,15 +47,18 @@ impl ClientShellState {
             .snapshot
             .as_deref()
             .and_then(|snapshot| snapshot.focused_pane_id.clone());
-        // The rows the panel draws: online machines only, hidden workspaces out.
+        // The rows the panel draws: online machines only, out-of-scope agents
+        // (focus and hide) out.
         let target = {
+            let scope = self.scope_view();
             let rows = aggregate_agent_rows(
                 &self.endpoints,
                 &self.active_endpoint_id,
                 self.config.agent_panel_sort,
+                &scope,
             )
             .into_iter()
-            .filter(|row| !row.endpoint.stale() && !in_hidden_workspace(row, &self.config.agents))
+            .filter(|row| !row.endpoint.stale())
             .collect::<Vec<_>>();
             next_attention_target(
                 &rows,
@@ -75,9 +76,13 @@ impl ClientShellState {
         let single_machine_index = (!self.multi_endpoint_active())
             .then(|| {
                 let snapshot = self.snapshot.as_deref()?;
-                super::agent_sidebar::listed_agent_pane_ids(snapshot, &self.config)
-                    .iter()
-                    .position(|pane_id| pane_id == &target.pane_id)
+                super::agent_sidebar::listed_agent_pane_ids(
+                    snapshot,
+                    &self.config,
+                    &self.active_endpoint_scope(snapshot),
+                )
+                .iter()
+                .position(|pane_id| pane_id == &target.pane_id)
             })
             .flatten();
         if !self.focus_or_activate(

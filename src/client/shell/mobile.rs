@@ -47,11 +47,15 @@ impl MobileItem {
     }
 }
 
+/// The mobile header: the focused workspace and tab (unscoped, like the tab
+/// bar) and the machine's agent counts and blocked badge, which count only
+/// agents in scope (focus and hide).
 pub(super) fn render_mobile_header(
     buffer: &mut Buffer,
     area: Rect,
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
+    scope: &super::scope::EndpointScope<'_>,
     hits: &mut ShellHitMap,
 ) {
     if area.is_empty() {
@@ -69,8 +73,8 @@ pub(super) fn render_mobile_header(
     hits.mobile_switch = button;
     let status_width = button.x.saturating_sub(area.x).saturating_sub(1);
     let status = Rect::new(area.x, area.y, status_width, area.height);
-    render_header_status(buffer, status, snapshot, config);
-    render_header_button(buffer, button, snapshot, config);
+    render_header_status(buffer, status, snapshot, config, scope);
+    render_header_button(buffer, button, snapshot, config, scope);
 }
 
 fn render_header_status(
@@ -78,6 +82,7 @@ fn render_header_status(
     area: Rect,
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
+    scope: &super::scope::EndpointScope<'_>,
 ) {
     if area.is_empty() {
         return;
@@ -140,6 +145,7 @@ fn render_header_status(
             Rect::new(area.x, area.y + 1, area.width, 1),
             snapshot,
             config,
+            scope,
         );
     }
 }
@@ -149,6 +155,7 @@ fn render_header_button(
     area: Rect,
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
+    scope: &super::scope::EndpointScope<'_>,
 ) {
     if area.is_empty() {
         return;
@@ -183,11 +190,9 @@ fn render_header_button(
             .bg(palette.surface0)
             .add_modifier(Modifier::BOLD),
     );
-    if snapshot
-        .agents
-        .iter()
-        .any(|agent| agent.agent_status == crate::api::schema::AgentStatus::Blocked)
-    {
+    if snapshot.agents.iter().any(|agent| {
+        agent.agent_status == crate::api::schema::AgentStatus::Blocked && scope.admits_agent(agent)
+    }) {
         put_text(
             buffer,
             area.right().saturating_sub(1),
@@ -238,6 +243,7 @@ fn render_agent_summary(
     area: Rect,
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
+    scope: &super::scope::EndpointScope<'_>,
 ) {
     use crate::api::schema::AgentStatus;
     let counts = [
@@ -253,7 +259,7 @@ fn render_agent_summary(
             snapshot
                 .agents
                 .iter()
-                .filter(|agent| agent.agent_status == status)
+                .filter(|agent| agent.agent_status == status && scope.admits_agent(agent))
                 .count(),
         )
     });
@@ -360,6 +366,9 @@ fn render_agent_summary(
     }
 }
 
+// Each argument is a separate borrow of shell state the switcher reads or
+// updates in one frame; a one-use struct would only move the list.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn render_mobile_switcher(
     buffer: &mut Buffer,
     area: Rect,
@@ -369,6 +378,7 @@ pub(super) fn render_mobile_switcher(
     config: &ClientShellConfig,
     selected_workspace_id: Option<&WorkspaceNavigationTarget>,
     focus_active: bool,
+    scope: &super::scope::ScopeView<'_>,
     scroll: &mut usize,
     reveal_workspace: &mut bool,
     hits: &mut ShellHitMap,
@@ -444,6 +454,7 @@ pub(super) fn render_mobile_switcher(
         config,
         selected_workspace_id,
         focus_active,
+        scope,
         viewport.width.saturating_sub(1),
     );
     let total_rows = items.iter().map(|item| item.lines.len()).sum::<usize>();
@@ -574,6 +585,9 @@ fn render_close_button(buffer: &mut Buffer, area: Rect, palette: &Palette) {
     }
 }
 
+/// The mobile switcher's rows. Machines, agents and spaces follow the scope
+/// (focus and hide) like the desktop panels; the focused workspace's tabs are
+/// the tab bar's and stay unscoped.
 fn mobile_items(
     snapshot: &ClientShellSnapshot,
     endpoints: &[ClientShellEndpoint],
@@ -581,13 +595,17 @@ fn mobile_items(
     config: &ClientShellConfig,
     selected_workspace_id: Option<&WorkspaceNavigationTarget>,
     focus_active: bool,
+    scope: &super::scope::ScopeView<'_>,
     content_width: u16,
 ) -> Vec<MobileItem> {
     let palette = &config.palette;
     let mut items = Vec::new();
     if endpoints.len() > 1 {
         items.push(MobileItem::section("machines", palette));
-        for endpoint in endpoints {
+        for endpoint in endpoints
+            .iter()
+            .filter(|endpoint| scope.endpoint(&endpoint.endpoint_id).shows_machine())
+        {
             let background = palette.panel_bg;
             let (symbol, state, color) = endpoint_status_presentation(endpoint.status, palette);
             items.push(MobileItem {
@@ -613,14 +631,12 @@ fn mobile_items(
             });
         }
     }
-    let mut agents = super::aggregate_navigation::aggregate_agent_rows(
+    let agents = super::aggregate_navigation::aggregate_agent_rows(
         endpoints,
         active_endpoint_id,
         config.agent_panel_sort,
+        scope,
     );
-    // Mobile builds rows itself rather than through `agent_row`, so it applies
-    // the same hidden-workspace rule here.
-    agents.retain(|row| !super::aggregate_navigation::in_hidden_workspace(row, &config.agents));
     let agent_view_label = snapshot.agent_view_label.as_deref();
     if !agents.is_empty() || agent_view_label.is_some() {
         let title = agent_view_label
@@ -760,10 +776,14 @@ fn mobile_items(
         palette,
     ));
     for endpoint in super::aggregate_navigation::cached_endpoint_snapshots(endpoints) {
-        for entry in super::render::workspace_entries(endpoint.snapshot, &HashSet::new()) {
+        let endpoint_scope = scope.endpoint(endpoint.endpoint_id);
+        for entry in
+            super::render::workspace_entries(endpoint.snapshot, &HashSet::new(), endpoint_scope)
+        {
             let Some(workspace) = endpoint.snapshot.workspaces.get(entry.index) else {
                 continue;
             };
+            let workspace_status = endpoint_scope.workspace_status(workspace);
             let selected = selected_workspace_id.is_some_and(|target| {
                 target.matches(endpoint.endpoint_id, &workspace.workspace_id)
             });
@@ -825,7 +845,7 @@ fn mobile_items(
             let status = if endpoint.stale() {
                 palette.overlay0
             } else {
-                status_color(workspace.agent_status, palette)
+                status_color(workspace_status, palette)
             };
             let stale_detail = if endpoint.stale() {
                 format!(" · {}", mobile_endpoint_state(endpoint.status))
@@ -843,7 +863,7 @@ fn mobile_items(
                                 .add_modifier(dim),
                         ),
                         Span::styled(
-                            status_icon(workspace.agent_status, config.status_indicators),
+                            status_icon(workspace_status, config.status_indicators),
                             Style::default().fg(status).bg(background).add_modifier(dim),
                         ),
                         Span::styled(" ", Style::default().bg(background)),

@@ -53,11 +53,19 @@ pub(super) struct AggregateAgentTarget {
     pub(super) pane_id: String,
 }
 
+/// Every machine's agents in aggregate panel order, limited to those in scope
+/// (focus and hide, `super::scope`). The panel, the mobile switcher, agent keys
+/// and `next_attention_agent` all walk this list, so a key never lands on an
+/// agent no panel draws.
 pub(super) fn aggregate_agent_rows<'a>(
     endpoints: &'a [ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
     sort: crate::config::AgentPanelSortConfig,
+    scope: &super::scope::ScopeView<'_>,
 ) -> Vec<AggregateAgentRow<'a>> {
+    let in_scope = |endpoint: CachedEndpointSnapshot<'_>, agent: &ClientShellAgent| {
+        scope.endpoint(endpoint.endpoint_id).admits_agent(agent)
+    };
     let active_index = endpoints
         .iter()
         .position(|endpoint| &endpoint.endpoint_id == active_endpoint_id);
@@ -87,6 +95,7 @@ pub(super) fn aggregate_agent_rows<'a>(
                     .snapshot
                     .agents
                     .iter()
+                    .filter(move |agent| in_scope(endpoint, agent))
                     .map(move |agent| AggregateAgentRow {
                         recency: endpoint
                             .agent_recency
@@ -139,7 +148,8 @@ pub(super) fn aggregate_agent_rows<'a>(
                         .snapshot
                         .agents
                         .iter()
-                        .find(|agent| agent.pane_id == pane_id)?;
+                        .find(|agent| agent.pane_id == pane_id)
+                        .filter(|agent| in_scope(endpoint, agent))?;
                     Some(AggregateAgentRow {
                         recency: endpoint
                             .agent_recency
@@ -260,29 +270,17 @@ impl crate::agent_view_eval::AgentViewEntry for ClientAgentViewEntry<'_> {
     }
 }
 
-/// Whether `[ui.sidebar.agents].hidden_workspaces` keeps this row out of the
-/// Agents panel. Navigation keys skip what the panel never draws.
-pub(super) fn in_hidden_workspace(
-    row: &AggregateAgentRow<'_>,
-    agents: &crate::config::AgentsSidebarConfig,
-) -> bool {
-    row.endpoint
-        .snapshot
-        .workspaces
-        .iter()
-        .find(|workspace| workspace.workspace_id == row.agent.workspace_id)
-        .is_some_and(|workspace| agents.hides_workspace(&workspace.label))
-}
-
+/// The agents the multi-machine agent keys walk: the aggregate panel's rows on
+/// online machines.
 pub(super) fn online_agent_targets(
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
     sort: crate::config::AgentPanelSortConfig,
-    agents: &crate::config::AgentsSidebarConfig,
+    scope: &super::scope::ScopeView<'_>,
 ) -> Vec<AggregateAgentTarget> {
-    aggregate_agent_rows(endpoints, active_endpoint_id, sort)
+    aggregate_agent_rows(endpoints, active_endpoint_id, sort, scope)
         .into_iter()
-        .filter(|row| !row.endpoint.stale() && !in_hidden_workspace(row, agents))
+        .filter(|row| !row.endpoint.stale())
         .map(|row| AggregateAgentTarget {
             endpoint_id: row.endpoint.endpoint_id.clone(),
             pane_id: row.agent.pane_id.clone(),
@@ -290,10 +288,14 @@ pub(super) fn online_agent_targets(
         .collect()
 }
 
+/// The go-to navigator's rows: machines, workspaces and their panes, limited to
+/// what is in scope. Every caller (render, selection, accept) builds the same
+/// list, so the selection always names a drawn row.
 pub(super) fn navigator_rows(
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
     navigator: &ClientNavigatorOverlay,
+    scope: &super::scope::ScopeView<'_>,
 ) -> Vec<ClientNavigatorRow> {
     let query = navigator.query.trim().to_lowercase();
     let filter = |status| match navigator.filter {
@@ -317,6 +319,10 @@ pub(super) fn navigator_rows(
     let mut rows = Vec::new();
 
     for endpoint in endpoints {
+        let endpoint_scope = scope.endpoint(&endpoint.endpoint_id);
+        if !endpoint_scope.shows_machine() {
+            continue;
+        }
         let stale = endpoint.status != ClientEndpointStatus::Online;
         let endpoint_query_matches = !query.is_empty() && text(&endpoint.label);
         let mut endpoint_rows = Vec::new();
@@ -344,6 +350,9 @@ pub(super) fn navigator_rows(
                     .push(pane);
             }
             for workspace in &snapshot.workspaces {
+                if !endpoint_scope.shows_workspace(&workspace.workspace_id) {
+                    continue;
+                }
                 let workspace_matches = endpoint_query_matches
                     || text(&workspace.label)
                     || workspace.branch.as_deref().is_some_and(text);
@@ -353,7 +362,10 @@ pub(super) fn navigator_rows(
                     .map(Vec::as_slice)
                     .unwrap_or_default();
                 let multiple_tabs = workspace_tabs.len() > 1;
-                for tab in workspace_tabs {
+                for tab in workspace_tabs
+                    .iter()
+                    .filter(|tab| endpoint_scope.admits_tab(&workspace.workspace_id, &tab.tab_id))
+                {
                     let tab_matches = workspace_matches || text(&tab.label);
                     let tab_panes = panes_by_tab
                         .get(tab.tab_id.as_str())

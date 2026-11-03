@@ -37,6 +37,27 @@ impl ClientShellState {
         }
     }
 
+    /// After a scope change, drops queued and visible toasts for things now out
+    /// of scope, like `retire_endpoint_notifications` does for a gone machine.
+    /// Pending notifications are left to `tick_notifications`, which judges
+    /// each one against the scope at delivery.
+    pub(super) fn retire_out_of_scope_notifications(&mut self) {
+        let scope = self.effective_scope().into_owned();
+        let queued = std::mem::take(&mut self.queued_notifications);
+        self.queued_notifications = queued
+            .into_iter()
+            .filter(|queued| {
+                self.scope_admits_notification(&scope, &queued.endpoint_id, &queued.event)
+            })
+            .collect();
+        if self.visible_notification.as_ref().is_some_and(|visible| {
+            !self.scope_admits_notification(&scope, &visible.endpoint_id, &visible.event)
+        }) {
+            self.visible_notification = None;
+            self.promote_queued_notification(std::time::Instant::now());
+        }
+    }
+
     fn queue_visible_notification(
         &mut self,
         mut notification: ClientVisibleNotification,
@@ -170,6 +191,8 @@ impl ClientShellState {
 
         let pending = std::mem::take(&mut self.pending_notifications);
         let mut effects = Vec::new();
+        // Judged at most once per tick, and only once something is due.
+        let mut scope = None;
         for pending in pending {
             if pending.deadline > now {
                 self.pending_notifications.push(pending);
@@ -191,6 +214,14 @@ impl ClientShellState {
                         continue;
                     }
                 }
+            }
+            // Focus and hide silence what they keep out of the panels: no
+            // toast, sound or OS notification. Every notification is judged
+            // here at delivery, validated or not, so a delayed one follows the
+            // scope of the moment it would show.
+            let scope = scope.get_or_insert_with(|| self.effective_scope().into_owned());
+            if !self.scope_admits_notification(scope, &pending.endpoint_id, &pending.event) {
+                continue;
             }
             let target_active =
                 self.notification_target_is_active(&pending.endpoint_id, &pending.event);

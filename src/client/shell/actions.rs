@@ -923,13 +923,21 @@ impl ClientShellState {
 
         match action {
             KeybindAction::FocusAgent(index) => {
-                let agents = super::agent_sidebar::listed_agent_pane_ids(snapshot, &self.config);
+                let agents = super::agent_sidebar::listed_agent_pane_ids(
+                    snapshot,
+                    &self.config,
+                    &self.active_endpoint_scope(snapshot),
+                );
                 Some(Method::PaneFocus(PaneTarget {
                     pane_id: agents.get(index)?.clone(),
                 }))
             }
             KeybindAction::PreviousAgent | KeybindAction::NextAgent => {
-                let agents = super::agent_sidebar::listed_agent_pane_ids(snapshot, &self.config);
+                let agents = super::agent_sidebar::listed_agent_pane_ids(
+                    snapshot,
+                    &self.config,
+                    &self.active_endpoint_scope(snapshot),
+                );
                 if agents.is_empty() {
                     return None;
                 }
@@ -971,18 +979,39 @@ impl ClientShellState {
                 if entries.is_empty() {
                     return None;
                 }
-                let current = entries
-                    .iter()
-                    .position(|entry| {
-                        snapshot.workspaces[entry.index].workspace_id == focused_workspace
-                    })
-                    .unwrap_or(0);
                 let delta = if action == KeybindAction::PreviousWorkspace {
                     -1
                 } else {
                     1
                 };
-                let next = (current as isize + delta).rem_euclid(entries.len() as isize) as usize;
+                let next = match entries.iter().position(|entry| {
+                    snapshot.workspaces[entry.index].workspace_id == focused_workspace
+                }) {
+                    Some(current) => {
+                        (current as isize + delta).rem_euclid(entries.len() as isize) as usize
+                    }
+                    // The focused workspace is out of scope (reached by an
+                    // explicit jump): step to the nearest listed one instead
+                    // of restarting from the top.
+                    None => {
+                        let focused_index = snapshot
+                            .workspaces
+                            .iter()
+                            .position(|workspace| workspace.workspace_id == focused_workspace)
+                            .unwrap_or(0);
+                        if delta > 0 {
+                            entries
+                                .iter()
+                                .position(|entry| entry.index > focused_index)
+                                .unwrap_or(0)
+                        } else {
+                            entries
+                                .iter()
+                                .rposition(|entry| entry.index < focused_index)
+                                .unwrap_or(entries.len() - 1)
+                        }
+                    }
+                };
                 let workspace_id = snapshot.workspaces[entries[next].index]
                     .workspace_id
                     .clone();
@@ -991,11 +1020,13 @@ impl ClientShellState {
             }
             KeybindAction::LastWorkspace => {
                 let workspace_id = self.previous_workspace_id.clone()?;
+                let workspace = snapshot
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.workspace_id == workspace_id)?;
+                // Like the other workspace keys, it never lands out of scope.
                 if workspace_id == focused_workspace
-                    || !snapshot
-                        .workspaces
-                        .iter()
-                        .any(|workspace| workspace.workspace_id == workspace_id)
+                    || !self.scope_shows_workspace(&self.active_endpoint_id, snapshot, workspace)
                 {
                     return None;
                 }

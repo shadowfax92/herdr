@@ -43,6 +43,7 @@ pub(crate) fn render_client_overlay(
     s: &ClientShellSnapshot,
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
+    scope: &super::scope::ScopeView<'_>,
     k: &LiveKeybindConfig,
     p: &Palette,
 ) -> Option<OverlayRender> {
@@ -70,7 +71,7 @@ pub(crate) fn render_client_overlay(
         ClientShellOverlay::ConfirmClose(v) => render_confirm_close_overlay(b, v, p),
         ClientShellOverlay::Help(v) => render_help_overlay(b, v, k, p),
         ClientShellOverlay::Navigator(v) => {
-            render_navigator_overlay(b, v, endpoints, active_endpoint_id, p)
+            render_navigator_overlay(b, v, endpoints, active_endpoint_id, scope, p)
         }
         ClientShellOverlay::Settings(v) => {
             settings_overlay::render_settings_overlay(b, v, s.integration_updates_available, p)
@@ -713,6 +714,7 @@ fn render_navigator_overlay(
     n: &ClientNavigatorOverlay,
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
+    scope: &super::scope::ScopeView<'_>,
     p: &Palette,
 ) -> Option<OverlayRender> {
     let a = b.area;
@@ -737,7 +739,7 @@ fn render_navigator_overlay(
         " Go to ",
         Style::default().fg(p.accent).bg(p.panel_bg),
     );
-    let rows = super::aggregate_navigation::navigator_rows(endpoints, active_endpoint_id, n);
+    let rows = super::aggregate_navigation::navigator_rows(endpoints, active_endpoint_id, n, scope);
     let search = if n.search_focused {
         " / ".to_owned()
     } else if let Some(f) = n.filter {
