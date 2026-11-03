@@ -1,4 +1,4 @@
-"""Real-herdr check of the scaffold: install + link, a stub action's error, and
+"""Real-herdr check of the scaffold: install + link, a failing action's error, and
 popup sizing through Host::open_popup. Run with `just -f herdr-tools/justfile real`.
 
 Everything runs in an IsolatedHerdr (temp XDG dirs, its own session); nothing
@@ -53,7 +53,10 @@ def main():
         version = herdr.run([str(plugin_dir / "bin/herdr-tools"), "--version"]).stdout.strip()
         print(f"PASS install + link: {plugin_dir} ({version}); a second install keeps the link")
 
-        # 2. A stub action through Herdr: it fails, and the plugin log says why.
+        # 2. A failing action through Herdr: the plugin log says why. Modes stop being stubs
+        # as they are ported, so the failure comes from a config.toml with an unknown table,
+        # which every mode refuses (step 3 replaces the file).
+        herdr.write_plugin_config("[nope]\n")
         invoked = herdr.cli("plugin", "action", "invoke", "shadowfax.tools.move")
         assert invoked["result"]["action"]["command"] == ["./bin/herdr-tools", "move", "open"]
         logs = herdr.wait_for(
@@ -63,8 +66,9 @@ def main():
         )
         entry = logs[-1]
         assert entry["status"] == "failed" and entry["exit_code"] == 1, entry
-        assert entry["stderr"] == "herdr-tools move: move is not ported yet\n", entry
-        print(f"PASS stub action: status={entry['status']} exit={entry['exit_code']} "
+        assert entry["stderr"].startswith("herdr-tools move: "), entry
+        assert "unknown table [nope]" in entry["stderr"], entry
+        print(f"PASS failing action: status={entry['status']} exit={entry['exit_code']} "
               f"stderr={entry['stderr'].strip()!r}")
 
         # 3. Popups through Host::open_popup, sized from a test config.toml.
