@@ -1,7 +1,7 @@
-use herdr_menu::redistribute::LayoutSnapshot;
-use herdr_menu::redistribute_ui::{RedistributionInput, RedistributionState};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::json;
+use tools_menu::redistribute::LayoutSnapshot;
+use tools_menu::redistribute_ui::{RedistributionInput, RedistributionState};
 
 fn state() -> RedistributionState {
     let snapshot: LayoutSnapshot = serde_json::from_value(json!({
@@ -20,8 +20,8 @@ fn key(code: KeyCode) -> KeyEvent {
 
 #[test]
 fn fork_recovery_details_scroll_and_cannot_repeat_the_failed_action() {
-    use herdr_menu::app::{InputOutcome, MenuState};
-    use herdr_menu::config::Config;
+    use tools_menu::app::{InputOutcome, MenuState};
+    use tools_menu::config::Config;
     let mut menu = MenuState::new(
         Config::parse("[[items]]\ntype='fork'\nkey='l'\nlabel='left'\nplacement='left'\n").unwrap(),
     );
@@ -32,7 +32,7 @@ fn fork_recovery_details_scroll_and_cannot_repeat_the_failed_action() {
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 10)).unwrap();
     let mut render = |menu: &MenuState| {
         terminal
-            .draw(|frame| herdr_menu::ui::render(menu, frame))
+            .draw(|frame| tools_menu::ui::render(menu, frame))
             .unwrap();
         terminal
             .backend()
@@ -213,8 +213,8 @@ fn stale_preview_requires_another_press_and_failure_cannot_be_retried() {
 
 #[test]
 fn default_menu_dispatches_redistribute_and_returns_to_existing_actions() {
-    use herdr_menu::app::{InputOutcome, MenuState};
-    use herdr_menu::config::{Config, MenuItem, DEFAULT_CONFIG};
+    use tools_menu::app::{InputOutcome, MenuState};
+    use tools_menu::config::{Config, MenuItem, DEFAULT_CONFIG};
     let mut menu = MenuState::new(Config::parse(DEFAULT_CONFIG).unwrap());
     assert!(matches!(
         menu.handle_key(key(KeyCode::Char('d'))),

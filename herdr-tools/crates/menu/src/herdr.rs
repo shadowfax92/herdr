@@ -1,138 +1,155 @@
-use std::ffi::{OsStr, OsString};
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::time::Duration;
+//! The menu's Herdr seam and its three entry points: `open`, `menu` and
+//! `copy-context`.
+//!
+//! [`Herdr`] is a thin adapter over `tools_core::Host` that keeps the old
+//! plugin's method names, so the fork, layout and redistribution controllers
+//! carry over unchanged. CLI calls go through `Host::cli`/`cli_json`, the two
+//! layout-tree operations the CLI lacks through `Host::request`, and the popup
+//! opens with `Host::open_popup_sized`.
+//!
+//! ```text
+//!  open (action) ──▶ source pane + cwd ──▶ popup size ──▶ plugin.pane.open "menu"
+//!                                          [popup.size].menu / profile, else
+//!                                          [menu] width × automatic height
+//!  menu (popup)  ──▶ [menu] ──▶ MenuState + ui ──▶ fork · rotate · redistribute
+//!                                                  · copy context · shell items
+//! ```
+//!
+//! Popups cannot see their caller, so `open` hands the source pane and cwd to
+//! the popup as `HERDR_MENU_SOURCE_PANE_ID` / `HERDR_MENU_SOURCE_CWD`. Every
+//! later action targets that captured pane, never whatever is focused by then.
 
-use anyhow::{bail, Context, Result};
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
+
+use anyhow::{anyhow, bail, Context, Result};
 use ratatui::crossterm::event;
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
+use tools_core::{Host, Invocation, Paths, PopupDims, PopupSize};
 
 use crate::agent_panes::AgentPaneController;
-use crate::agents_policy::{Client as PolicyClient, Operation, PendingRequest};
 use crate::app::{InputOutcome, MenuState};
 use crate::config::{Config, ExecutionMode, MenuItem};
 use crate::execute::ShellExecutor;
 use crate::handoff::HandoffController;
 use crate::redistribute::{ApplyOutcome, Redistributor};
-use crate::{ui, PLUGIN_ID};
+use crate::{ui, POPUP};
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-pub struct InvocationContext {
-    pub focused_pane_id: Option<String>,
-    pub focused_pane_cwd: Option<String>,
-}
+/// Title of every notification the menu shows.
+const NOTIFICATION_TITLE: &str = "Herdr Menu";
 
-impl InvocationContext {
-    pub fn parse(source: &str) -> Result<Self> {
-        serde_json::from_str(source).context("invalid HERDR_PLUGIN_CONTEXT_JSON")
-    }
-}
+/// Popup size when `config.toml` cannot be loaded: the popup still opens, at
+/// the old launcher's fallback size, and shows the config error.
+const FALLBACK_SIZE: (u16, u16) = (64, 16);
 
-/// Narrow adapter around the Herdr CLI protocol used by plugin actions.
+/// Narrow adapter around the Herdr client the menu's features share.
 #[derive(Clone, Debug)]
 pub struct Herdr {
-    binary: PathBuf,
-    socket: Option<PathBuf>,
+    host: Host,
 }
 
 impl Herdr {
-    pub fn new(binary: impl Into<PathBuf>) -> Self {
+    /// The Herdr that started this process (`HERDR_BIN_PATH`, `HERDR_SOCKET_PATH`).
+    pub fn from_env() -> Self {
         Self {
-            binary: binary.into(),
-            socket: std::env::var_os("HERDR_SOCKET_PATH").map(PathBuf::from),
+            host: Host::from_env(),
         }
     }
 
-    pub fn with_socket(mut self, socket: impl Into<PathBuf>) -> Self {
-        self.socket = Some(socket.into());
-        self
+    /// An explicit binary and no socket, for tests and probes; CLI calls still
+    /// inherit the process environment. Add a socket with [`Herdr::with_socket`].
+    pub fn new(binary: impl Into<PathBuf>) -> Self {
+        Self {
+            host: Host::new(binary, None),
+        }
     }
 
+    pub fn with_socket(self, socket: impl Into<PathBuf>) -> Self {
+        Self {
+            host: Host::new(self.host.binary(), Some(socket.into())),
+        }
+    }
+
+    /// The tools-core client underneath.
+    pub fn host(&self) -> &Host {
+        &self.host
+    }
+
+    /// The layout-tree socket operations missing from Herdr's CLI
+    /// (`layout.export`, `layout.set_split_ratio`).
     pub(crate) fn layout_request(
         &self,
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value> {
-        crate::socket::request(
-            self.socket
-                .as_deref()
-                .context("HERDR_SOCKET_PATH is not set")?,
-            method,
-            params,
-        )
+        self.host.request(method, params)
     }
 
     pub(crate) fn socket_path(&self) -> Option<&Path> {
-        self.socket.as_deref()
+        self.host.socket_path()
     }
 
     pub fn binary(&self) -> &Path {
-        &self.binary
+        self.host.binary()
     }
 
-    pub fn launch(&self, context: &InvocationContext, config_path: &Path) -> Result<()> {
-        let (source_pane_id, source_cwd) = self.source_context(context)?;
+    /// Opens the menu popup over the invoking pane. `config` is None when
+    /// `config.toml` could not be loaded; the popup then opens at the fallback
+    /// size and reports the error itself.
+    pub fn launch(
+        &self,
+        invocation: &Invocation,
+        config: Option<&tools_core::Config>,
+    ) -> Result<()> {
+        let (source_pane_id, source_cwd) = self.source_context(invocation)?;
         let source_cwd_text = source_cwd
             .to_str()
             .context("source pane working directory is not valid UTF-8")?;
-        let (width, height) = Config::load(config_path)
-            .map(|config| (config.width, config.popup_height()))
-            .unwrap_or((64, 16));
-        let width = width.to_string();
-        let height = height.to_string();
-        let cwd_environment = format!("HERDR_MENU_SOURCE_CWD={source_cwd_text}");
-        let pane_environment = format!("HERDR_MENU_SOURCE_PANE_ID={source_pane_id}");
-        let mut arguments = vec![
-            OsString::from("plugin"),
-            OsString::from("pane"),
-            OsString::from("open"),
-            OsString::from("--plugin"),
-            OsString::from(PLUGIN_ID),
-            OsString::from("--entrypoint"),
-            OsString::from("menu"),
-            OsString::from("--placement"),
-            OsString::from("popup"),
-            OsString::from("--width"),
-            OsString::from(width),
-            OsString::from("--height"),
-            OsString::from(height),
-            OsString::from("--env"),
-            OsString::from(cwd_environment),
-            OsString::from("--env"),
-            OsString::from(pane_environment),
+        let size = popup_size(config, || self.host.client_width(&source_pane_id).ok());
+        let rtr_binary = std::env::var_os("RTR_BIN_PATH")
+            .map(|binary| {
+                binary
+                    .into_string()
+                    .map_err(|_| anyhow!("RTR_BIN_PATH is not valid UTF-8"))
+            })
+            .transpose()?;
+        let mut environment = vec![
+            ("HERDR_MENU_SOURCE_CWD", source_cwd_text),
+            ("HERDR_MENU_SOURCE_PANE_ID", source_pane_id.as_str()),
         ];
-        if let Some(rtr_binary) = std::env::var_os("RTR_BIN_PATH") {
-            let rtr_binary = rtr_binary
-                .to_str()
-                .context("RTR_BIN_PATH is not valid UTF-8")?;
-            arguments.push(OsString::from("--env"));
-            arguments.push(OsString::from(format!("RTR_BIN_PATH={rtr_binary}")));
+        if let Some(rtr_binary) = rtr_binary.as_deref() {
+            environment.push(("RTR_BIN_PATH", rtr_binary));
         }
-        self.output(arguments)?;
-        Ok(())
+        self.host
+            .open_popup_sized(POPUP, Some(size), &environment)
+            .context("opening the menu popup")
     }
 
     pub fn launch_with_reporting(
         &self,
-        context: &InvocationContext,
-        config_path: &Path,
+        invocation: &Invocation,
+        config: Option<&tools_core::Config>,
     ) -> Result<()> {
-        let result = self.launch(context, config_path);
+        let result = self.launch(invocation, config);
         if let Err(error) = &result {
             let _ = self.show_notification(&format!("Could not open menu: {error:#}"));
         }
         result
     }
 
-    fn source_context(&self, context: &InvocationContext) -> Result<(String, PathBuf)> {
-        let pane_id = context
-            .focused_pane_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|pane_id| !pane_id.is_empty() && !pane_id.chars().any(char::is_control))
-            .context("plugin context has no valid source pane ID")?
+    fn source_context(&self, invocation: &Invocation) -> Result<(String, PathBuf)> {
+        let pane_id = invocation
+            .source_pane()
+            .map_err(|_| anyhow!("plugin context has no valid source pane ID"))?
             .to_string();
-        if let Some(cwd) = context.focused_pane_cwd.as_deref() {
+        // A context cwd is validated as given (a blank one is an error, not a
+        // reason to ask Herdr); only an absent one falls back to `pane get`.
+        let context_cwd = invocation
+            .context
+            .as_ref()
+            .and_then(|context| context.focused_pane_cwd.as_deref());
+        if let Some(cwd) = context_cwd {
             return Ok((pane_id, validate_directory(cwd)?));
         }
         let cwd = self
@@ -182,77 +199,66 @@ impl Herdr {
     }
 
     pub fn show_notification(&self, body: &str) -> Result<()> {
-        let body = body.chars().take(220).collect::<String>();
-        self.output([
-            OsStr::new("notification"),
-            OsStr::new("show"),
-            OsStr::new("Herdr Menu"),
-            OsStr::new("--body"),
-            OsStr::new(&body),
-        ])?;
-        Ok(())
-    }
-
-    pub fn reload_config(&self) -> Result<()> {
-        self.output([OsStr::new("server"), OsStr::new("reload-config")])?;
-        Ok(())
+        self.host.notify(NOTIFICATION_TITLE, body)
     }
 
     /// Feature controllers own response shapes; this shared process boundary
     /// keeps command failure and JSON decoding behavior consistent across them.
     pub(crate) fn json<T, I, S>(&self, args: I) -> Result<T>
     where
-        T: for<'de> Deserialize<'de>,
+        T: DeserializeOwned,
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        serde_json::from_slice(&self.output(args)?).context("failed to decode Herdr response")
+        self.host.cli_json(args)
     }
 
-    pub(crate) fn output<I, S>(&self, args: I) -> Result<Vec<u8>>
+    /// Runs a Herdr CLI command for its effect; a refusal is a `HostError`.
+    pub(crate) fn output<I, S>(&self, args: I) -> Result<String>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        let output = self.command(args)?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!(
-                "Herdr command failed with {}: {}",
-                output.status,
-                stderr.trim()
-            );
-        }
-        Ok(output.stdout)
+        self.host.cli(args)
     }
+}
 
-    fn command<I, S>(&self, args: I) -> Result<Output>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<OsStr>,
-    {
-        let args = args
-            .into_iter()
-            .map(|value| value.as_ref().to_os_string())
-            .collect::<Vec<OsString>>();
-        Command::new(&self.binary)
-            .args(args)
-            .output()
-            .with_context(|| format!("failed to run {}", self.binary.display()))
+/// The menu popup's outer size.
+///
+/// A configured `[popup.size].menu`, or a matching `[[popup.profile]]` entry,
+/// fixes both dimensions (the old `width` + `height`). Without one the menu is
+/// [`Config::width`] wide and [`Config::popup_height`] tall, as the old file's
+/// unset `height` was. `client_width` is read only when profiles exist, since
+/// only they match on it.
+pub fn popup_size(
+    config: Option<&tools_core::Config>,
+    client_width: impl FnOnce() -> Option<u16>,
+) -> PopupDims {
+    let cells = |(width, height): (u16, u16)| PopupDims {
+        width: PopupSize::Cells(width),
+        height: PopupSize::Cells(height),
+    };
+    let Some(config) = config else {
+        return cells(FALLBACK_SIZE);
+    };
+    let width = if config.popup_config().profile.is_empty() {
+        None
+    } else {
+        client_width()
+    };
+    if let Some(resolved) = config.popup(POPUP, width) {
+        return resolved.dims;
+    }
+    match Config::from_core(config) {
+        Ok(menu) => cells((menu.width, menu.popup_height())),
+        Err(_) => cells(FALLBACK_SIZE),
     }
 }
 
 pub fn launch_from_environment() -> Result<()> {
-    let binary = std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".into());
-    let context = std::env::var("HERDR_PLUGIN_CONTEXT_JSON")
-        .context("HERDR_PLUGIN_CONTEXT_JSON is not set")?;
-    let config_dir = std::env::var_os("HERDR_PLUGIN_CONFIG_DIR")
-        .map(PathBuf::from)
-        .context("HERDR_PLUGIN_CONFIG_DIR is not set")?;
-    Herdr::new(binary).launch_with_reporting(
-        &InvocationContext::parse(&context)?,
-        &config_dir.join("config.toml"),
-    )
+    let invocation = Invocation::current()?;
+    let config = tools_core::Config::current().ok();
+    Herdr::from_env().launch_with_reporting(invocation, config)
 }
 
 /// The popup and CLI share a copy boundary: capture the explicit source, wait
@@ -295,8 +301,7 @@ pub fn copy_context_from_environment(source_pane: Option<String>, stdout: bool) 
         .or_else(|| std::env::var("HERDR_PANE_ID").ok())
         .filter(|value| !value.trim().is_empty() && !value.chars().any(char::is_control))
         .context("no source pane; set HERDR_PANE_ID or pass --source-pane")?;
-    let binary = std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".into());
-    let action = CopyContextAction::new(Herdr::new(binary), source_pane);
+    let action = CopyContextAction::new(Herdr::from_env(), source_pane);
     if stdout {
         use std::io::Write;
         std::io::stdout()
@@ -309,50 +314,43 @@ pub fn copy_context_from_environment(source_pane: Option<String>, stdout: bool) 
 }
 
 pub fn run_menu_from_environment() -> Result<()> {
-    let config_dir = std::env::var_os("HERDR_PLUGIN_CONFIG_DIR")
-        .map(PathBuf::from)
-        .context("HERDR_PLUGIN_CONFIG_DIR is not set")?;
     let source_cwd = std::env::var_os("HERDR_MENU_SOURCE_CWD")
         .map(PathBuf::from)
         .context("HERDR_MENU_SOURCE_CWD is not set")?;
     let source_pane_id = std::env::var("HERDR_MENU_SOURCE_PANE_ID")
         .context("HERDR_MENU_SOURCE_PANE_ID is not set")?;
-    let state_dir = std::env::var_os("HERDR_PLUGIN_STATE_DIR")
-        .map(PathBuf::from)
-        .context("HERDR_PLUGIN_STATE_DIR is not set")?;
-    let herdr_binary = std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".into());
+    // Every mode keeps its state under `<plugin state dir>/<mode>/`, so no
+    // mode's files or cleanup can reach another's. The menu's are the fork
+    // rotation record (`last-fork.json` + lock) and `redistribute.lock`.
+    let state_dir = Paths::from_env().state_dir().join(crate::MODE);
     let rtr_binary = std::env::var_os("RTR_BIN_PATH").unwrap_or_else(|| "rtr".into());
+    let herdr = Herdr::from_env();
     let redistributor = Redistributor::new(
-        Herdr::new(herdr_binary.clone()),
+        herdr.clone(),
         source_pane_id.clone(),
         source_cwd.clone(),
         state_dir.clone(),
     );
-    let handoff = CopyContextAction::new(Herdr::new(herdr_binary.clone()), source_pane_id.clone());
+    let handoff = CopyContextAction::new(herdr.clone(), source_pane_id.clone());
     let controller = AgentPaneController::new(
-        Herdr::new(herdr_binary),
+        herdr,
         source_pane_id,
         source_cwd.clone(),
         state_dir.join("last-fork.json"),
         rtr_binary,
     );
-    run_menu(
-        &config_dir.join("config.toml"),
-        &source_cwd,
-        &controller,
-        &redistributor,
-        &handoff,
-    )
+    let config = tools_core::Config::current().and_then(Config::from_core);
+    run_menu(config, &source_cwd, &controller, &redistributor, &handoff)
 }
 
 fn run_menu(
-    config_path: &Path,
+    config: Result<Config>,
     source_cwd: &Path,
     controller: &AgentPaneController,
     redistributor: &Redistributor,
     handoff: &CopyContextAction,
 ) -> Result<()> {
-    let mut state = match Config::load(config_path) {
+    let mut state = match config {
         Ok(config) => {
             for warning in &config.warnings {
                 eprintln!("Herdr Menu config: {warning}");
@@ -391,48 +389,11 @@ fn run_event_loop(
     redistributor: &Redistributor,
     handoff: &CopyContextAction,
 ) -> Result<()> {
-    let policy_client = PolicyClient::from_environment();
-    let mut pending_policy = None;
-    if state.has_visibility_action() {
-        match PendingRequest::spawn(policy_client.clone(), Operation::Read) {
-            Ok(task) => pending_policy = Some(task),
-            Err(error) => state.complete_visibility(Err(error)),
-        }
-    }
     loop {
         terminal.draw(|frame| ui::render(state, frame))?;
-        let waiting_for_policy = pending_policy.is_some();
-        let outcome = next_menu_input(
-            state,
-            |timeout| {
-                if timeout != Duration::ZERO && !waiting_for_policy {
-                    return event::read().map(Some);
-                }
-                if event::poll(timeout)? {
-                    event::read().map(Some)
-                } else {
-                    Ok(None)
-                }
-            },
-            || {
-                let result = pending_policy
-                    .as_ref()
-                    .and_then(PendingRequest::try_complete);
-                if result.is_some() {
-                    pending_policy = None;
-                }
-                result
-            },
-        )?;
-        match outcome {
+        match state.handle_event(event::read()?) {
             InputOutcome::Continue => {}
             InputOutcome::Cancel => return Ok(()),
-            InputOutcome::SetVisibility(show) => {
-                match PendingRequest::spawn(policy_client.clone(), Operation::Set(show)) {
-                    Ok(task) => pending_policy = Some(task),
-                    Err(error) => state.complete_visibility(Err(error)),
-                }
-            }
             InputOutcome::ApplyLayout(plan) => match redistributor.apply(&plan) {
                 Ok(ApplyOutcome::Applied) => return Ok(()),
                 Ok(ApplyOutcome::Refresh(snapshot)) => state.refresh_redistribution(*snapshot),
@@ -474,32 +435,11 @@ fn run_event_loop(
                 Ok(()) => return Ok(()),
                 Err(error) => state.set_copy_failure(format!("{error:#}")),
             },
-            // Visibility reaches execution only as SetVisibility with captured
-            // intent; the static config item never triggers an implicit flip.
+            // The retired visibility row is never enabled, so it never reaches
+            // execution; separators are not selectable.
             InputOutcome::Execute(MenuItem::WorkspaceVisibility(_) | MenuItem::Separator) => {}
         }
     }
-}
-
-/// Prefer queued input over publishing an asynchronous reply. Inputs typed
-/// while visibility was disabled must see that same state, even if a reply is
-/// already waiting. Real terminal input and deterministic tests use this seam.
-fn next_menu_input(
-    state: &mut MenuState,
-    mut input: impl FnMut(Duration) -> std::io::Result<Option<event::Event>>,
-    mut completion: impl FnMut() -> Option<
-        std::result::Result<crate::agents_policy::Snapshot, crate::agents_policy::PolicyError>,
-    >,
-) -> std::io::Result<InputOutcome> {
-    if let Some(event) = input(Duration::ZERO)? {
-        return Ok(state.handle_event(event));
-    }
-    if let Some(reply) = completion() {
-        state.complete_visibility(reply);
-        return Ok(InputOutcome::Continue);
-    }
-    Ok(input(Duration::from_millis(50))?
-        .map_or(InputOutcome::Continue, |event| state.handle_event(event)))
 }
 
 fn validate_directory(value: &str) -> Result<PathBuf> {
@@ -565,75 +505,68 @@ struct SwapInfo {
 }
 
 #[cfg(test)]
-mod visibility_input_tests {
+mod tests {
     use super::*;
-    use crate::agents_policy::Snapshot;
-    use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-    use std::collections::VecDeque;
-    use std::time::Duration;
+
+    fn core(source: &str) -> tools_core::Config {
+        tools_core::Config::parse(source).unwrap()
+    }
+
+    fn cells(width: u16, height: u16) -> PopupDims {
+        PopupDims {
+            width: PopupSize::Cells(width),
+            height: PopupSize::Cells(height),
+        }
+    }
 
     #[test]
-    fn tests_that_queued_input_is_consumed_before_visibility_completion() {
-        let mut state = MenuState::new(Config::parse("[[items]]\ntype='workspace_visibility'\nkey='v'\nlabel='workspaces'\n[[items]]\nkey='x'\nlabel='custom'\ncommand='custom'\n").unwrap());
-        let reply = Snapshot {
-            version: 1,
-            herdr_socket: "/tmp/host.sock".into(),
-            excluded_labels: vec![],
-            workspace_ids: vec![],
-            excluded_workspace_ids: vec![],
-            show_excluded: true,
-        };
-        for loading in [true, false] {
-            if !loading {
-                state.complete_visibility(Ok(Snapshot {
-                    show_excluded: false,
-                    ..reply.clone()
-                }));
-                state.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-                assert_eq!(
-                    state.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE)),
-                    InputOutcome::SetVisibility(true)
-                );
+    fn unconfigured_size_is_the_menu_width_and_item_count_height() {
+        let menu = "[menu]\nmax_height = 18\n[[menu.items]]\nkey='a'\nlabel='a'\ncommand='a'\n\
+                    [[menu.items]]\nkey='b'\nlabel='b'\ncommand='b'\n";
+        // Two items and the four frame rows, raised to the six-row minimum.
+        assert_eq!(popup_size(Some(&core(menu)), || None), cells(64, 6));
+        // The built-in menu (no [menu] table) keeps the packaged 68 × 16.
+        assert_eq!(popup_size(Some(&core("")), || None), cells(68, 16));
+        // An unreadable config still opens, at the old fallback.
+        assert_eq!(popup_size(None, || None), cells(64, 16));
+        // A broken [menu] table does too; the popup shows why.
+        assert_eq!(
+            popup_size(Some(&core("[menu]\ntitle = 3\n")), || None),
+            cells(64, 16)
+        );
+    }
+
+    #[test]
+    fn configured_size_wins_and_profiles_match_on_client_width() {
+        let config = core(
+            r#"
+[popup.size]
+menu = { width = 80, height = 32 }
+[[popup.profile]]
+name = "laptop"
+max_client_width = 200
+size.menu = { width = "50%", height = "60%" }
+[menu]
+max_height = 80
+"#,
+        );
+        assert_eq!(popup_size(Some(&config), || Some(300)), cells(80, 32));
+        assert_eq!(
+            popup_size(Some(&config), || Some(174)),
+            PopupDims {
+                width: PopupSize::Percent(50),
+                height: PopupSize::Percent(60),
             }
-            let mut queue = VecDeque::from([
-                Event::Resize(80, 20),
-                Event::Key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE)),
-                Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
-            ]);
-            let mut completion = Some(Ok(reply.clone()));
-            for expected in [InputOutcome::Continue, InputOutcome::Continue] {
-                let outcome =
-                    next_menu_input(&mut state, |_| Ok(queue.pop_front()), || completion.take())
-                        .unwrap();
-                assert_eq!(outcome, expected);
-                assert!(
-                    completion.is_some(),
-                    "reply was published ahead of queued input"
-                );
-            }
-            assert!(matches!(
-                next_menu_input(&mut state, |_| Ok(queue.pop_front()), || completion.take())
-                    .unwrap(),
-                InputOutcome::Execute(MenuItem::Shell(_))
-            ));
-            assert!(completion.is_some());
-            assert_eq!(
-                next_menu_input(
-                    &mut state,
-                    |timeout| {
-                        assert_eq!(timeout, Duration::ZERO);
-                        Ok(None)
-                    },
-                    || completion.take()
-                )
-                .unwrap(),
-                InputOutcome::Continue
-            );
-            assert!(completion.is_none());
-            assert_eq!(
-                state.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE)),
-                InputOutcome::Continue
-            );
-        }
+        );
+        // An unknown client width skips profiles.
+        assert_eq!(popup_size(Some(&config), || None), cells(80, 32));
+    }
+
+    #[test]
+    fn client_width_is_read_only_when_a_profile_could_use_it() {
+        let config = core("[popup.size]\nmenu = { width = 80, height = 32 }\n");
+        popup_size(Some(&config), || {
+            panic!("no profile needs the client width")
+        });
     }
 }

@@ -1,6 +1,6 @@
 """Opt-in real-server/UI regression; never connects to the user's Herdr session.
 
-Usage: python3 tests/real_redistribution.py target/debug/herdr-menu
+Usage (from herdr-tools/): python3 crates/menu/tests/real_redistribution.py target/release/herdr-tools
 Owns a named server, attached TUI, popup-sized menu PTY, and long-running test
 processes under temporary config/state roots. Tests the menu's actual key path.
 """
@@ -94,8 +94,9 @@ with tempfile.TemporaryDirectory(prefix="menu-grid-", dir="/tmp") as root:
         before_processes = {pane: cli("pane", "process-info", "--pane", pane)["result"] for pane in panes}
         config_dir = Path(root) / "menu-config"
         config_dir.mkdir()
-        (config_dir / "config.toml").write_text('''title = "test menu"
-[[items]]
+        (config_dir / "config.toml").write_text('''[menu]
+title = "test menu"
+[[menu.items]]
 type = "redistribute"
 key = "d"
 label = "redistribute panes"
@@ -107,7 +108,7 @@ label = "redistribute panes"
 
         def invoke(mode, source, rows=None, cancel=False):
             popup_env = dict(plugin_env, HERDR_MENU_SOURCE_PANE_ID=source)
-            popup_pid, popup_fd = spawn([menu, "menu"], popup_env, 20, 80)
+            popup_pid, popup_fd = spawn([menu, "menu", "menu"], popup_env, 20, 80)
             output = ""
             exited = False
             try:
@@ -167,29 +168,29 @@ label = "redistribute panes"
         # Exercise Herdr's real session-modal popup too, in the isolated registry.
         plugin_root = Path(root) / "native-plugin"
         plugin_root.mkdir()
-        (plugin_root / "herdr-plugin.toml").write_text(f'''id = "shadowfax.menu"
+        (plugin_root / "herdr-plugin.toml").write_text(f'''id = "shadowfax.tools"
 name = "Menu regression"
 version = "0.3.0"
 description = "Isolated native popup regression"
 min_herdr_version = "0.9.0"
 platforms = ["macos"]
 [[actions]]
-id = "open"
+id = "menu"
 title = "Open test menu"
 contexts = ["pane"]
-command = [{json.dumps(menu)}, "open"]
+command = [{json.dumps(menu)}, "menu", "open"]
 [[panes]]
 id = "menu"
 title = "Test menu"
 placement = "popup"
-command = [{json.dumps(menu)}, "menu"]
+command = [{json.dumps(menu)}, "menu", "menu"]
 ''')
         cli("plugin", "link", str(plugin_root))
-        native_config = Path(cli("plugin", "config-dir", "shadowfax.menu", text=True).strip())
+        native_config = Path(cli("plugin", "config-dir", "shadowfax.tools", text=True).strip())
         native_config.mkdir(parents=True, exist_ok=True)
         (native_config / "config.toml").write_text((config_dir / "config.toml").read_text())
         cli("pane", "zoom", "--pane", panes[-1], "--off")
-        cli("plugin", "action", "invoke", "shadowfax.menu.open")
+        cli("plugin", "action", "invoke", "shadowfax.tools.menu")
         native_output = drain(fd, 0.5)
         os.write(fd, b"d")
         native_output += drain(fd, 0.5)

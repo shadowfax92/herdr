@@ -1,9 +1,9 @@
 //! Headless acceptance entrypoint: exercise the same controller as the popup
 //! against an explicitly supplied private server, without starting a TUI.
 use anyhow::{bail, Result};
-use herdr_menu::agent_panes::AgentPaneController;
-use herdr_menu::config::ForkPlacement;
-use herdr_menu::herdr::Herdr;
+use tools_menu::agent_panes::AgentPaneController;
+use tools_menu::config::ForkPlacement;
+use tools_menu::herdr::Herdr;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();

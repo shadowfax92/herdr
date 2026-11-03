@@ -1,7 +1,29 @@
-use clap::Parser;
-use herdr_menu::app::{InputOutcome, MenuState};
-use herdr_menu::config::{Config, MenuItem, DEFAULT_CONFIG};
-use herdr_menu::{Cli, Command};
+use clap::{Parser, Subcommand};
+use tools_menu::app::{InputOutcome, MenuState};
+use tools_menu::config::{Config, MenuItem, DEFAULT_CONFIG};
+use tools_menu::Command;
+
+/// `herdr-tools menu …`, as `src/main.rs` mounts this mode.
+#[derive(Parser)]
+struct Cli {
+    #[command(subcommand)]
+    top: Top,
+}
+
+#[derive(Subcommand)]
+enum Top {
+    #[command(subcommand)]
+    Menu(Command),
+}
+
+impl Cli {
+    fn try_parse_menu(args: &[&str]) -> Result<Command, clap::Error> {
+        let argv = ["herdr-tools", "menu"].iter().chain(args);
+        Self::try_parse_from(argv).map(|cli| match cli.top {
+            Top::Menu(command) => command,
+        })
+    }
+}
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 fn key(code: KeyCode) -> KeyEvent {
@@ -16,7 +38,7 @@ fn rendered(menu: &MenuState, width: u16, height: u16) -> String {
     let mut terminal =
         ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
     terminal
-        .draw(|frame| herdr_menu::ui::render(menu, frame))
+        .draw(|frame| tools_menu::ui::render(menu, frame))
         .unwrap();
     terminal
         .backend()
@@ -30,7 +52,9 @@ fn rendered(menu: &MenuState, width: u16, height: u16) -> String {
 #[test]
 fn copy_context_accelerator_executes_directly_and_enter_uses_the_same_action() {
     let mut menu = menu();
-    assert!(rendered(&menu, 68, 16).contains("copy pane context"));
+    // The default menu's retired visibility row keeps its six-row diagnostics
+    // panel open (as it did once Agents' read failed), so give the ten items room.
+    assert!(rendered(&menu, 68, 20).contains("copy pane context"));
     assert!(matches!(
         menu.handle_key(key(KeyCode::Char('h'))),
         InputOutcome::Execute(MenuItem::CopyContext(_))
@@ -88,34 +112,19 @@ fn copy_failure_preserves_source_action_and_allows_explicit_retry_or_cancel() {
 
 #[test]
 fn copy_cli_has_explicit_source_and_read_only_output_without_scope_selection() {
-    let cli = Cli::try_parse_from([
-        "herdr-menu",
-        "copy-context",
-        "--source-pane",
-        "w1:p17",
-        "--stdout",
-    ])
-    .unwrap();
+    let command =
+        Cli::try_parse_menu(&["copy-context", "--source-pane", "w1:p17", "--stdout"]).unwrap();
     assert!(matches!(
-        cli.command,
+        command,
         Command::CopyContext { source_pane: Some(source), stdout: true } if source == "w1:p17"
     ));
-    assert!(Cli::try_parse_from(["herdr-menu", "copy-context", "--scope", "session"]).is_err());
-    assert!(matches!(
-        Cli::try_parse_from(["herdr-menu", "install", "--add-handoff"])
-            .unwrap()
-            .command,
-        Command::Install {
-            add_redistribute: false,
-            add_handoff: true,
-            upgrade_workspace_visibility: false
-        }
-    ));
-    assert!(Cli::try_parse_from([
-        "herdr-menu",
-        "install",
-        "--add-handoff",
-        "--add-redistribute"
-    ])
-    .is_err());
+    assert!(Cli::try_parse_menu(&["copy-context", "--scope", "session"]).is_err());
+    // The installers are gone: `[[keys.command]]` in Herdr's config binds keys.
+    for args in [
+        &["install"][..],
+        &["install", "--add-handoff"],
+        &["install", "--add-redistribute"],
+    ] {
+        assert!(Cli::try_parse_menu(args).is_err(), "{args:?}");
+    }
 }

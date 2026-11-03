@@ -10,8 +10,15 @@ publish.workspace = true
 name = "tools_menu"
 path = "src/lib.rs"
 
-# The old plugin's own dependencies, already in Cargo.lock so the port needs no
-# lockfile change; drop any the port ends up not using.
+# Test support only: `herdr-tools-menu menu <command>` is `herdr-tools menu
+# <command>` for this crate's CLI tests, which cannot see the root package's
+# binary through CARGO_BIN_EXE_*. Releases build only the root package.
+[[bin]]
+name = "herdr-tools-menu"
+path = "tests/support/herdr_tools_menu.rs"
+test = false
+doc = false
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
@@ -21,9 +28,7 @@ fs4.workspace = true
 ratatui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-socket2.workspace = true
 tempfile.workspace = true
-toml_edit.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]

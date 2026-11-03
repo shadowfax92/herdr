@@ -1858,10 +1858,8 @@ dependencies = [
  "ratatui",
  "serde",
  "serde_json",
- "socket2",
  "tempfile",
  "toml",
- "toml_edit",
  "tools-core",
  "uuid",
 ]

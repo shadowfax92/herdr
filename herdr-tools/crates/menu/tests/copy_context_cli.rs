@@ -5,6 +5,11 @@ use std::process::Command;
 use serde_json::{json, Value};
 use tempfile::tempdir;
 
+/// `herdr-tools menu …`, through this crate's test stand-in for the root binary.
+fn herdr_tools_menu() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_herdr-tools-menu"))
+}
+
 #[test]
 fn stdout_uses_explicit_then_captured_then_caller_source_without_clipboard_or_notifications() {
     let directory = tempdir().unwrap();
@@ -59,9 +64,9 @@ else:
         (false, true, "captured"),
         (false, false, "caller"),
     ] {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_herdr-menu"));
+        let mut command = herdr_tools_menu();
         command
-            .args(["copy-context", "--stdout"])
+            .args(["menu", "copy-context", "--stdout"])
             .env("HERDR_ENV", "1")
             .env("HERDR_BIN_PATH", &binary)
             .env("HERDR_SOCKET_PATH", &socket)
@@ -109,9 +114,9 @@ else:
 #[test]
 fn cli_requires_managed_environment_and_never_falls_back_to_focus() {
     for (managed, expected) in [(false, "HERDR_ENV=1"), (true, "no source pane")] {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_herdr-menu"));
+        let mut command = herdr_tools_menu();
         command
-            .args(["copy-context", "--stdout"])
+            .args(["menu", "copy-context", "--stdout"])
             .env_remove("HERDR_ENV")
             .env_remove("HERDR_PANE_ID")
             .env_remove("HERDR_MENU_SOURCE_PANE_ID")
@@ -169,8 +174,8 @@ else:
     .unwrap();
     for notification_fails in [false, true] {
         fs::write(directory.path().join("calls.jsonl"), "").unwrap();
-        let output = Command::new(env!("CARGO_BIN_EXE_herdr-menu"))
-            .arg("copy-context")
+        let output = herdr_tools_menu()
+            .args(["menu", "copy-context"])
             .env("HERDR_ENV", "1")
             .env("HERDR_BIN_PATH", &binary)
             .env("HERDR_SOCKET_PATH", directory.path().join("api.sock"))

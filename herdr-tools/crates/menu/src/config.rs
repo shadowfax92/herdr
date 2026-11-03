@@ -1,18 +1,38 @@
+//! The `[menu]` table of the shared `config.toml`: title, items and the cap on
+//! automatic height.
+//!
+//! This was the whole of the old `shadowfax.menu/config.toml`; the same fields
+//! now sit under `[menu]`, read field by field so one bad item is a warning, not
+//! a broken menu. The popup size moved out: `[popup.size].menu` (or a
+//! `[[popup.profile]]`) fixes both dimensions, and without one the launcher uses
+//! [`Config::width`] and [`Config::popup_height`], exactly as the old
+//! unconfigured `width`/`height` did.
+
 use std::collections::HashSet;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 use toml::value::Table;
 use toml::Value;
 
+/// The built-in `[menu]` table, used when `config.toml` has none.
 pub const DEFAULT_CONFIG: &str = include_str!("../config.default.toml");
 
+/// Popup width for a `[menu]` table when `[popup.size].menu` is unset: the old
+/// default for a config file without `width`.
+pub const DEFAULT_WIDTH: u16 = 64;
+
+/// Popup width for the built-in menu: the old packaged default's `width = 68`.
+pub const BUILTIN_WIDTH: u16 = 68;
+
+/// One menu's parsed `[menu]` table. Invalid items are skipped with a warning;
+/// only a structurally broken table (a bad title, items not an array) fails.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
     pub title: String,
+    /// The fallback popup width: [`BUILTIN_WIDTH`] for the built-in menu, else
+    /// [`DEFAULT_WIDTH`]. `[popup.size].menu` overrides it.
     pub width: u16,
-    pub height: Option<u16>,
     pub max_height: u16,
     pub items: Vec<MenuItem>,
     pub warnings: Vec<String>,
@@ -76,30 +96,58 @@ pub enum ExecutionMode {
 }
 
 impl Config {
+    /// Parses the body of a `[menu]` table written as its own TOML document
+    /// (`title = …`, `[[items]]`), the shape of [`DEFAULT_CONFIG`] and the old file.
     pub fn parse(source: &str) -> Result<Self> {
-        parse_config(source, false)
+        let document: Value = toml::from_str(source).context("failed to parse config TOML")?;
+        let table = document
+            .as_table()
+            .context("config root must be a TOML table")?;
+        Self::from_table(table)
     }
 
-    pub fn load(path: &Path) -> Result<Self> {
-        match fs::read_to_string(path) {
-            Ok(source) => parse_config(&source, false)
-                .with_context(|| format!("failed to load {}", path.display())),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let mut config = parse_config(DEFAULT_CONFIG, true)?;
-                config.warnings.insert(
-                    0,
-                    format!("{} not found; using built-in defaults", path.display()),
-                );
-                Ok(config)
+    /// Parses a `[menu]` table.
+    pub fn from_table(table: &Table) -> Result<Self> {
+        parse_table(table, DEFAULT_WIDTH, false)
+    }
+
+    /// The built-in menu ([`DEFAULT_CONFIG`]), [`BUILTIN_WIDTH`] cells wide.
+    pub fn builtin() -> Result<Self> {
+        let document: Table = toml::from_str(DEFAULT_CONFIG).context("built-in menu config")?;
+        parse_table(&document, BUILTIN_WIDTH, true)
+    }
+
+    /// The menu from the shared config: its `[menu]` table, else the built-in
+    /// menu with a warning saying so (the old plugin warned about its missing
+    /// file the same way, and the warning counts toward the automatic height).
+    pub fn from_core(config: &tools_core::Config) -> Result<Self> {
+        let location = config
+            .path()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "config.toml".into());
+        match config.section_table(crate::MODE)? {
+            Some(table) => {
+                Self::from_table(table).with_context(|| format!("invalid [menu] in {location}"))
             }
-            Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
+            None => {
+                let mut menu = Self::builtin()?;
+                let exists = config.path().is_some_and(std::path::Path::exists);
+                menu.warnings.insert(
+                    0,
+                    if exists {
+                        format!("{location} has no [menu] table; using built-in defaults")
+                    } else {
+                        format!("{location} not found; using built-in defaults")
+                    },
+                );
+                Ok(menu)
+            }
         }
     }
 
+    /// The automatic popup height: every item, two rows for config warnings and
+    /// four for the frame and status, clamped to `6..=max_height`.
     pub fn popup_height(&self) -> u16 {
-        if let Some(height) = self.height {
-            return height;
-        }
         let warning_rows = if self.warnings.is_empty() { 0 } else { 2 };
         let item_rows = u16::try_from(self.items.len()).unwrap_or(u16::MAX);
         item_rows
@@ -163,11 +211,7 @@ impl MenuItem {
     }
 }
 
-fn parse_config(source: &str, used_default: bool) -> Result<Config> {
-    let document: Value = toml::from_str(source).context("failed to parse config TOML")?;
-    let table = document
-        .as_table()
-        .context("config root must be a TOML table")?;
+fn parse_table(table: &Table, width: u16, used_default: bool) -> Result<Config> {
     let title = optional_string(table, "title")?
         .unwrap_or("commands")
         .trim()
@@ -175,8 +219,6 @@ fn parse_config(source: &str, used_default: bool) -> Result<Config> {
     if title.is_empty() {
         bail!("title cannot be empty");
     }
-    let width = optional_dimension(table, "width", 64, 20)?;
-    let height = optional_dimension_value(table, "height", 6)?;
     let max_height = optional_dimension(table, "max_height", 24, 6)?;
     let values: &[Value] = match table.get("items") {
         Some(value) => value
@@ -187,6 +229,14 @@ fn parse_config(source: &str, used_default: bool) -> Result<Config> {
 
     let mut items = Vec::with_capacity(values.len());
     let mut warnings = Vec::new();
+    // The old file's size fields would otherwise be ignored without a trace.
+    for field in ["width", "height"] {
+        if table.contains_key(field) {
+            warnings.push(format!(
+                "{field} is ignored here; set the menu size in [popup.size].menu"
+            ));
+        }
+    }
     let mut accelerators = HashSet::new();
     for (index, value) in values.iter().enumerate() {
         match parse_item(value) {
@@ -210,7 +260,6 @@ fn parse_config(source: &str, used_default: bool) -> Result<Config> {
     Ok(Config {
         title,
         width,
-        height,
         max_height,
         items,
         warnings,
@@ -321,7 +370,11 @@ fn optional_dimension(table: &Table, field: &str, default: u16, minimum: u16) ->
     Ok(optional_dimension_value(table, field, minimum)?.unwrap_or(default))
 }
 
-fn optional_dimension_value(table: &Table, field: &str, minimum: u16) -> Result<Option<u16>> {
+pub(crate) fn optional_dimension_value(
+    table: &Table,
+    field: &str,
+    minimum: u16,
+) -> Result<Option<u16>> {
     let Some(value) = table.get(field) else {
         return Ok(None);
     };
@@ -381,11 +434,11 @@ mod tests {
 
     #[test]
     fn packaged_default_has_agent_fork_actions() {
-        let config = Config::parse(DEFAULT_CONFIG).unwrap();
+        let config = Config::builtin().unwrap();
 
         assert_eq!(config.title, "agent forks");
         assert_eq!(config.width, 68);
-        assert_eq!(config.height, None);
+        assert!(config.used_default);
         assert_eq!(config.max_height, 24);
         assert_eq!(config.items.len(), 10);
         assert!(matches!(
@@ -430,7 +483,6 @@ mod tests {
         let config = Config::parse(
             r#"
 title = "tools"
-width = 72
 max_height = 18
 
 [[items]]
@@ -446,8 +498,9 @@ cwd = "reports/daily"
         .unwrap();
 
         assert_eq!(config.title, "tools");
-        assert_eq!(config.width, 72);
+        assert_eq!(config.width, DEFAULT_WIDTH);
         assert_eq!(config.max_height, 18);
+        assert!(config.warnings.is_empty());
         assert_eq!(
             config.shell_items().next(),
             Some(&ShellItem {
@@ -582,12 +635,53 @@ command = "upper"
         let dir = tempdir().unwrap();
         let path = dir.path().join("config.toml");
 
-        let config = Config::load(&path).unwrap();
+        let config = Config::from_core(&tools_core::Config::load(&path).unwrap()).unwrap();
 
         assert!(config.used_default);
+        assert_eq!(config.width, BUILTIN_WIDTH);
         assert_eq!(config.items.len(), 10);
         assert_eq!(config.warnings.len(), 1);
-        assert!(config.warnings[0].contains("using built-in defaults"));
+        assert!(config.warnings[0].contains("not found; using built-in defaults"));
+        // Ten items, two warning rows and the frame: the old default popup.
+        assert_eq!(config.popup_height(), 16);
+    }
+
+    #[test]
+    fn shared_config_without_a_menu_table_uses_the_built_in_menu() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[popup.size]\nfind = { width = 100, height = 20 }\n").unwrap();
+
+        let config = Config::from_core(&tools_core::Config::load(&path).unwrap()).unwrap();
+
+        assert!(config.used_default);
+        assert!(config.warnings[0].contains("has no [menu] table"));
+    }
+
+    #[test]
+    fn shared_config_menu_table_is_the_menu_and_its_errors_name_the_table() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[menu]\ntitle = \"mine\"\n[[menu.items]]\nkey = \"a\"\nlabel = \"alpha\"\ncommand = \"alpha\"\n",
+        )
+        .unwrap();
+
+        let config = Config::from_core(&tools_core::Config::load(&path).unwrap()).unwrap();
+        assert_eq!(config.title, "mine");
+        assert_eq!(config.width, DEFAULT_WIDTH);
+        assert!(!config.used_default);
+        assert_eq!(config.items.len(), 1);
+        assert!(config.warnings.is_empty());
+
+        std::fs::write(&path, "[menu]\ntitle = \"  \"\n").unwrap();
+        let error = format!(
+            "{:#}",
+            Config::from_core(&tools_core::Config::load(&path).unwrap()).unwrap_err()
+        );
+        assert!(error.contains("invalid [menu]"), "{error}");
+        assert!(error.contains("title cannot be empty"), "{error}");
     }
 
     #[test]
@@ -598,10 +692,13 @@ command = "upper"
         assert_eq!(config.popup_height(), 6);
     }
 
+    /// A fixed size is `[popup.size].menu` now (the launcher's tests cover it);
+    /// the old top-level fields are named in a warning instead of silently lost.
     #[test]
-    fn explicit_popup_height_overrides_auto_size() {
+    fn old_size_fields_warn_and_leave_the_auto_size() {
         let config = Config::parse(
             r#"
+width = 80
 height = 32
 
 [[items]]
@@ -612,7 +709,10 @@ command = "alpha"
         )
         .unwrap();
 
-        assert_eq!(config.height, Some(32));
-        assert_eq!(config.popup_height(), 32);
+        assert_eq!(config.width, DEFAULT_WIDTH);
+        assert_eq!(config.warnings.len(), 2);
+        assert!(config.warnings[0].contains("width"));
+        assert!(config.warnings[1].contains("[popup.size].menu"));
+        assert_eq!(config.popup_height(), 7);
     }
 }

@@ -2,9 +2,9 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
-use herdr_menu::handoff::HandoffController;
-use herdr_menu::herdr::Herdr;
 use serde_json::{json, Value};
+use tools_menu::handoff::HandoffController;
+use tools_menu::herdr::Herdr;
 
 /// Each test gets a process adapter with its own fixtures and command log. The
 /// adapter refuses unknown commands so a capture cannot accidentally mutate UI.

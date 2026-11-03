@@ -1,6 +1,6 @@
 """Real-server regression for row-aware fork keys; uses a fake RTR, not real agents.
 
-Usage: python3 tests/real_fork_rows.py target/release/herdr-menu
+Usage (from herdr-tools/): python3 crates/menu/tests/real_fork_rows.py target/release/herdr-tools
 Owns an isolated server, popup, tabs and all test processes. Never contacts the
 user session. Pane IDs, processes, scrollback and untouched row geometry are checked.
 """
@@ -114,7 +114,7 @@ if args[:2] == ["pane", "run"] and mode == "run":
     sys.exit("injected RTR input failure")
 result = subprocess.run([{herdr!r}, *args])
 if args[:2] == ["pane", "split"] and mode == "state" and result.returncode == 0:
-    path = pathlib.Path(os.environ["HERDR_PLUGIN_STATE_DIR"]) / "last-fork.json"
+    path = pathlib.Path(os.environ["HERDR_PLUGIN_STATE_DIR"]) / "menu" / "last-fork.json"
     path.unlink(missing_ok=True)
     path.mkdir()
     failure_file.touch()
@@ -153,29 +153,34 @@ sys.exit(result.returncode)
         workspace = cli("pane", "list")["result"]["panes"][0]["workspace_id"]
         plugin = Path(root) / "plugin"
         plugin.mkdir()
-        (plugin / "herdr-plugin.toml").write_text(f'''id = "shadowfax.menu"
+        (plugin / "herdr-plugin.toml").write_text(f'''id = "shadowfax.tools"
 name = "Fork row regression"
 version = "0.4.0"
 description = "Isolated native popup regression"
 min_herdr_version = "0.9.0"
 platforms = ["macos"]
 [[actions]]
-id = "open"
+id = "menu"
 title = "Open test menu"
 contexts = ["pane"]
-command = ["/usr/bin/env", {json.dumps("HERDR_BIN_PATH=" + str(shim))}, {json.dumps(menu)}, "open"]
+command = ["/usr/bin/env", {json.dumps("HERDR_BIN_PATH=" + str(shim))}, {json.dumps(menu)}, "menu", "open"]
 [[panes]]
 id = "menu"
 title = "Test menu"
 placement = "popup"
 width = 80
 height = 24
-command = ["/usr/bin/env", {json.dumps("HERDR_BIN_PATH=" + str(shim))}, {json.dumps(menu)}, "menu"]
+command = ["/usr/bin/env", {json.dumps("HERDR_BIN_PATH=" + str(shim))}, {json.dumps(menu)}, "menu", "menu"]
 ''')
         cli("plugin", "link", str(plugin))
-        config_dir = Path(cli("plugin", "config-dir", "shadowfax.menu", text=True).strip())
+        config_dir = Path(cli("plugin", "config-dir", "shadowfax.tools", text=True).strip())
         config_dir.mkdir(parents=True, exist_ok=True)
-        config_dir.joinpath("config.toml").write_text(Path(__file__).resolve().parents[1].joinpath("config.default.toml").read_text())
+        # The packaged default as the shared config's [menu] table, at the size
+        # the old copy of it opened with: its width = 68 and ten items + frame.
+        default = Path(__file__).resolve().parents[1].joinpath("config.default.toml").read_text()
+        config_dir.joinpath("config.toml").write_text(
+            "[popup.size]\nmenu = { width = 68, height = 14 }\n\n[menu]\n"
+            + default.replace("[[items]]", "[[menu.items]]"))
 
         cases = [(key, source_row, row_count, "rows") for key, source_row, row_count in
                  [("l", 0, 2), ("r", 0, 2), ("l", 1, 2), ("r", 1, 2), ("b", 0, 2),
@@ -187,7 +192,7 @@ command = ["/usr/bin/env", {json.dumps("HERDR_BIN_PATH=" + str(shim))}, {json.du
             before = layout(source)
             original_rects = {p["pane_id"]: p["rect"] for p in before["panes"]}
             processes = {p: cli("pane", "process-info", "--pane", p)["result"] for p in panes}
-            cli("plugin", "action", "invoke", "shadowfax.menu.open")
+            cli("plugin", "action", "invoke", "shadowfax.tools.menu")
             output = drain(fd, 0.3)
             os.write(fd, key.encode())
             deadline = time.monotonic() + 15
@@ -244,7 +249,7 @@ command = ["/usr/bin/env", {json.dumps("HERDR_BIN_PATH=" + str(shim))}, {json.du
             mode_file.write_text(failure)
             move_file.unlink(missing_ok=True)
             failure_file.unlink(missing_ok=True)
-            cli("plugin", "action", "invoke", "shadowfax.menu.open")
+            cli("plugin", "action", "invoke", "shadowfax.tools.menu")
             output = drain(fd, 0.3)
             os.write(fd, key.encode())
             deadline = time.monotonic() + 15

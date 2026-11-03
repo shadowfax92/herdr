@@ -1,6 +1,7 @@
+//! Menu navigation and recovery-screen state, independent of the terminal.
+
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use crate::agents_policy::{ErrorCode, PolicyError, Snapshot};
 use crate::config::{Config, MenuItem};
 use crate::failure_ui::FailureView;
 use crate::redistribute::{LayoutPlan, LayoutSnapshot};
@@ -12,19 +13,16 @@ pub enum InputOutcome {
     Continue,
     Execute(MenuItem),
     ApplyLayout(Box<LayoutPlan>),
-    SetVisibility(bool),
     Cancel,
 }
 
-/// Only a fresh success enables visibility. The last successful snapshot is
-/// retained independently so failure never rewrites known state as a default.
-#[derive(Clone, Debug)]
-enum VisibilityState {
-    Loading,
-    Ready,
-    Setting(bool),
-    Unavailable,
-}
+/// What a `workspace_visibility` row shows. The Agents plugin that owned the
+/// workspace policy is retired, and with Agents disabled the old menu's policy
+/// read failed to connect: the row stayed disabled as "(unavailable)" above a
+/// scrollable diagnostics panel. The row and panel are kept, never enabled.
+const VISIBILITY_UNAVAILABLE: &str =
+    "Agents visibility unavailable: the Agents plugin is retired.\n\
+Herdr's [ui.sidebar.agents] hidden_workspaces keeps workspaces out of the Agents panel.";
 
 /// Owns menu navigation and recovery views; process and clipboard work remain
 /// in the event loop so canceling or scrolling never executes an action.
@@ -40,10 +38,7 @@ pub struct MenuState {
     redistribution: Option<RedistributionState>,
     fork_failure: Option<FailureView>,
     copy_failure: Option<FailureView>,
-    visibility: VisibilityState,
-    last_policy: Option<Snapshot>,
     visibility_failure: Option<FailureView>,
-    visibility_armed: bool,
 }
 
 impl MenuState {
@@ -51,6 +46,11 @@ impl MenuState {
         let selected = config.items.iter().position(|item| {
             item.is_selectable() && !matches!(item, MenuItem::WorkspaceVisibility(_))
         });
+        let visibility_failure = config
+            .items
+            .iter()
+            .any(|item| matches!(item, MenuItem::WorkspaceVisibility(_)))
+            .then(|| FailureView::new(VISIBILITY_UNAVAILABLE.into()));
         Self {
             title: config.title,
             items: config.items,
@@ -62,10 +62,7 @@ impl MenuState {
             redistribution: None,
             fork_failure: None,
             copy_failure: None,
-            visibility: VisibilityState::Loading,
-            last_policy: None,
-            visibility_failure: None,
-            visibility_armed: true,
+            visibility_failure,
         }
     }
 
@@ -81,10 +78,7 @@ impl MenuState {
             redistribution: None,
             fork_failure: None,
             copy_failure: None,
-            visibility: VisibilityState::Loading,
-            last_policy: None,
             visibility_failure: None,
-            visibility_armed: true,
         }
     }
 
@@ -186,11 +180,6 @@ impl MenuState {
                     .iter()
                     .position(|item| item.key() == Some(character))
                 {
-                    if matches!(self.items[index], MenuItem::WorkspaceVisibility(_))
-                        && key.kind != KeyEventKind::Press
-                    {
-                        return InputOutcome::Continue;
-                    }
                     return self.activate(index);
                 }
                 match character {
@@ -212,16 +201,7 @@ impl MenuState {
             KeyCode::Down => self.move_selection(1),
             KeyCode::Enter => {
                 if let Some(index) = self.selected {
-                    if matches!(self.items[index], MenuItem::WorkspaceVisibility(_))
-                        && key.kind != KeyEventKind::Press
-                    {
-                        return InputOutcome::Continue;
-                    }
                     return self.activate(index);
-                } else if self.has_visibility_action() {
-                    // An all-disabled menu has no selection, but a held Enter
-                    // still must not become a fresh activation after loading.
-                    self.visibility_armed = false;
                 }
             }
             _ => {}
@@ -304,88 +284,25 @@ impl MenuState {
     }
 
     pub fn item_enabled(&self, item: &MenuItem) -> bool {
-        item.is_selectable()
-            && (!matches!(item, MenuItem::WorkspaceVisibility(_))
-                || (matches!(self.visibility, VisibilityState::Ready) && self.visibility_armed))
+        item.is_selectable() && !matches!(item, MenuItem::WorkspaceVisibility(_))
     }
 
     pub fn visibility_failure(&self) -> Option<&FailureView> {
         self.visibility_failure.as_ref()
     }
 
-    /// Rendering and activation share this state, so the sent target is exactly
-    /// the action offered on screen, including custom noun phrases.
+    /// Rendering and activation share this state; a visibility row keeps its
+    /// configured noun phrase and says it is unavailable.
     pub fn item_label(&self, item: &MenuItem) -> String {
         let noun = item.label().unwrap_or_default();
-        if !matches!(item, MenuItem::WorkspaceVisibility(_)) {
-            return noun.into();
-        }
-        match self.visibility {
-            VisibilityState::Loading => format!("{noun} (loading…)"),
-            VisibilityState::Unavailable => format!("{noun} (unavailable)"),
-            VisibilityState::Ready => format!(
-                "{} {noun}{}",
-                if self.last_policy.as_ref().is_some_and(|p| p.show_excluded) {
-                    "hide"
-                } else {
-                    "show"
-                },
-                if self.visibility_armed {
-                    ""
-                } else {
-                    " (↑/↓ to enable)"
-                }
-            ),
-            VisibilityState::Setting(show) => {
-                format!("{} {noun} (saving…)", if show { "show" } else { "hide" })
-            }
-        }
-    }
-
-    pub fn complete_visibility(&mut self, result: Result<Snapshot, PolicyError>) {
-        match result {
-            Ok(snapshot) => {
-                self.last_policy = Some(snapshot);
-                self.visibility = VisibilityState::Ready;
-                self.visibility_failure = None;
-            }
-            Err(error) => {
-                self.visibility = VisibilityState::Unavailable;
-                let saved = match &error {
-                    PolicyError::Remote {
-                        code: ErrorCode::ApplyPending,
-                        show_excluded: Some(show),
-                        ..
-                    } => format!("Saved show_excluded={show}.\nSidebar application pending.\n"),
-                    _ => String::new(),
-                };
-                self.visibility_failure = Some(FailureView::new(format!(
-                    "{saved}Reopen menu to refresh.\nCheck Agents config/session and logs.\n\n{error}"
-                )));
-            }
-        }
-        // Never redirect a held Enter from a failed visibility row to a fork
-        // or custom command. Only an initially empty selection may be filled.
-        if self.selected.is_none()
-            && self.visibility_armed
-            && matches!(self.visibility, VisibilityState::Ready)
-        {
-            self.selected = self.items.iter().position(|item| self.item_enabled(item));
+        if matches!(item, MenuItem::WorkspaceVisibility(_)) {
+            format!("{noun} (unavailable)")
+        } else {
+            noun.into()
         }
     }
 
     fn activate(&mut self, index: usize) -> InputOutcome {
-        if self
-            .items
-            .get(index)
-            .is_some_and(|item| matches!(item, MenuItem::WorkspaceVisibility(_)))
-            && !self.item_enabled(&self.items[index])
-        {
-            // Legacy terminal auto-repeat is indistinguishable from Press. An
-            // attempt while disabled must not become a fresh intent on reply.
-            self.visibility_armed = false;
-            return InputOutcome::Continue;
-        }
         let Some(item) = self.items.get(index).filter(|item| self.item_enabled(item)) else {
             return InputOutcome::Continue;
         };
@@ -402,30 +319,12 @@ impl MenuState {
     fn execute(&mut self, index: usize) -> InputOutcome {
         self.confirming = None;
         match self.items.get(index).filter(|item| self.item_enabled(item)) {
-            Some(MenuItem::WorkspaceVisibility(_)) => {
-                let show = !self
-                    .last_policy
-                    .as_ref()
-                    .expect("ready policy has a snapshot")
-                    .show_excluded;
-                // Disable before handing off: queued duplicate input cannot
-                // start a second request while the first intent is uncertain.
-                self.visibility_armed = false;
-                self.visibility = VisibilityState::Setting(show);
-                InputOutcome::SetVisibility(show)
-            }
             Some(item) => InputOutcome::Execute(item.clone()),
-            _ => InputOutcome::Continue,
+            None => InputOutcome::Continue,
         }
     }
 
     fn move_selection(&mut self, delta: isize) {
-        // A distinct navigation gesture rearms legacy terminals without timing
-        // guesses or reliance on optional key-release reporting. Navigation
-        // during an outstanding request cannot rearm its eventual completion.
-        if matches!(self.visibility, VisibilityState::Ready) {
-            self.visibility_armed = true;
-        }
         let selectable = self
             .items
             .iter()

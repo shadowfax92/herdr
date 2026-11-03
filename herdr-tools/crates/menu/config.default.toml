@@ -1,5 +1,7 @@
+# The built-in menu: what `herdr-tools menu` shows when config.toml has no [menu]
+# table. In config.toml these fields sit under [menu] ([[menu.items]]). Without
+# a [popup.size].menu entry this menu is 68 cells wide and sized to its items.
 title = "agent forks"
-width = 68
 max_height = 24
 
 [[items]]

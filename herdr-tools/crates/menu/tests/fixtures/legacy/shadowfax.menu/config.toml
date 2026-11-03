@@ -1,0 +1,90 @@
+title = "commands"
+width = 80
+height = 32
+max_height = 80
+
+[[items]]
+key = "c"
+label = "clear notifications"
+command = "mac-notify clear"
+mode = "detached"
+
+[[items]]
+key = "f"
+label = "set focus"
+command = 'read -P "Focus: " text; test -z "$text"; or focus set "$text"'
+mode = "foreground"
+
+[[items]]
+key = "e"
+label = "edit plugin configs"
+command = 'nvim ~/.config/herdr/plugins/config/*/config.toml'
+mode = "foreground"
+
+[[items]]
+type = "separator"
+
+[[items]]
+key = "x"
+label = "reap scratch sessions"
+command = '"$HERDR_BIN_PATH" plugin action invoke shadowfax.scratch.reap'
+confirm = "Reap stale Herdr Scratch sessions?"
+
+[[items]]
+key = ","
+label = "reload Herdr config"
+command = '"$HERDR_BIN_PATH" server reload-config'
+
+[[items]]
+type = "separator"
+
+[[items]]
+type = "fork"
+key = "l"
+label = "fork current conversation left"
+placement = "left"
+
+[[items]]
+type = "fork"
+key = "r"
+label = "fork current conversation right"
+placement = "right"
+
+[[items]]
+type = "fork"
+key = "t"
+label = "fork current conversation top"
+placement = "top"
+
+[[items]]
+type = "fork"
+key = "b"
+label = "fork current conversation bottom"
+placement = "bottom"
+
+[[items]]
+type = "rotate_fork"
+key = "o"
+label = "rotate last forked pane"
+
+[[items]]
+type = "redistribute"
+key = "d"
+label = "redistribute panes…"
+
+[[items]]
+type = "shell"
+key = "g"
+label = "create layout…"
+command = """exec '/Users/shadowfax/code/side-projects/herdr-custom-plugins/my/herdr-layouts/target/release/herdr-layouts' grid-dialog --pane "$HERDR_MENU_SOURCE_PANE_ID""""
+mode = "foreground"
+
+[[items]]
+type = "copy_context"
+key = "h"
+label = "copy pane context"
+
+[[items]]
+type = "workspace_visibility"
+key = "v"
+label = "excluded workspaces"

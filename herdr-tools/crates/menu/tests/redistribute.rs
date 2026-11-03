@@ -1,10 +1,10 @@
-use herdr_menu::herdr::Herdr;
-use herdr_menu::redistribute::{ApplyOutcome, Redistributor};
-use herdr_menu::redistribute::{LayoutPlan, LayoutSnapshot};
 use serde_json::json;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+use tools_menu::herdr::Herdr;
+use tools_menu::redistribute::{ApplyOutcome, Redistributor};
+use tools_menu::redistribute::{LayoutPlan, LayoutSnapshot};
 
 struct Runtime {
     directory: tempfile::TempDir,
@@ -112,8 +112,8 @@ fn redistribute_live_panes_preserves_ids_and_restores_source_focus() {
 
 #[test]
 fn failed_moves_show_recovery_ids_first_and_allow_reading_the_entire_error() {
-    use herdr_menu::redistribute_ui::{RedistributionInput, RedistributionState};
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use tools_menu::redistribute_ui::{RedistributionInput, RedistributionState};
 
     let runtime = Runtime::new(7);
     let controller = runtime.controller("w1:p1");

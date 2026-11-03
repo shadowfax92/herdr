@@ -1,7 +1,7 @@
 """Production-controller acceptance on a private headless Herdr server.
 
-Build: cargo build --locked --example fork_probe
-Run: python3 tests/headless_fork.py target/debug/examples/fork_probe
+Build (from herdr-tools/): cargo build --locked -p tools-menu --example fork_probe
+Run: python3 crates/menu/tests/headless_fork.py target/debug/examples/fork_probe
 No TUI, popup, client socket, screenshot, or owner session is used. The shim
 suppresses focus commands and injects native-session metadata plus failures.
 """

@@ -3,16 +3,17 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
 
-use herdr_menu::agent_panes::AgentPaneController;
-use herdr_menu::config::ForkPlacement;
-use herdr_menu::herdr::{Herdr, InvocationContext};
+use serde_json::Value;
 use tempfile::tempdir;
+use tools_core::Invocation;
+use tools_menu::agent_panes::AgentPaneController;
+use tools_menu::config::ForkPlacement;
+use tools_menu::herdr::Herdr;
 
 struct FakeHerdr {
     _directory: tempfile::TempDir,
@@ -56,10 +57,6 @@ elif [ "$1 $2" = "pane swap" ]; then
   printf '%s\n' '{{"result":{{"swap":{{"changed":true}}}}}}'
 elif [ "$1 $2" = "pane close" ]; then
   printf '%s\n' '{{"result":{{"type":"pane_closed"}}}}'
-elif [ "$1 $2 $3" = "plugin pane open" ]; then
-  printf '%s\n' '{{"result":{{"type":"ok"}}}}'
-elif [ "$1 $2" = "server reload-config" ]; then
-  printf '%s\n' '{{"result":{{"type":"config_reloaded"}}}}'
 elif [ "$1 $2" = "notification show" ]; then
   printf '%s\n' '{{"result":{{"type":"ok"}}}}'
 else
@@ -82,8 +79,10 @@ fi
         let fake_binary = binary.clone();
         // The socket double reads the same mutation markers as the CLI double,
         // so fork topology checks cross the real transport seam in these tests.
+        // It also records every request: the popup now opens over the socket
+        // (`plugin.pane.open`) rather than `herdr plugin pane open`.
         let socket_worker = std::thread::spawn(move || {
-            use serde_json::{json, Value};
+            use serde_json::json;
             while !stop.load(Ordering::Relaxed) {
                 let Ok((mut stream, _)) = listener.accept() else {
                     std::thread::sleep(std::time::Duration::from_millis(2));
@@ -98,6 +97,31 @@ fi
                 let mut line = String::new();
                 BufReader::new(&stream).read_line(&mut line).unwrap();
                 let request: Value = serde_json::from_str(&line).unwrap();
+                let mut requests = fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(fake_binary.with_extension("socket.jsonl"))
+                    .unwrap();
+                writeln!(requests, "{request}").unwrap();
+                match request["method"].as_str() {
+                    Some("plugin.pane.open") => {
+                        writeln!(
+                            stream,
+                            "{}",
+                            json!({"id":request["id"],"result":{"type":"ok"}})
+                        )
+                        .unwrap();
+                        continue;
+                    }
+                    Some("pane.layout") => {
+                        let area = json!({"x":26,"y":0,"width":174,"height":49});
+                        let response =
+                            json!({"id":request["id"],"result":{"layout":{"area":area}}});
+                        writeln!(stream, "{response}").unwrap();
+                        continue;
+                    }
+                    _ => {}
+                }
                 let original = json!({"type":"pane","pane_id":"w1:p1"});
                 let mut root = original.clone();
                 if let Ok(direction) = fs::read_to_string(fake_binary.with_extension("split")) {
@@ -132,6 +156,29 @@ fi
         fs::read_to_string(self.binary.with_extension("log")).unwrap_or_default()
     }
 
+    /// Every socket request so far, in order.
+    fn requests(&self) -> Vec<Value> {
+        fs::read_to_string(self.binary.with_extension("socket.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    /// The params of the one `plugin.pane.open` request, if any.
+    fn popup_open(&self) -> Option<Value> {
+        let opens = self
+            .requests()
+            .into_iter()
+            .filter(|request| request["method"] == "plugin.pane.open")
+            .collect::<Vec<_>>();
+        assert!(opens.len() <= 1, "{opens:?}");
+        opens
+            .into_iter()
+            .next()
+            .map(|request| request["params"].clone())
+    }
+
     fn fail_command(&self, command: &str) {
         fs::write(format!("{}.fail-{}", self.binary.display(), command), "").unwrap();
     }
@@ -155,8 +202,10 @@ impl Drop for FakeHerdr {
     }
 }
 
-fn write_config(path: &Path, source: &str) {
+/// The shared config file as `launch` receives it from `Config::current()`.
+fn write_config(path: &Path, source: &str) -> tools_core::Config {
     fs::write(path, source).unwrap();
+    tools_core::Config::load(path).unwrap()
 }
 
 #[test]
@@ -164,95 +213,166 @@ fn launch_opens_the_native_popup_with_source_context_and_configured_size() {
     let fake = FakeHerdr::new();
     let source_cwd = fake.binary.parent().unwrap().join("source-project");
     fs::create_dir(&source_cwd).unwrap();
-    let config = fake.binary.parent().unwrap().join("config.toml");
-    write_config(
-        &config,
+    let config = write_config(
+        &fake.binary.parent().unwrap().join("config.toml"),
         r#"
-width = 72
-height = 32
+[popup.size]
+menu = { width = 72, height = 32 }
+
+[menu]
 max_height = 18
-[[items]]
+[[menu.items]]
 key = "a"
 label = "alpha"
 command = "alpha"
-[[items]]
+[[menu.items]]
 key = "b"
 label = "beta"
 command = "beta"
 "#,
     );
-    let context = InvocationContext::parse(&format!(
+    let invocation = Invocation::from_context_json(&format!(
         r#"{{"focused_pane_id":"w1:p1","focused_pane_cwd":"{}"}}"#,
         source_cwd.display()
     ))
     .unwrap();
 
-    fake.client().launch(&context, &config).unwrap();
+    fake.client().launch(&invocation, Some(&config)).unwrap();
 
+    let open = fake.popup_open().expect("popup opened");
+    assert_eq!(open["plugin_id"], "shadowfax.tools");
+    assert_eq!(open["entrypoint"], "menu");
+    assert_eq!(open["placement"], "popup");
     assert_eq!(
-        fake.log().trim(),
-        format!(
-            "plugin pane open --plugin shadowfax.menu --entrypoint menu --placement popup --width 72 --height 32 --env HERDR_MENU_SOURCE_CWD={}",
-            source_cwd.display(),
-        )
-        + " --env HERDR_MENU_SOURCE_PANE_ID=w1:p1"
+        (open["width"].as_u64(), open["height"].as_u64()),
+        (Some(72), Some(32))
+    );
+    assert_eq!(
+        open["env"]["HERDR_MENU_SOURCE_CWD"],
+        source_cwd.display().to_string()
+    );
+    assert_eq!(open["env"]["HERDR_MENU_SOURCE_PANE_ID"], "w1:p1");
+    // Nothing else crossed the CLI: no profile needed the client width either.
+    assert!(fake.log().is_empty(), "{}", fake.log());
+    assert_eq!(fake.requests().len(), 1);
+}
+
+#[test]
+fn launch_without_a_size_uses_the_menu_width_and_item_count_height() {
+    let fake = FakeHerdr::new();
+    let config = write_config(
+        &fake.binary.parent().unwrap().join("config.toml"),
+        "[menu]\nmax_height = 18\n[[menu.items]]\nkey = 'a'\nlabel = 'alpha'\ncommand = 'alpha'\n",
+    );
+    let invocation = Invocation::from_context_json(&format!(
+        r#"{{"focused_pane_id":"w1:p1","focused_pane_cwd":"{}"}}"#,
+        fake.fallback_cwd.display()
+    ))
+    .unwrap();
+
+    fake.client().launch(&invocation, Some(&config)).unwrap();
+
+    let open = fake.popup_open().unwrap();
+    assert_eq!(
+        (open["width"].as_u64(), open["height"].as_u64()),
+        (Some(64), Some(6))
+    );
+}
+
+#[test]
+fn launch_matches_popup_profiles_on_the_source_client_width() {
+    let fake = FakeHerdr::new();
+    let config = write_config(
+        &fake.binary.parent().unwrap().join("config.toml"),
+        r#"
+[popup.size]
+menu = { width = 80, height = 32 }
+[[popup.profile]]
+name = "laptop"
+max_client_width = 310
+size.menu = { width = "60%", height = "70%" }
+"#,
+    );
+    let invocation = Invocation::from_context_json(&format!(
+        r#"{{"focused_pane_id":"w1:p1","focused_pane_cwd":"{}"}}"#,
+        fake.fallback_cwd.display()
+    ))
+    .unwrap();
+
+    fake.client().launch(&invocation, Some(&config)).unwrap();
+
+    let requests = fake.requests();
+    assert_eq!(requests[0]["method"], "pane.layout");
+    assert_eq!(requests[0]["params"]["pane_id"], "w1:p1");
+    let open = fake.popup_open().unwrap();
+    assert_eq!(
+        (open["width"].as_str(), open["height"].as_str()),
+        (Some("60%"), Some("70%"))
     );
 }
 
 #[test]
 fn launch_resolves_missing_source_cwd_from_the_focused_pane() {
     let fake = FakeHerdr::new();
-    let config = fake.binary.parent().unwrap().join("config.toml");
-    write_config(&config, include_str!("../config.default.toml"));
-    let context = InvocationContext::parse(r#"{"focused_pane_id":"w1:p9"}"#).unwrap();
+    let config = write_config(&fake.binary.parent().unwrap().join("config.toml"), "");
+    let invocation = Invocation::from_context_json(r#"{"focused_pane_id":"w1:p9"}"#).unwrap();
 
-    fake.client().launch(&context, &config).unwrap();
+    fake.client().launch(&invocation, Some(&config)).unwrap();
 
     let log = fake.log();
     assert!(log.lines().any(|line| line == "pane get w1:p9"));
     assert!(!log.contains("--cwd"));
-    assert!(log.contains(&format!(
-        "--env HERDR_MENU_SOURCE_CWD={}",
-        fake.fallback_cwd.display()
-    )));
-    assert!(log.contains("--env HERDR_MENU_SOURCE_PANE_ID=w1:p9"));
+    let open = fake.popup_open().unwrap();
+    assert_eq!(
+        open["env"]["HERDR_MENU_SOURCE_CWD"],
+        fake.fallback_cwd.display().to_string()
+    );
+    assert_eq!(open["env"]["HERDR_MENU_SOURCE_PANE_ID"], "w1:p9");
+    // The built-in menu with its "no [menu] table" warning: the old 68 × 16.
+    assert_eq!(
+        (open["width"].as_u64(), open["height"].as_u64()),
+        (Some(68), Some(16))
+    );
 }
 
 #[test]
 fn invalid_config_uses_fallback_dimensions_but_still_opens() {
     let fake = FakeHerdr::new();
-    let config = fake.binary.parent().unwrap().join("config.toml");
-    write_config(&config, "[[items]\n");
-    let context = InvocationContext::parse(&format!(
+    let path = fake.binary.parent().unwrap().join("config.toml");
+    fs::write(&path, "[[menu.items]\n").unwrap();
+    assert!(tools_core::Config::load(&path).is_err());
+    let invocation = Invocation::from_context_json(&format!(
         r#"{{"focused_pane_id":"w1:p1","focused_pane_cwd":"{}"}}"#,
         fake.fallback_cwd.display()
     ))
     .unwrap();
 
-    fake.client().launch(&context, &config).unwrap();
+    // `launch_from_environment` passes None when `Config::current()` fails.
+    fake.client().launch(&invocation, None).unwrap();
 
-    let log = fake.log();
-    assert!(log.contains("--width 64 --height 16"));
-    assert!(log.contains("plugin pane open"));
+    let open = fake.popup_open().unwrap();
+    assert_eq!(
+        (open["width"].as_u64(), open["height"].as_u64()),
+        (Some(64), Some(16))
+    );
 }
 
 #[test]
 fn missing_pane_context_notifies_without_opening() {
     let fake = FakeHerdr::new();
-    let config = fake.binary.parent().unwrap().join("config.toml");
-    write_config(&config, include_str!("../config.default.toml"));
-    let context = InvocationContext::parse("{}").unwrap();
+    let config = write_config(&fake.binary.parent().unwrap().join("config.toml"), "");
+    let invocation = Invocation::from_context_json("{}").unwrap();
 
     let error = fake
         .client()
-        .launch_with_reporting(&context, &config)
+        .launch_with_reporting(&invocation, Some(&config))
         .unwrap_err()
         .to_string();
 
     assert!(error.contains("source pane ID"));
     let log = fake.log();
     assert!(log.contains("notification show Herdr Menu --body"));
-    assert!(!log.contains("plugin pane open"));
+    assert!(fake.popup_open().is_none());
 }
 
 #[test]
@@ -417,106 +537,4 @@ fn failed_run_keeps_new_state_when_the_orphan_pane_cannot_be_closed() {
     assert!(error.contains("w1:pF"), "{error}");
     let state_json: serde_json::Value = serde_json::from_slice(&fs::read(state).unwrap()).unwrap();
     assert_eq!(state_json["fork_pane_id"], "w1:pF");
-}
-
-#[test]
-fn install_subcommand_seeds_files_reloads_and_notifies() {
-    let fake = FakeHerdr::new();
-    let herdr_config = fake.binary.parent().unwrap().join("main-config.toml");
-    let plugin_config_dir = fake.binary.parent().unwrap().join("plugin-config");
-    fs::write(&herdr_config, "[keys]\nprefix = \"ctrl+a\"\n").unwrap();
-
-    let output = Command::new(env!("CARGO_BIN_EXE_herdr-menu"))
-        .arg("install")
-        .env("HERDR_CONFIG_PATH", &herdr_config)
-        .env("HERDR_PLUGIN_CONFIG_DIR", &plugin_config_dir)
-        .env("HERDR_BIN_PATH", &fake.binary)
-        .output()
-        .unwrap();
-
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(fs::read_to_string(&herdr_config)
-        .unwrap()
-        .contains("shadowfax.menu.open"));
-    assert_eq!(
-        fs::read_to_string(plugin_config_dir.join("config.toml")).unwrap(),
-        include_str!("../config.default.toml")
-    );
-    let log = fake.log();
-    assert!(log.contains("server reload-config"));
-    assert!(log.contains("notification show Herdr Menu --body Herdr menu installed on alt+q"));
-}
-
-#[test]
-fn install_upgrade_adds_redistribution_and_conflicts_do_not_change_bindings() {
-    let fake = FakeHerdr::new();
-    let root = fake.binary.parent().unwrap();
-    let main_config = root.join("main-config.toml");
-    let plugin_dir = root.join("plugin-config");
-    fs::create_dir(&plugin_dir).unwrap();
-    let plugin_config = plugin_dir.join("config.toml");
-    fs::write(&main_config, "[keys]\n").unwrap();
-    let original_main = fs::read(&main_config).unwrap();
-    let conflict = "[[items]]\nkey = \"d\"\nlabel = \"mine\"\ncommand = \"mine\"\n";
-    fs::write(&plugin_config, conflict).unwrap();
-    let invoke = || {
-        Command::new(env!("CARGO_BIN_EXE_herdr-menu"))
-            .args(["install", "--add-redistribute"])
-            .env("HERDR_CONFIG_PATH", &main_config)
-            .env("HERDR_PLUGIN_CONFIG_DIR", &plugin_dir)
-            .env("HERDR_BIN_PATH", &fake.binary)
-            .output()
-            .unwrap()
-    };
-    let failed = invoke();
-    assert!(!failed.status.success());
-    assert!(String::from_utf8_lossy(&failed.stderr).contains("already bound"));
-    assert_eq!(fs::read(&main_config).unwrap(), original_main);
-    assert_eq!(fs::read_to_string(&plugin_config).unwrap(), conflict);
-    fs::write(&plugin_config, "# custom\ntitle = \"my commands\"\n").unwrap();
-    let output = invoke();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(String::from_utf8_lossy(&output.stderr).contains("Menu config backup:"));
-    let config = fs::read_to_string(&plugin_config).unwrap();
-    assert!(config.starts_with("# custom\ntitle = \"my commands\"\n"));
-    assert!(config.contains("type = \"redistribute\""));
-    assert!(fake.log().contains("server reload-config"));
-    assert!(invoke().status.success());
-    assert_eq!(fs::read_to_string(plugin_config).unwrap(), config);
-}
-
-#[test]
-fn menu_upgrade_does_not_reset_a_custom_shortcut_or_its_comments() {
-    let fake = FakeHerdr::new();
-    let root = fake.binary.parent().unwrap();
-    let main_config = root.join("main-config.toml");
-    let plugin_dir = root.join("plugin-config");
-    fs::create_dir(&plugin_dir).unwrap();
-    let original = "[keys]\n# keep my shortcut\n[[keys.command]]\nkey = \"alt+m\" # muscle memory\ntype = \"plugin_action\"\ncommand = \"shadowfax.menu.open\"\ndescription = \"My menu\"\n";
-    fs::write(&main_config, original).unwrap();
-    fs::write(plugin_dir.join("config.toml"), "title = \"mine\"\n").unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_herdr-menu"))
-        .args(["install", "--add-redistribute"])
-        .env("HERDR_CONFIG_PATH", &main_config)
-        .env("HERDR_PLUGIN_CONFIG_DIR", &plugin_dir)
-        .env("HERDR_BIN_PATH", &fake.binary)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(fs::read_to_string(main_config).unwrap(), original);
-    assert!(fs::read_to_string(plugin_dir.join("config.toml"))
-        .unwrap()
-        .contains("type = \"redistribute\""));
 }
