@@ -204,19 +204,31 @@ impl ScopeTarget {
     }
 
     /// Whether two targets name the same thing (config flag and display-only
-    /// labels aside). Used to toggle a target in or out of a list.
+    /// labels aside). Used to toggle a target in or out of a list. Each part
+    /// compares like with like: ids when both sides carry one, labels when
+    /// neither does. An id never stands in for a label, so a workspace
+    /// labelled `w1` is not the workspace whose id is `w1`; matching a typed
+    /// label against a stored id is the CLI's separate, explicit step.
     pub(crate) fn same_target(&self, other: &ScopeTarget) -> bool {
-        fn key(target: &ScopeTarget) -> (&str, Option<&str>, Option<&str>) {
-            (
-                target.machine.as_str(),
-                target
-                    .workspace_id
-                    .as_deref()
-                    .or(target.workspace_label.as_deref()),
-                target.tab_id.as_deref().or(target.tab_label.as_deref()),
-            )
+        fn same_part(
+            (id, label): (&Option<String>, &Option<String>),
+            (other_id, other_label): (&Option<String>, &Option<String>),
+        ) -> bool {
+            match (id, other_id) {
+                (Some(id), Some(other_id)) => id == other_id,
+                (None, None) => label == other_label,
+                _ => false,
+            }
         }
-        key(self) == key(other)
+        self.machine == other.machine
+            && same_part(
+                (&self.workspace_id, &self.workspace_label),
+                (&other.workspace_id, &other.workspace_label),
+            )
+            && same_part(
+                (&self.tab_id, &self.tab_label),
+                (&other.tab_id, &other.tab_label),
+            )
     }
 
     /// Parses the CLI form `[machine:]workspace[/tab]`. The machine defaults to
@@ -622,6 +634,29 @@ mod tests {
 
         scope.clear(&["ft".into()]);
         assert_eq!(scope, ScopeState::from_config_hidden(&["ft".into()]));
+    }
+
+    #[test]
+    fn same_target_never_mistakes_an_id_for_a_label() {
+        let pinned = ScopeTarget {
+            machine: LOCAL_MACHINE.into(),
+            workspace_id: Some("w1".into()),
+            workspace_label: Some("setup".into()),
+            ..ScopeTarget::default()
+        };
+        // A different workspace whose label happens to be another's id.
+        assert!(!pinned.same_target(&target("w1")));
+        assert!(!pinned.same_target(&target("setup")));
+        let renamed = ScopeTarget {
+            workspace_label: Some("renamed".into()),
+            ..pinned.clone()
+        };
+        assert!(
+            pinned.same_target(&renamed),
+            "the same id is the same workspace"
+        );
+        assert!(target("setup/herdr").same_target(&target("setup/herdr")));
+        assert!(!target("setup").same_target(&target("setup/herdr")));
     }
 
     #[test]
