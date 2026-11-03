@@ -101,15 +101,15 @@ pub fn run(command: Command) -> Result<()> {
 /// and `profiles` become `[[popup.profile]]` entries sizing every scratch, so each
 /// client width resolves to the same size and profile as before (see `legacy`).
 ///
-/// State: nothing is copied, because none of it can be. New state lives in
-/// `<state>/scratch/`. The old state dir
-/// (`~/.local/state/herdr/plugins/shadowfax.scratch/`) holds two live private
-/// tmux servers (`tmux-<euid>/shadowfax-herdr-{scratch,workspace}`) running the
-/// owner's editors and shells, the context files those editors watch, and a
-/// cleanup cache keyed by those servers' pids. After the cutover, toggles start
-/// fresh sessions under `shadowfax.tools`; old sessions keep running until their
-/// server exits and can be reached with
-/// `tmux -S ~/.local/state/herdr/plugins/shadowfax.scratch/tmux-$(id -u)/shadowfax-herdr-workspace attach`.
+/// State: nothing is copied; the live state is linked instead. The old state
+/// dir (`~/.local/state/herdr/plugins/shadowfax.scratch/`) holds the running
+/// private tmux servers (`tmux-<euid>/shadowfax-herdr-{scratch,workspace}`) with
+/// the owner's editors and shells, the context files those editors watch, and a
+/// cleanup cache keyed by socket path. Sockets and watched paths cannot move
+/// under running processes, so the cutover runs `crates/scratch/cutover-state.sh`
+/// (after disabling the old plugin): it stops the old worker, makes
+/// `<state>/scratch` a symlink to the old dir and rekeys the cache. Toggles then
+/// reattach the same sessions; `tests/cutover_real.py` proves it end to end.
 pub fn migrate_legacy(legacy_config_root: &Path) -> Result<toml::Table> {
     legacy::migrate(legacy_config_root)
 }
