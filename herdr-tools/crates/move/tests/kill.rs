@@ -1,10 +1,10 @@
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
 
 use serde_json::{json, Value};
 use tempfile::{tempdir, TempDir};
+use tools_core::testing::write_executable;
 use tools_core::Host;
 use tools_move::herdr::Herdr;
 use tools_move::kill::{KillPlan, KillScope, KillTarget};
@@ -69,8 +69,7 @@ impl FakeHerdr {
     fn new(workspaces: Vec<Value>, tabs: Vec<Value>, panes: Vec<Value>) -> Self {
         let directory = tempdir().unwrap();
         let binary = directory.path().join("herdr");
-        fs::write(&binary, SCRIPT).unwrap();
-        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+        write_executable(&binary, SCRIPT);
         let write = |name: &str, items: Vec<Value>| {
             let lines = items
                 .iter()

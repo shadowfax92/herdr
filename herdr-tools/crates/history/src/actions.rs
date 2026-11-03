@@ -117,19 +117,10 @@ impl Default for ActionExecutor {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt;
-    use std::path::Path;
-
     use tempfile::tempdir;
+    use tools_core::testing::write_executable as executable;
 
     use super::*;
-
-    fn executable(path: &Path, source: &str) {
-        std::fs::write(path, source).unwrap();
-        let mut permissions = std::fs::metadata(path).unwrap().permissions();
-        permissions.set_mode(0o700);
-        std::fs::set_permissions(path, permissions).unwrap();
-    }
 
     #[test]
     fn copies_exact_multiline_text_to_the_clipboard() {

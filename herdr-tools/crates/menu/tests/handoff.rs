@@ -1,8 +1,8 @@
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 use serde_json::{json, Value};
+use tools_core::testing::write_executable;
 use tools_menu::handoff::HandoffController;
 use tools_menu::herdr::Herdr;
 
@@ -17,7 +17,7 @@ impl Runtime {
     fn new() -> Self {
         let directory = tempfile::tempdir().unwrap();
         let binary = directory.path().join("herdr");
-        fs::write(
+        write_executable(
             &binary,
             r#"#!/usr/bin/python3
 import json, os, pathlib, sys
@@ -38,9 +38,7 @@ else:
     print('unexpected command or session', file=sys.stderr)
     sys.exit(3)
 "#,
-        )
-        .unwrap();
-        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+        );
         let runtime = Self { directory, binary };
         runtime.save(json!({
             "sessions": [

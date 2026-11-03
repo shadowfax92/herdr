@@ -446,10 +446,30 @@ pub mod testing {
     /// Point [`Host::new`] at the returned path to test CLI calls.
     pub fn fake_cli(dir: &Path, body: &str) -> PathBuf {
         let path = dir.join("herdr");
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write fake herdr");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod fake herdr");
+        write_executable(&path, &format!("#!/bin/sh\n{body}\n"));
         path
+    }
+
+    /// Writes `source` to `path` as an executable a test can run right away.
+    ///
+    /// Tests run on parallel threads, and a child forked by one thread holds
+    /// every file the others have open until it execs. A script this process
+    /// had open for writing can therefore still be open in a sibling's child
+    /// when the test runs it, and Linux refuses that exec with "Text file
+    /// busy" (ETXTBSY). Staging the text under another name and letting `cp`
+    /// create the real file means no write handle to it exists in this process.
+    pub fn write_executable(path: &Path, source: &str) {
+        let staged = path.with_extension("staged");
+        std::fs::write(&staged, source).expect("stage fake executable");
+        let copied = std::process::Command::new("cp")
+            .arg(&staged)
+            .arg(path)
+            .status()
+            .expect("run cp");
+        assert!(copied.success(), "cp to {} failed", path.display());
+        std::fs::remove_file(&staged).expect("remove staged executable");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .expect("chmod fake executable");
     }
 }
 

@@ -1,9 +1,9 @@
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
 use serde_json::{json, Value};
 use tempfile::tempdir;
+use tools_core::testing::write_executable;
 
 /// `herdr-tools menu …`, through this crate's test stand-in for the root binary.
 fn herdr_tools_menu() -> Command {
@@ -14,7 +14,7 @@ fn herdr_tools_menu() -> Command {
 fn stdout_uses_explicit_then_captured_then_caller_source_without_clipboard_or_notifications() {
     let directory = tempdir().unwrap();
     let binary = directory.path().join("herdr");
-    fs::write(
+    write_executable(
         &binary,
         r#"#!/usr/bin/env python3
 import json, os, pathlib, sys
@@ -31,12 +31,11 @@ elif sys.argv[1:] == ["api", "snapshot"]:
 else:
     raise SystemExit(7)
 "#,
-    )
-    .unwrap();
-    fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+    );
     // Catch an accidental clipboard call without touching the user's clipboard.
+    let script = fs::read_to_string(&binary).unwrap();
     for provider in ["pbcopy", "wl-copy", "xclip", "xsel"] {
-        fs::copy(&binary, directory.path().join(provider)).unwrap();
+        write_executable(&directory.path().join(provider), &script);
     }
     let panes = ["caller", "captured", "explicit"].map(|label| {
         json!({
@@ -135,7 +134,7 @@ fn cli_requires_managed_environment_and_never_falls_back_to_focus() {
 fn copy_notification_identifies_source_and_delivery_failure_keeps_copy_successful() {
     let directory = tempdir().unwrap();
     let binary = directory.path().join("herdr");
-    fs::write(
+    write_executable(
         &binary,
         r#"#!/usr/bin/env python3
 import json, os, pathlib, sys
@@ -162,11 +161,10 @@ elif args[:2] == ["notification", "show"]:
 else:
     raise SystemExit(7)
 "#,
-    )
-    .unwrap();
-    fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+    );
+    let script = fs::read_to_string(&binary).unwrap();
     for provider in ["pbcopy", "wl-copy", "xclip", "xsel"] {
-        fs::copy(&binary, directory.path().join(provider)).unwrap();
+        write_executable(&directory.path().join(provider), &script);
     }
     let test_path = std::env::join_paths(std::iter::once(directory.path().to_path_buf()).chain(
         std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),

@@ -1,6 +1,5 @@
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -10,6 +9,7 @@ use std::sync::{
 
 use serde_json::Value;
 use tempfile::tempdir;
+use tools_core::testing::write_executable;
 use tools_core::Invocation;
 use tools_menu::agent_panes::AgentPaneController;
 use tools_menu::config::ForkPlacement;
@@ -29,9 +29,9 @@ impl FakeHerdr {
         let fallback_cwd = directory.path().join("fallback-project");
         fs::create_dir(&fallback_cwd).unwrap();
         let binary = directory.path().join("herdr");
-        fs::write(
+        write_executable(
             &binary,
-            format!(
+            &format!(
                 r#"#!/bin/sh
 printf '%s\n' "$*" >> "$0.log"
 if [ -f "$0.fail-$1-$2" ]; then
@@ -67,11 +67,7 @@ fi
                 fallback_cwd.display(),
                 fallback_cwd.display()
             ),
-        )
-        .unwrap();
-        let mut permissions = fs::metadata(&binary).unwrap().permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&binary, permissions).unwrap();
+        );
         let listener = UnixListener::bind(directory.path().join("api.sock")).unwrap();
         listener.set_nonblocking(true).unwrap();
         let stop_socket = Arc::new(AtomicBool::new(false));

@@ -1,7 +1,7 @@
-use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
 use tempfile::tempdir;
+use tools_core::testing::write_executable;
 
 #[test]
 fn wqa_saves_the_review_when_another_modified_buffer_has_no_name() {
@@ -17,12 +17,10 @@ fn wqa_saves_the_review_when_another_modified_buffer_has_no_name() {
     let confirm = temp.path().join("confirm");
     let marker = temp.path().join("confirmed");
     std::fs::write(&review, "review\n").unwrap();
-    std::fs::write(
+    write_executable(
         &confirm,
         "#!/bin/sh\nset -eu\n[ \"$1\" = comment ]\n[ \"$2\" = confirm-review ]\n[ \"$3\" = --id ]\nprintf '%s\\n' \"$4\" > \"$HERDR_COMMENTS_CONFIRM_MARKER\"\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&confirm, std::fs::Permissions::from_mode(0o700)).unwrap();
+    );
 
     let output = Command::new("nvim")
         .args(["--headless", "-u", "NONE", "-n"])

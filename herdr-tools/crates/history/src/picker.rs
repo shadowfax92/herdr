@@ -77,9 +77,8 @@ fn finish_copy(
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt;
-
     use tempfile::tempdir;
+    use tools_core::testing::write_executable;
 
     use super::*;
 
@@ -87,10 +86,7 @@ mod tests {
     fn clipboard_failure_keeps_the_picker_open_with_an_error() {
         let directory = tempdir().unwrap();
         let pbcopy = directory.path().join("pbcopy");
-        std::fs::write(&pbcopy, "#!/bin/sh\nexit 9\n").unwrap();
-        let mut permissions = std::fs::metadata(&pbcopy).unwrap().permissions();
-        permissions.set_mode(0o700);
-        std::fs::set_permissions(&pbcopy, permissions).unwrap();
+        write_executable(&pbcopy, "#!/bin/sh\nexit 9\n");
         let executor = ActionExecutor::with_command(pbcopy);
         let snapshot = RunSnapshot {
             source_pane_id: "w1:p1".into(),

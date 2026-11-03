@@ -31,6 +31,7 @@ tools-scratch.workspace = true
 # tests/scratch_reap_cli.rs decodes the scratch cleanup report.
 serde_json.workspace = true
 tempfile.workspace = true
+tools-core = { workspace = true, features = ["test-util"] }
 
 [workspace]
 members = ["crates/*"]

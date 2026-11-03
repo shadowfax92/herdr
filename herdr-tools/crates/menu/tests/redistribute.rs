@@ -1,7 +1,7 @@
 use serde_json::json;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+use tools_core::testing::write_executable;
 use tools_menu::herdr::Herdr;
 use tools_menu::redistribute::{ApplyOutcome, Redistributor};
 use tools_menu::redistribute::{LayoutPlan, LayoutSnapshot};
@@ -15,8 +15,7 @@ impl Runtime {
     fn new(count: usize) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let binary = directory.path().join("herdr");
-        fs::write(&binary, include_str!("fixtures/herdr-layout.py")).unwrap();
-        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+        write_executable(&binary, include_str!("fixtures/herdr-layout.py"));
         fs::write(
             directory.path().join("state.json"),
             json!({

@@ -8,10 +8,12 @@
 //! and inherits no `HERDR_*` variable, so nothing can reach a live server.
 
 use std::fs;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
+
+use tools_core::testing::write_executable;
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -32,12 +34,10 @@ impl Fixture {
         fs::create_dir(root.join("state")).unwrap();
         fs::write(root.join("config/config.toml"), DEFAULT_CONFIG).unwrap();
         let herdr = root.join("herdr");
-        fs::write(
+        write_executable(
             &herdr,
             "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$0.notification\"\n",
-        )
-        .unwrap();
-        fs::set_permissions(&herdr, fs::Permissions::from_mode(0o700)).unwrap();
+        );
         Self { root }
     }
 

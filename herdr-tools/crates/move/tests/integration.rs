@@ -1,11 +1,10 @@
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
 use tempfile::tempdir;
-use tools_core::testing::{fake_host, ok};
+use tools_core::testing::{fake_host, ok, write_executable};
 use tools_core::{Config, Host};
 use tools_move::app::{
     MergeWorkspaceRequest, MovePaneRequest, MoveTabRequest, PaneDestination, PaneSource,
@@ -24,7 +23,7 @@ impl FakeHerdr {
     fn new() -> Self {
         let directory = tempdir().unwrap();
         let binary = directory.path().join("herdr");
-        fs::write(
+        write_executable(
             &binary,
             r#"#!/bin/sh
 echo "$*" >> "$0.log"
@@ -98,11 +97,7 @@ case "$1 $2" in
     ;;
 esac
 "#,
-        )
-        .unwrap();
-        let mut permissions = fs::metadata(&binary).unwrap().permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&binary, permissions).unwrap();
+        );
         Self {
             _directory: directory,
             binary,

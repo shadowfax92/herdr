@@ -2,9 +2,9 @@
 //! partial failures. The double tracks pane ownership independently of plans.
 use std::collections::BTreeMap;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 
 use serde_json::{json, Value};
+use tools_core::testing::write_executable;
 use tools_core::Host;
 use tools_layout::grid::{ApplyOutcome, GridController, GridSize, Snapshot};
 
@@ -16,8 +16,7 @@ impl Runtime {
     fn new(count: usize) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let binary = directory.path().join("herdr");
-        fs::write(&binary, include_str!("fixtures/herdr-layout.py")).unwrap();
-        fs::set_permissions(binary, fs::Permissions::from_mode(0o700)).unwrap();
+        write_executable(&binary, include_str!("fixtures/herdr-layout.py"));
         let state = json!({"layout": snapshot(count), "log": [], "moves": 0});
         fs::write(directory.path().join("state.json"), state.to_string()).unwrap();
         Self { directory }
