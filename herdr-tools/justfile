@@ -1,0 +1,75 @@
+# herdr-tools recipes. Run from anywhere with `just -f herdr-tools/justfile <recipe>`;
+# just runs every recipe from this directory.
+
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
+# The laid-out plugin dir that `herdr plugin link` points at. Releases unpack to
+# the same path, so dev and release installs replace each other cleanly.
+plugin_dir := env("XDG_DATA_HOME", env("HOME") / ".local/share") / "herdr/plugins/shadowfax.tools"
+
+default: ci
+
+# Formatting, lints as errors, then every test. The gate before any commit.
+ci:
+    cargo fmt --all --check
+    cargo clippy --workspace --all-targets --locked -- -D warnings
+    cargo test --workspace --locked
+
+fmt:
+    cargo fmt --all
+
+# Build release and copy the binary to bin/, as the manifest's [[build]] does.
+bin:
+    cargo build --release --locked
+    mkdir -p bin
+    cp target/release/herdr-tools bin/herdr-tools
+
+# Real-herdr checks in a throwaway, isolated server (never the default session).
+real: bin
+    cargo build -p tools-core --example open_popup --locked
+    python3 tests/real_scaffold.py
+
+# Build release, lay out {{plugin_dir}} by rename, and link it unless Herdr
+# already links shadowfax.tools from there. Uses the herdr on PATH (override
+# with HERDR=…) and whatever server it reaches: point XDG_CONFIG_HOME and
+# XDG_DATA_HOME at temp dirs and unset HERDR_SOCKET_PATH to try it in isolation.
+install:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    herdr="${HERDR:-herdr}"
+    cargo build --release --locked
+    dest='{{plugin_dir}}'
+    parent="$(dirname "$dest")"
+    mkdir -p "$parent"
+    # Stage beside the destination so the final step is a same-filesystem
+    # rename: the linked dir is either the old tree or the new one, never half.
+    stage="$(mktemp -d "$parent/.shadowfax.tools.stage.XXXXXX")"
+    old=""
+    trap 'rm -rf "$stage" ${old:+"$old"}' EXIT
+    mkdir -p "$stage/bin"
+    cp herdr-plugin.toml README.md LICENSE "$stage/"
+    cp target/release/herdr-tools "$stage/bin/herdr-tools"
+    cp -R nvim "$stage/nvim"
+    if [ -e "$dest" ]; then
+        old="$(mktemp -d "$parent/.shadowfax.tools.old.XXXXXX")"
+        rmdir "$old"
+        mv "$dest" "$old"
+    fi
+    mv "$stage" "$dest"
+    echo "Installed $dest"
+    # Running processes (the scratch cleanup worker) keep the old binary's inode;
+    # the next start runs the new one. Linking the same id from another dir
+    # replaces that link, so only an exact plugin_root match skips the link.
+    linked="$("$herdr" plugin list --json | python3 -c '
+    import json, os, sys
+    dest = os.path.realpath(sys.argv[1])
+    plugins = json.load(sys.stdin)["result"]["plugins"]
+    print(any(p.get("plugin_id") == "shadowfax.tools"
+              and os.path.realpath(p.get("plugin_root") or "/nonexistent") == dest
+              for p in plugins))
+    ' "$dest")"
+    if [ "$linked" = "True" ]; then
+        echo "shadowfax.tools is already linked from $dest"
+    else
+        "$herdr" plugin link "$dest"
+    fi

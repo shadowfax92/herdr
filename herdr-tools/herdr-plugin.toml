@@ -1,0 +1,211 @@
+id = "shadowfax.tools"
+name = "Herdr Tools"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Find panes, move them, browse history, run a command menu, comment on output, lay out panes, and keep scratch popups."
+platforms = ["macos", "linux"]
+
+# Releases and `just install` lay this directory out prebuilt, and
+# `herdr plugin link` never builds. This step serves `herdr plugin install`
+# from GitHub, which runs it in the checkout.
+[[build]]
+command = ["sh", "-c", "cargo build --release --locked && mkdir -p bin && cp target/release/herdr-tools bin/"]
+
+# Each block below belongs to one mode's port worker. Popup pane ids double as
+# popup keys for `[popup.size]` / `[[popup.profile]]`, except `scratch`, whose
+# keys are `scratch-<name>`; `width`/`height` here are the defaults Herdr uses
+# when config sets no size for that key.
+
+# --- find ---
+
+[[actions]]
+id = "find"
+title = "Jump to session"
+description = "Search all open panes by task, pane name, path, workspace, or tab."
+contexts = ["pane"]
+command = ["./bin/herdr-tools", "find", "open"]
+
+[[actions]]
+id = "find-paths"
+title = "Paste a path"
+description = "Pick a zoxide directory; Enter types its full path into this pane and copies it."
+contexts = ["pane"]
+command = ["./bin/herdr-tools", "find", "open", "paths"]
+
+[[panes]]
+id = "find"
+title = "Find"
+placement = "popup"
+# A fallback: `find open` passes each picker's own width.
+width = 110
+height = "90%"
+command = ["./bin/herdr-tools", "find", "picker"]
+
+# --- move ---
+
+[[actions]]
+id = "move"
+title = "Move or kill panes"
+description = "Move panes or tabs, merge a workspace, or kill panes, tabs, and workspaces."
+contexts = ["pane"]
+command = ["./bin/herdr-tools", "move", "open"]
+
+[[panes]]
+id = "move"
+title = "Move"
+placement = "popup"
+width = 76
+height = 24
+command = ["./bin/herdr-tools", "move", "picker"]
+
+# --- history ---
+
+[[actions]]
+id = "history"
+title = "Browse pane history"
+description = "Browse recent focused-pane output and copy a target or selection."
+contexts = ["pane"]
+command = ["./bin/herdr-tools", "history", "launch"]
+
+[[panes]]
+id = "history"
+title = "History"
+placement = "popup"
+width = "90%"
+height = "90%"
+command = ["./bin/herdr-tools", "history", "picker"]
+
+# --- menu ---
+
+[[actions]]
+id = "menu"
+title = "Open pane menu"
+description = "Fork or rotate conversations, redistribute panes, or copy pane context."
+contexts = ["pane"]
+command = ["./bin/herdr-tools", "menu", "open"]
+
+[[panes]]
+id = "menu"
+title = "agent forks"
+placement = "popup"
+width = 64
+height = 16
+command = ["./bin/herdr-tools", "menu", "menu"]
+
+# --- comment ---
+
+[[actions]]
+id = "comment-capture"
+title = "Annotate pane history"
+description = "Open a frozen, scrollable annotation view for the focused pane."
+contexts = ["pane", "selection"]
+command = ["./bin/herdr-tools", "comment", "capture"]
+
+[[actions]]
+id = "comment-review"
+title = "Review collected comments"
+description = "Edit this pane's collected comments in Neovim and save a ready draft."
+contexts = ["pane"]
+command = ["./bin/herdr-tools", "comment", "review"]
+
+[[actions]]
+id = "comment-paste"
+title = "Paste comments"
+description = "Paste this pane's reviewed draft or collected comments without submitting it."
+contexts = ["pane"]
+command = ["./bin/herdr-tools", "comment", "paste"]
+
+[[panes]]
+id = "comment-capture"
+title = "Annotate pane history"
+placement = "popup"
+width = "90%"
+height = "90%"
+command = ["./bin/herdr-tools", "comment", "capture-popup"]
+
+[[panes]]
+id = "comment-review"
+title = "Review comments"
+placement = "popup"
+width = "90%"
+height = "85%"
+command = ["./bin/herdr-tools", "comment", "review-popup"]
+
+# --- layout ---
+
+[[actions]]
+id = "layout-split-left"
+title = "Split 30% pane on the left"
+description = "Create and focus a pane occupying 30% on the left."
+contexts = ["pane"]
+command = ["./bin/herdr-tools", "layout", "split", "left"]
+
+[[actions]]
+id = "layout-split-right"
+title = "Split 30% pane on the right"
+description = "Create and focus a pane occupying 30% on the right."
+contexts = ["pane"]
+command = ["./bin/herdr-tools", "layout", "split", "right"]
+
+[[actions]]
+id = "layout-equalize"
+title = "Spread nearby panes evenly"
+description = "Equalize the focused pane and adjacent panes in the same direction."
+contexts = ["pane"]
+command = ["./bin/herdr-tools", "layout", "equalize"]
+
+[[actions]]
+id = "layout-grid"
+title = "Create layout…"
+description = "Keep existing panes and add empty shells to a columns x rows grid."
+contexts = ["pane"]
+command = ["./bin/herdr-tools", "layout", "open-grid"]
+
+[[panes]]
+id = "layout-grid"
+title = "Create layout"
+placement = "popup"
+width = 80
+height = 24
+command = ["./bin/herdr-tools", "layout", "grid-dialog"]
+
+# --- scratch ---
+
+[[actions]]
+id = "scratch-nvim"
+title = "Toggle scratch nvim"
+description = "Open or hide the persistent nvim popup for the focused pane."
+contexts = ["pane"]
+command = ["./bin/herdr-tools", "scratch", "toggle", "--scratch", "nvim"]
+
+[[actions]]
+id = "scratch-shell"
+title = "Toggle scratch shell"
+description = "Open or hide the persistent shell popup for the focused pane."
+contexts = ["pane"]
+command = ["./bin/herdr-tools", "scratch", "toggle", "--scratch", "shell"]
+
+# Cross-plugin callers use this action so Herdr supplies the plugin's state/config
+# directories, rather than inheriting the caller plugin's private directories.
+[[actions]]
+id = "scratch-reap"
+title = "Reap stale scratch sessions"
+description = "Reclaim closed-source or expired scratches on both private tmux servers and report the result."
+command = ["./bin/herdr-tools", "scratch", "reap"]
+
+[[panes]]
+id = "scratch"
+title = "scratch"
+placement = "popup"
+width = "90%"
+height = "95%"
+command = ["./bin/herdr-tools", "scratch", "run-popup"]
+
+# The resident worker owns scans and retention; popup processes never wait for
+# it. The event hook only ensures liveness after a crash, without doing a scan.
+[[startup]]
+command = ["./bin/herdr-tools", "scratch", "cleanup-start"]
+
+[[events]]
+on = "pane.closed"
+command = ["./bin/herdr-tools", "scratch", "cleanup-start"]
