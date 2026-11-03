@@ -324,10 +324,10 @@ fn launch_resolves_missing_source_cwd_from_the_focused_pane() {
         fake.fallback_cwd.display().to_string()
     );
     assert_eq!(open["env"]["HERDR_MENU_SOURCE_PANE_ID"], "w1:p9");
-    // The built-in menu with its "no [menu] table" warning: the old 68 × 16.
+    // The built-in menu's 13 rows, its "no [menu] table" warning and the frame.
     assert_eq!(
         (open["width"].as_u64(), open["height"].as_u64()),
-        (Some(68), Some(16))
+        (Some(68), Some(19))
     );
 }
 

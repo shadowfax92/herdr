@@ -1,7 +1,7 @@
 # menu: the pane menu (`herdr-tools menu`)
 
 Fork conversations, rearrange panes, copy the current pane's context for another
-agent, and run your own commands from one popup. This mode was the herdr-menu
+agent, pick what Herdr focuses or hides, and run your own commands from one popup. This mode was the herdr-menu
 plugin (`shadowfax.menu`); its action is now `shadowfax.tools.menu`.
 
 Bind it in Herdr's `config.toml`:
@@ -24,7 +24,9 @@ Then press one key:
 | `o` | Rotate the last forked pane to its next available neighbor |
 | `d` | Preview a new arrangement for the current tab's existing panes |
 | `h` | Copy the current pane's identity and agent commands to the clipboard |
-| `v` | Retired: Agents workspace visibility, always shown as unavailable |
+| `f` | Open Herdr's focus picker |
+| `v` | Open Herdr's hide picker (the old "excluded workspaces" row) |
+| `F` | Switch focus on or off; the row shows the current state |
 
 The fork items read the focused pane's hook-reported native session ID, ask
 [RTR](https://github.com/shadowfax92/rtr) to fork that exact Claude/Codex
@@ -49,16 +51,46 @@ CLAUDE_SECURESTORAGE_CONFIG_DIR=/path/from/rtr \
 Without hooks the menu still works, but opens `rtr fork --here` so you can
 select the source session.
 
-## Workspace visibility (retired)
+## Focus and hide
+
+Focus and hide are Herdr's own (the herdr fork's `herdr scope …`): pick
+workspaces or tabs on any machine, and the machines and agents panels show only
+those (focus) or leave them out (hide), with no notifications from the rest.
+The scope lives in the local server until it restarts. The menu never edits it
+itself; it opens Herdr's native picker, which sees every machine:
+
+- `type = "focus"` and `type = "hide"` close the menu, then open the picker
+  (`scope.pick`) in that mode on your client. The mode only sets what `space`
+  marks; both marks stay one key away (`f` focus, `x` hide).
+- `type = "focus_toggle"` switches focus on or off and keeps its targets. It
+  reads the scope as you press it and sends the opposite (`scope.set
+  {focus_active}`). Its row shows the state when the menu opened:
+  `focus mode · on`. Switching on a focus with nothing in it is refused with a
+  hint, since it would change nothing.
+
+The picker opens on the client once the popup is gone: the menu starts a
+detached `herdr-tools menu scope-pick <mode>`, closes its own popup
+(`popup.close`) and exits, and the helper sends `scope.pick` after that. A
+refused pick (for example `no_client`, with no client attached) is a
+notification.
+
+As the menu opens it reads `scope.get` once, when it has a scope row.
+`scope.pick` cannot be probed without opening the picker, and the three scope
+methods ship together, so a Herdr that knows `scope.get` is taken to have all
+of them. On a Herdr without scope (Herdr 0.9.5) every scope row reads
+`<label> (unavailable)`, is never selectable or activated, and a red panel
+below the menu explains why (scroll it with Page Up/Down, Home/End). If the
+read fails for another reason the rows stay usable and a failure shows when
+one is used.
+
+### Workspace visibility (retired)
 
 `type = "workspace_visibility"` toggled the Agents plugin's excluded-workspace
-rows over Agents' control socket. Agents is retired; Herdr's own
-`[ui.sidebar.agents].hidden_workspaces` now keeps workspaces out of the Agents
-panel. The item still parses so existing menus keep working, and it behaves as
-the old menu did whenever Agents was not running: the row reads
-`<label> (unavailable)`, is never selectable or activated, and a red panel
-below the menu explains why (scroll it with Page Up/Down, Home/End). Remove the
-item from your `[menu]` to drop the row and panel.
+rows over Agents' control socket. Agents is retired, and Herdr's native hide
+replaced that list. The item still parses so existing menus keep working, and
+it now behaves exactly as `type = "hide"`: it opens Herdr's hide picker, and on
+a Herdr without scope it reads `<label> (unavailable)` as before. Change the
+type to `hide` at your leisure.
 
 ## Copy pane context
 
@@ -195,7 +227,8 @@ label = "fork current conversation left"
 placement = "left"
 
 # … r / t / b forks, a separator, rotate_fork "o", a separator,
-# redistribute "d", copy_context "h" and workspace_visibility "v"
+# redistribute "d", copy_context "h", a separator, focus "f", hide "v"
+# and focus_toggle "F"
 ```
 
 `[menu]` fields:
@@ -216,7 +249,8 @@ menu = { width = 80, height = 32 }   # cells, or "80%"
 
 Without one, the menu is 64 cells wide (68 for the built-in menu) and as tall as
 its items, two rows for config warnings, and four for the frame, between 6 and
-`max_height`. The old top-level `width`/`height` belong in `[popup.size].menu`;
+`max_height`. The built-in menu's thirteen rows and its "no `[menu]` table"
+warning make it 19 rows tall. The old top-level `width`/`height` belong in `[popup.size].menu`;
 inside `[menu]` they are ignored with a warning.
 
 Item types:
@@ -227,7 +261,10 @@ Item types:
 | `rotate_fork` | `key`, `label` | Rotate the last fork from either pane in its recorded pair |
 | `redistribute` | `key`, `label` | Preview Side by side or a rows-first Grid for existing panes |
 | `copy_context` | `key`, `label` | Copy the pane that opened the menu and commands to inspect it |
-| `workspace_visibility` | `key`, `label` | Retired; always unavailable (see above) |
+| `focus` | `key`, `label` | Close the menu and open Herdr's focus picker (see [Focus and hide](#focus-and-hide)) |
+| `hide` | `key`, `label` | Close the menu and open Herdr's hide picker |
+| `focus_toggle` | `key`, `label` | Switch focus on or off, keeping its targets; the row shows the state |
+| `workspace_visibility` | `key`, `label` | Retired; the same as `hide` |
 | `shell` | `key`, `label`, `command` | Run a trusted user shell command |
 | `separator` | none | Draw a divider |
 
@@ -315,9 +352,12 @@ just bin
 python3 crates/menu/tests/real_redistribution.py target/release/herdr-tools
 python3 crates/menu/tests/real_fork_rows.py target/release/herdr-tools
 python3 crates/menu/tests/real_menu.py    # the laid-out plugin, every item once
+python3 crates/menu/tests/real_scope.py   # focus/hide rows + Find's filter; needs `herdr scope`
 ```
 
 `headless_fork.py` drives the fork controller with no UI. `real_redistribution.py`
 and `real_fork_rows.py` attach a PTY client and press the menu's keys.
 `real_menu.py` installs and links the real plugin, migrates the owner's old
 config, and drives each item kind through the `shadowfax.tools.menu` action.
+`real_scope.py` needs a Herdr with `herdr scope` (set `HERDR_BIN` to a fork
+build); on one without it, it prints a SKIP line and exits 0.

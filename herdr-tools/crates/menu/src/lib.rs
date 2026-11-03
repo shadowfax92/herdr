@@ -14,9 +14,10 @@
 //!  popup pane `menu`  ─────────────▶ menu menu   (herdr::run_menu_from_environment)
 //!     reads [menu] (config), runs the TUI (app + ui), and executes the chosen
 //!     item: agent_panes (fork/rotate) · redistribute · handoff (copy context)
-//!     · execute (shell items)
+//!     · scope (focus/hide picker, focus switch) · execute (shell items)
 //!
 //!  any Herdr pane ─────────────────▶ menu copy-context [--stdout]
+//!  the menu, detached ─────────────▶ menu scope-pick <focus|hide>  (scope.rs)
 //! ```
 //!
 //! Every Herdr call goes through [`herdr::Herdr`], a thin adapter over
@@ -40,6 +41,7 @@ pub mod herdr;
 mod legacy;
 pub mod redistribute;
 pub mod redistribute_ui;
+pub mod scope;
 pub mod ui;
 
 /// This mode's name: the first `herdr-tools` argument and its config table.
@@ -65,6 +67,13 @@ pub enum Command {
         #[arg(long)]
         stdout: bool,
     },
+    /// Open Herdr's native focus/hide picker once the menu popup has gone.
+    /// The menu starts this itself; it reads stdin to EOF first.
+    #[command(hide = true)]
+    ScopePick {
+        /// `focus` or `hide`: what the picker's space toggles.
+        mode: config::ScopePickMode,
+    },
 }
 
 /// Runs one `menu` command.
@@ -76,6 +85,7 @@ pub fn run(command: Command) -> Result<()> {
             source_pane,
             stdout,
         } => herdr::copy_context_from_environment(source_pane, stdout),
+        Command::ScopePick { mode } => scope::run_pick_helper(mode),
     }
 }
 

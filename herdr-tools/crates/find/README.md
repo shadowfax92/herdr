@@ -58,13 +58,16 @@ listing exactly what will close. **y** kills them; any other key cancels back to
 kill mode with the marks intact. The pane Jump was opened from can never be marked.
 
 Find searches every open pane in the invoking Herdr session, including shells
-and editors, in every workspace. herdr-jump's last release also read the Agents
-plugin's workspace visibility and could hide workspaces such as `ft`; with
-Agents disabled that read always failed open (every pane listed, plus a dim
-`Hidden list unavailable` line). Find drops that adapter: every workspace is
-listed and there is no notice. Herdr's own `[ui.sidebar.agents]
-hidden_workspaces` only affects Herdr's Agents panel. Find navigates existing
-panes; archived conversations and other Herdr servers are outside its scope.
+and editors, in every workspace that Herdr's focus and hide leave in view.
+Focus and hide are Herdr's own (`herdr scope …`, or the menu's `f` / `v` rows):
+Find asks Herdr which local tabs are in scope (`scope.get`) on every refresh and
+drops the panes of the others, so a hidden workspace such as `ft` (including
+one hidden by `[ui.sidebar.agents] hidden_workspaces`) is not listed, and while
+focus is on only the focused workspaces and tabs are. On a Herdr without scope,
+or when that read fails, every pane is listed and there is no notice.
+herdr-jump's last release read the retired Agents plugin's workspace
+visibility instead; Find drops that adapter. Find navigates existing panes;
+archived conversations and other Herdr servers are outside its scope.
 
 ### Controls
 

@@ -75,6 +75,21 @@ impl std::fmt::Display for HostError {
 
 impl std::error::Error for HostError {}
 
+impl HostError {
+    /// Whether Herdr refused because it does not have this socket method, so a
+    /// caller can fall back to older behavior. Herdr 0.9.5 rejects an unknown
+    /// method while decoding the request, as `invalid_request` with
+    /// ``unknown variant `<method>` ``; retired methods answer `unknown_method`.
+    /// Any other `invalid_request` (bad params) is a real error.
+    pub fn is_unknown_method(&self) -> bool {
+        self.code == "unknown_method"
+            || (self.code == "invalid_request"
+                && self
+                    .message
+                    .contains(&format!("unknown variant `{}`", self.method)))
+    }
+}
+
 /// A Herdr client: the binary for CLI calls and the socket for API calls.
 #[derive(Clone, Debug)]
 pub struct Host {

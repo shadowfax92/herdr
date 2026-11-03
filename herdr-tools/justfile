@@ -40,6 +40,8 @@ real: bin
     python3 crates/move/tests/real_move.py
     python3 crates/history/tests/real_history.py
     python3 crates/menu/tests/real_menu.py
+    # Focus and hide need a Herdr with `herdr scope`; on one without, a SKIP line.
+    python3 crates/menu/tests/real_scope.py
     python3 crates/menu/tests/headless_fork.py target/debug/examples/fork_probe
     python3 crates/menu/tests/real_fork_rows.py bin/herdr-tools
     python3 crates/menu/tests/real_redistribution.py bin/herdr-tools

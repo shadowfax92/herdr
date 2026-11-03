@@ -104,7 +104,7 @@ pub fn render(state: &MenuState, frame: &mut Frame) {
             ]));
         }
     }
-    if state.visibility_failure().is_some() {
+    if state.scope_failure().is_some() {
         status.push(Line::from(Span::styled(
             "PgUp/PgDn/Home/End: details",
             Style::default().fg(Color::DarkGray),
@@ -116,8 +116,8 @@ pub fn render(state: &MenuState, frame: &mut Frame) {
     )));
 
     // Reuse the existing cell-width-aware diagnostics view in a bounded region.
-    // Its scroll keys never retry SET or steal accelerators from other actions.
-    let diagnostic_height = if state.visibility_failure().is_some() {
+    // Its scroll keys never run an action or steal accelerators from one.
+    let diagnostic_height = if state.scope_failure().is_some() {
         (inner.height / 2).min(6)
     } else {
         0
@@ -141,7 +141,8 @@ pub fn render(state: &MenuState, frame: &mut Frame) {
                 | MenuItem::RotateFork(_)
                 | MenuItem::Redistribute(_)
                 | MenuItem::CopyContext(_)
-                | MenuItem::WorkspaceVisibility(_) => ListItem::new(Line::from(vec![
+                | MenuItem::ScopePick(_)
+                | MenuItem::FocusToggle(_) => ListItem::new(Line::from(vec![
                     Span::styled(
                         format!("{} ", item.key().expect("action item has an accelerator")),
                         Style::default()
@@ -178,7 +179,7 @@ pub fn render(state: &MenuState, frame: &mut Frame) {
         let mut list_state = ListState::default().with_selected(state.selected());
         frame.render_stateful_widget(list, menu_area, &mut list_state);
     }
-    if let Some(failure) = state.visibility_failure() {
+    if let Some(failure) = state.scope_failure() {
         failure.render(frame, diagnostic_area);
     }
     frame.render_widget(Paragraph::new(status), status_area);

@@ -114,8 +114,8 @@ def main():
 
             # 1. find: Alt-p opens the navigator at [popup.size].find; typing a
             #    pane's name and Enter focuses that pane. The target lives in
-            #    an `ft` workspace, which Find lists like any other (the owner
-            #    hides `ft` only from Herdr's Agents panel).
+            #    an `ft` workspace, which Find lists like any other: this
+            #    Herdr's config hides nothing (real_scope.py covers hiding).
             target = herdr.cli("workspace", "create", "--label", "ft", "--no-focus")["result"]["root_pane"]["pane_id"]
             herdr.cli("pane", "rename", target, "find-e2e-target")
             herdr.drain(0.5)

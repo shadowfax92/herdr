@@ -13,6 +13,11 @@ Usage (from herdr-tools/): python3 crates/menu/tests/real_menu.py
    visibility row, copy context, fork, rotate and redistribute. `copy-context
    --stdout` runs from a pane as the CLI.
 
+The retired visibility row now opens Herdr's hide picker. On a Herdr without
+`herdr scope` (0.9.5) it reads "(unavailable)" and does nothing, which is what
+this test checks there; on a scope-aware Herdr it is a live row, and
+real_scope.py drives it.
+
 Everything runs in an IsolatedHerdr (temp XDG dirs, its own session). RTR and
 pbcopy are fakes first on PATH, and copy context is only pressed after the
 popup's own PATH is shown to resolve the fake pbcopy, so the owner's clipboard
@@ -112,6 +117,9 @@ def main():
         area = layout(source)["area"]
         print(f"PASS install + link {plugin_dir}; source {source}, pane area "
               f"{area['width']}x{area['height']}, shell items under {os.environ['SHELL']}")
+        scoped = isinstance(herdr.cli("scope", "get", "--json", check=False), dict)
+        print(f"INFO this Herdr {'has' if scoped else 'lacks'} `herdr scope`: the v row is "
+              f"{'live' if scoped else 'unavailable'}")
 
         # --- 1. the owner's migrated config ---------------------------------
         legacy = herdr.root / "legacy"
@@ -129,10 +137,16 @@ def main():
 
         size, screen = open_menu()
         assert size == (30, 77), size  # 80x32 outer, minus border and scrollbar
-        assert "commands" in screen and "excludedworkspaces(unavailable)" in flat(screen), screen
-        assert "Agentspluginisretired" in flat(screen), screen
-        print(f"PASS owner menu opens at 80x32 (PTY {size[1]}x{size[0]}); "
-              "'v excluded workspaces (unavailable)' with the retirement panel")
+        assert "commands" in screen and "excludedworkspaces" in flat(screen), screen
+        if scoped:
+            assert "excludedworkspaces(unavailable)" not in flat(screen), screen
+            print(f"PASS owner menu opens at 80x32 (PTY {size[1]}x{size[0]}); "
+                  "'v excluded workspaces' is a live hide row")
+        else:
+            assert "excludedworkspaces(unavailable)" in flat(screen), screen
+            assert "Focusandhideunavailable" in flat(screen), screen
+            print(f"PASS owner menu opens at 80x32 (PTY {size[1]}x{size[0]}); "
+                  "'v excluded workspaces (unavailable)' with the no-scope panel")
 
         herdr.type("x")
         screen_until(lambda text: "ReapstaleHerdrScratchsessions?" in text, what="x's confirmation")
@@ -253,10 +267,11 @@ label = "excluded workspaces"
         time.sleep(0.5)
 
         _, screen = open_menu()
-        assert "excludedworkspaces(unavailable)" in flat(screen), screen
-        herdr.type("v")
-        time.sleep(0.6)
-        assert not menu_closed(), "v must do nothing"
+        if not scoped:
+            assert "excludedworkspaces(unavailable)" in flat(screen), screen
+            herdr.type("v")
+            time.sleep(0.6)
+            assert not menu_closed(), "v must do nothing"
         # The popup's own PATH must pick the fake pbcopy before `h` may run.
         pid = subprocess.run(["pgrep", "-f", f"{plugin_dir}/bin/herdr-tools menu menu"],
                              capture_output=True, text=True).stdout.split()[0]
@@ -268,8 +283,8 @@ label = "excluded workspaces"
         assert shutil.which("pbcopy", path=popup_path) == str(fakes / "pbcopy"), popup_path
         herdr.type("\x1b")
         herdr.wait_for(menu_closed, what="the menu to close after Esc")
-        print("PASS v (retired visibility row) does nothing; Esc closes; "
-              "the popup's PATH resolves the fake pbcopy")
+        print(f"PASS {'v left to real_scope.py' if scoped else 'v (no scope) does nothing'}; "
+              "Esc closes; the popup's PATH resolves the fake pbcopy")
         time.sleep(0.5)
 
         open_menu()

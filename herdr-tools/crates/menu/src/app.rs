@@ -6,6 +6,7 @@ use crate::config::{Config, MenuItem};
 use crate::failure_ui::FailureView;
 use crate::redistribute::{LayoutPlan, LayoutSnapshot};
 use crate::redistribute_ui::{RedistributionInput, RedistributionState};
+use crate::scope::ScopeSupport;
 
 /// UI events cross into command execution only through these explicit outcomes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -16,13 +17,12 @@ pub enum InputOutcome {
     Cancel,
 }
 
-/// What a `workspace_visibility` row shows. The Agents plugin that owned the
-/// workspace policy is retired, and with Agents disabled the old menu's policy
-/// read failed to connect: the row stayed disabled as "(unavailable)" above a
-/// scrollable diagnostics panel. The row and panel are kept, never enabled.
-const VISIBILITY_UNAVAILABLE: &str =
-    "Agents visibility unavailable: the Agents plugin is retired.\n\
-Herdr's [ui.sidebar.agents] hidden_workspaces keeps workspaces out of the Agents panel.";
+/// Why focus, hide and the focus switch are disabled on a Herdr without scope.
+/// The rows read "<label> (unavailable)" above this scrollable panel, the way
+/// the retired Agents visibility row did when Agents was not running.
+const SCOPE_UNAVAILABLE: &str =
+    "Focus and hide unavailable: this Herdr has no scope.get / scope.pick.\n\
+They are native to the herdr fork (herdr scope …); update Herdr to use them.";
 
 /// Owns menu navigation and recovery views; process and clipboard work remain
 /// in the event loop so canceling or scrolling never executes an action.
@@ -38,31 +38,49 @@ pub struct MenuState {
     redistribution: Option<RedistributionState>,
     fork_failure: Option<FailureView>,
     copy_failure: Option<FailureView>,
-    visibility_failure: Option<FailureView>,
+    /// Read once as the menu opens; decides whether scope rows are enabled.
+    scope: ScopeSupport,
+    scope_failure: Option<FailureView>,
 }
 
 impl MenuState {
+    /// A menu whose scope support is not known yet: every row is usable until
+    /// [`MenuState::set_scope`] says otherwise.
     pub fn new(config: Config) -> Self {
-        let selected = config.items.iter().position(|item| {
-            item.is_selectable() && !matches!(item, MenuItem::WorkspaceVisibility(_))
-        });
-        let visibility_failure = config
-            .items
-            .iter()
-            .any(|item| matches!(item, MenuItem::WorkspaceVisibility(_)))
-            .then(|| FailureView::new(VISIBILITY_UNAVAILABLE.into()));
-        Self {
+        Self::with_scope(config, ScopeSupport::Unknown)
+    }
+
+    pub fn with_scope(config: Config, scope: ScopeSupport) -> Self {
+        let mut state = Self {
             title: config.title,
             items: config.items,
             warnings: config.warnings,
-            selected,
+            selected: None,
             confirming: None,
             failure: None,
             fatal_error: None,
             redistribution: None,
             fork_failure: None,
             copy_failure: None,
-            visibility_failure,
+            scope: ScopeSupport::Unknown,
+            scope_failure: None,
+        };
+        state.set_scope(scope);
+        state
+    }
+
+    /// Applies what this Herdr offers for focus and hide. Without scope the
+    /// scope rows are disabled and explained; the selection skips them.
+    pub fn set_scope(&mut self, scope: ScopeSupport) {
+        self.scope = scope;
+        self.scope_failure = (scope == ScopeSupport::Missing && self.has_scope_action())
+            .then(|| FailureView::new(SCOPE_UNAVAILABLE.into()));
+        if !self
+            .selected
+            .and_then(|index| self.items.get(index))
+            .is_some_and(|item| self.item_enabled(item))
+        {
+            self.selected = self.items.iter().position(|item| self.item_enabled(item));
         }
     }
 
@@ -78,7 +96,8 @@ impl MenuState {
             redistribution: None,
             fork_failure: None,
             copy_failure: None,
-            visibility_failure: None,
+            scope: ScopeSupport::Unknown,
+            scope_failure: None,
         }
     }
 
@@ -157,7 +176,7 @@ impl MenuState {
             key.code,
             KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End
         ) {
-            if let Some(failure) = &mut self.visibility_failure {
+            if let Some(failure) = &mut self.scope_failure {
                 failure.handle_key(key);
                 return InputOutcome::Continue;
             }
@@ -277,28 +296,30 @@ impl MenuState {
         self.fatal_error.as_deref()
     }
 
-    pub fn has_visibility_action(&self) -> bool {
-        self.items
-            .iter()
-            .any(|item| matches!(item, MenuItem::WorkspaceVisibility(_)))
+    pub fn has_scope_action(&self) -> bool {
+        self.items.iter().any(MenuItem::needs_scope)
     }
 
     pub fn item_enabled(&self, item: &MenuItem) -> bool {
-        item.is_selectable() && !matches!(item, MenuItem::WorkspaceVisibility(_))
+        item.is_selectable() && !(item.needs_scope() && self.scope == ScopeSupport::Missing)
     }
 
-    pub fn visibility_failure(&self) -> Option<&FailureView> {
-        self.visibility_failure.as_ref()
+    /// The panel explaining disabled scope rows, when this Herdr lacks scope.
+    pub fn scope_failure(&self) -> Option<&FailureView> {
+        self.scope_failure.as_ref()
     }
 
-    /// Rendering and activation share this state; a visibility row keeps its
-    /// configured noun phrase and says it is unavailable.
+    /// Rendering and activation share this state. A disabled scope row keeps
+    /// its configured noun phrase and says it is unavailable; the focus switch
+    /// shows whether focus was on when the menu opened (`focus mode · on`).
     pub fn item_label(&self, item: &MenuItem) -> String {
         let noun = item.label().unwrap_or_default();
-        if matches!(item, MenuItem::WorkspaceVisibility(_)) {
-            format!("{noun} (unavailable)")
-        } else {
-            noun.into()
+        match (item, self.scope) {
+            (_, ScopeSupport::Missing) if item.needs_scope() => format!("{noun} (unavailable)"),
+            (MenuItem::FocusToggle(_), ScopeSupport::Available { focus_active }) => {
+                format!("{noun} · {}", if focus_active { "on" } else { "off" })
+            }
+            _ => noun.into(),
         }
     }
 

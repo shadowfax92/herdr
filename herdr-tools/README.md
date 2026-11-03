@@ -45,6 +45,25 @@ crate is shaped.
   scratch Neovim plugin under `nvim/scratch/`). Modes find them under
   `Paths::root()`. The comment and scratch ports fill these in.
 
+### Focus and hide are Herdr's, not the plugin's
+
+Focus and hide are native to the herdr fork: the local server owns one scope,
+the client applies it to every machine's panels, keys and notifications, and
+the picker is a native overlay. A plugin sees only the local server, so
+herdr-tools never stores or judges scope. It only does two things with it:
+
+- **Opens it.** The menu's `focus`, `hide` (and retired `workspace_visibility`)
+  rows ask Herdr to open its picker (`scope.pick`), and `focus_toggle` flips
+  focus on or off (`scope.set {focus_active}`). See `crates/menu/README.md`.
+- **Filters by it.** Find's pane navigator drops panes whose tab Herdr judges
+  out of scope, from `scope.get`'s per-tab verdict ([`scope`](#scope-scopers)).
+
+Everything else stays unscoped on purpose. Move and layout list hidden
+workspaces as destinations, because moving into one is legitimate. History
+captures only the pane it was invoked from, an explicit action like a jump,
+so it has no list to filter. On a Herdr without `scope.get` nothing is
+filtered and nothing is said; the menu's scope rows read "(unavailable)".
+
 ### Directory layout
 
 ```text
@@ -64,7 +83,8 @@ herdr-tools/
 ## tools-core interface
 
 `use tools_core::{Host, HostError, Envelope, PaneArea, Invocation, PluginContext,
-Config, Paths, PopupSize, PopupDims, PopupProfile, PopupConfig, ResolvedPopup};`
+Config, Paths, PopupSize, PopupDims, PopupProfile, PopupConfig, ResolvedPopup,
+ScopeTab, ScopeReport, ScopeFilter};`
 Every fallible call returns `anyhow::Result`.
 
 ### Crate root
@@ -140,6 +160,49 @@ pub struct HostError { pub method: String, pub code: String, pub message: String
   `Config::current()?.popup(key, width)` first, so config still wins.
 - `HostError`: `Display` is `"{method} ({code}): {message}"`. Downcast with
   `error.downcast_ref::<HostError>()` and decide on `code`, never on the text.
+  `is_unknown_method()` is the one exception, and it lives here so no mode
+  repeats it: Herdr 0.9.5 rejects a method it lacks while decoding the request,
+  as `invalid_request` with ``unknown variant `<method>` ``, and retired methods
+  answer `unknown_method`. Any other `invalid_request` (bad params) is a real
+  error.
+
+### `scope` (`scope.rs`)
+
+```rust
+pub const SCOPE_GET: &str = "scope.get";
+pub struct ScopeTab { pub workspace_id: String, pub tab_id: String, pub admitted: bool }
+pub struct ScopeFocus { pub active: bool, pub targets: Vec<serde_json::Value> }
+pub struct ScopeState { pub focus: ScopeFocus, pub hidden: Vec<serde_json::Value> }
+pub struct ScopeLocal { pub tabs: Vec<ScopeTab> }
+pub struct ScopeReport { pub scope: ScopeState, pub local: ScopeLocal }
+impl ScopeReport { pub fn from_result(result: Value) -> Result<Self>; pub fn focus_engaged(&self) -> bool; }
+pub struct ScopeFilter { /* tab ids judged out of scope */ }
+impl ScopeFilter { pub fn new(tabs: impl IntoIterator<Item = ScopeTab>) -> Self;
+                   pub fn admits_tab(&self, tab_id: &str) -> bool;
+                   pub fn admits_everything(&self) -> bool; }
+impl Host {
+    pub fn scope(&self) -> Result<Option<ScopeReport>>;
+    pub fn scope_tabs(&self) -> Result<Option<Vec<ScopeTab>>>;
+    pub fn scope_filter(&self) -> ScopeFilter;
+}
+pub fn is_unknown_method(error: &anyhow::Error) -> bool;
+```
+
+- `scope`: one `scope.get`. The reply is
+  `{"type":"scope","scope":{"focus":{active,targets},"hidden":[…]},"local":{"tabs":[…]}}`.
+  `Ok(None)` when this Herdr does not know the method; other failures are
+  errors. Targets stay opaque JSON: modes count or forward them, never match
+  them.
+- `scope_tabs`: `scope`'s `local.tabs`, the server's verdict per local tab.
+  `None` means no scope: filter nothing.
+- `scope_filter`: what a pane list applies. It never fails: no scope, a timeout
+  or a malformed reply all admit every tab, because a visibility filter must
+  never cost a working popup. A tab missing from the report (created after the
+  read) is admitted.
+- `ScopeReport::focus_engaged`: focus is on and has targets. An active focus
+  with no targets narrows nothing.
+- `is_unknown_method`: `HostError::is_unknown_method` through any anyhow
+  context.
 
 ### `Invocation`: why this process started (`invocation.rs`)
 

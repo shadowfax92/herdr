@@ -50,6 +50,21 @@ key = "h"
 label = "copy pane context"
 
 [[items]]
-type = "workspace_visibility"
+type = "separator"
+
+# Focus and hide are Herdr's own: these open its picker or flip focus. The `v`
+# row was the retired `workspace_visibility` (excluded workspaces) row.
+[[items]]
+type = "focus"
+key = "f"
+label = "focus…"
+
+[[items]]
+type = "hide"
 key = "v"
-label = "excluded workspaces"
+label = "hide…"
+
+[[items]]
+type = "focus_toggle"
+key = "F"
+label = "focus mode"

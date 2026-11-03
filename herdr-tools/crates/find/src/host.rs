@@ -49,11 +49,24 @@ impl Host {
         self.inner.request(method, params)
     }
 
-    /// Every open pane in this session except the popup itself, as rows. Every
-    /// workspace is listed: herdr-jump's last release also asked the Agents
-    /// plugin which workspaces to hide, but with Agents disabled that read
-    /// always failed open and hid nothing, which is what Find keeps.
+    /// Every open pane in this session except the popup itself, as rows, minus
+    /// the panes whose tab Herdr's focus/hide scope leaves out.
+    ///
+    /// The server judges scope (`scope.get`'s per-tab verdict); Find never
+    /// reimplements the rule. The scope read fails open: a Herdr without
+    /// scope, a timeout or a malformed reply lists every pane, as Find did
+    /// before scope existed. Only the list is scoped: an explicit jump to a
+    /// pane Find did list still revalidates by identity, not by scope.
     pub fn candidates(&self, source: &str, own: &str) -> Result<Vec<Candidate>> {
+        let mut rows = self.all_candidates(source, own)?;
+        // Read after the snapshot, so every listed tab most likely has a
+        // verdict; a tab the report misses is admitted.
+        let scope = self.inner.scope_filter();
+        rows.retain(|row| scope.admits_tab(&row.tab_id));
+        Ok(rows)
+    }
+
+    fn all_candidates(&self, source: &str, own: &str) -> Result<Vec<Candidate>> {
         let reply = self.request("session.snapshot", json!({}))?;
         let mut snapshot = reply
             .get("snapshot")
@@ -615,6 +628,61 @@ mod tests {
                 server(move |req| json!({"id":req["id"],"result":{"snapshot":snapshot}}));
             assert!(host.candidates("source", "own").is_err());
         }
+    }
+
+    /// Three panes over three tabs of two workspaces; `setup/scratch` and `ft`
+    /// are what a scope would leave out.
+    fn scoped_snapshot() -> Value {
+        json!({"snapshot": {
+            "workspaces": [{"workspace_id": "w1", "label": "setup"}, {"workspace_id": "w2", "label": "ft"}],
+            "tabs": [{"tab_id": "w1:t1", "workspace_id": "w1", "label": "main"},
+                     {"tab_id": "w1:t2", "workspace_id": "w1", "label": "scratch"},
+                     {"tab_id": "w2:t1", "workspace_id": "w2", "label": "main"}],
+            "panes": [
+                {"pane_id": "w1:p1", "terminal_id": "term1", "tab_id": "w1:t1", "workspace_id": "w1"},
+                {"pane_id": "w1:p2", "terminal_id": "term2", "tab_id": "w1:t2", "workspace_id": "w1"},
+                {"pane_id": "w2:p1", "terminal_id": "term3", "tab_id": "w2:t1", "workspace_id": "w2"}]}})
+    }
+
+    fn listed(host: &Host) -> Vec<String> {
+        host.candidates("w1:p1", "own")
+            .unwrap()
+            .into_iter()
+            .map(|row| row.pane_id)
+            .collect()
+    }
+
+    #[test]
+    fn panes_in_tabs_out_of_scope_are_not_listed() {
+        let (_dir, host) = server(|req| {
+            let result = match req["method"].as_str().unwrap() {
+                "session.snapshot" => scoped_snapshot(),
+                "scope.get" => json!({"type": "scope", "scope": {}, "local": {"tabs": [
+                    {"workspace_id": "w1", "tab_id": "w1:t1", "admitted": true},
+                    {"workspace_id": "w1", "tab_id": "w1:t2", "admitted": false},
+                    {"workspace_id": "w2", "tab_id": "w2:t1", "admitted": false}]}}),
+                other => panic!("listing must only read: {other}"),
+            };
+            json!({"id": req["id"], "result": result})
+        });
+        assert_eq!(listed(&host), ["w1:p1"]);
+    }
+
+    #[test]
+    fn a_herdr_without_scope_lists_every_pane() {
+        let (_dir, host) = server(|req| match req["method"].as_str().unwrap() {
+            "session.snapshot" => json!({"id": req["id"], "result": scoped_snapshot()}),
+            method => json!({"id": req["id"], "error": {"code": "invalid_request",
+                "message": format!("invalid request: unknown variant `{method}`, expected one of `ping`")}}),
+        });
+        assert_eq!(listed(&host), ["w1:p1", "w1:p2", "w2:p1"]);
+
+        // Any other scope failure fails open too, rather than emptying Find.
+        let (_dir, host) = server(|req| match req["method"].as_str().unwrap() {
+            "session.snapshot" => json!({"id": req["id"], "result": scoped_snapshot()}),
+            _ => json!({"id": req["id"], "error": {"code": "internal", "message": "boom"}}),
+        });
+        assert_eq!(listed(&host), ["w1:p1", "w1:p2", "w2:p1"]);
     }
 
     #[test]

@@ -12,7 +12,8 @@
 //!                                          [popup.size].menu / profile, else
 //!                                          [menu] width × automatic height
 //!  menu (popup)  ──▶ [menu] ──▶ MenuState + ui ──▶ fork · rotate · redistribute
-//!                                                  · copy context · shell items
+//!                   (scope.get once,              · copy context · shell items
+//!                    when scope rows exist)       · focus / hide picker · focus switch
 //! ```
 //!
 //! Popups cannot see their caller, so `open` hands the source pane and cwd to
@@ -34,6 +35,7 @@ use crate::config::{Config, ExecutionMode, MenuItem};
 use crate::execute::ShellExecutor;
 use crate::handoff::HandoffController;
 use crate::redistribute::{ApplyOutcome, Redistributor};
+use crate::scope::{spawn_pick_helper, ScopeActions, ScopeSupport};
 use crate::{ui, POPUP};
 
 /// Title of every notification the menu shows.
@@ -332,6 +334,7 @@ pub fn run_menu_from_environment() -> Result<()> {
         state_dir.clone(),
     );
     let handoff = CopyContextAction::new(herdr.clone(), source_pane_id.clone());
+    let scope = ScopeActions::new(herdr.host().clone());
     let controller = AgentPaneController::new(
         herdr,
         source_pane_id,
@@ -340,7 +343,14 @@ pub fn run_menu_from_environment() -> Result<()> {
         rtr_binary,
     );
     let config = tools_core::Config::current().and_then(Config::from_core);
-    run_menu(config, &source_cwd, &controller, &redistributor, &handoff)
+    run_menu(
+        config,
+        &source_cwd,
+        &controller,
+        &redistributor,
+        &handoff,
+        &scope,
+    )
 }
 
 fn run_menu(
@@ -349,13 +359,21 @@ fn run_menu(
     controller: &AgentPaneController,
     redistributor: &Redistributor,
     handoff: &CopyContextAction,
+    scope: &ScopeActions,
 ) -> Result<()> {
     let mut state = match config {
         Ok(config) => {
             for warning in &config.warnings {
                 eprintln!("Herdr Menu config: {warning}");
             }
-            MenuState::new(config)
+            // Read before the first frame, so a Herdr without scope never
+            // flashes enabled rows, and only when a row needs it.
+            let support = if config.has_scope_items() {
+                ScopeSupport::probe(scope.host())
+            } else {
+                ScopeSupport::Unknown
+            };
+            MenuState::with_scope(config, support)
         }
         Err(error) => MenuState::fatal(format!("{error:#}")),
     };
@@ -370,6 +388,7 @@ fn run_menu(
         controller,
         redistributor,
         handoff,
+        scope,
     );
     let restore = terminal_active
         .then(ratatui::try_restore)
@@ -388,6 +407,7 @@ fn run_event_loop(
     controller: &AgentPaneController,
     redistributor: &Redistributor,
     handoff: &CopyContextAction,
+    scope: &ScopeActions,
 ) -> Result<()> {
     loop {
         terminal.draw(|frame| ui::render(state, frame))?;
@@ -435,9 +455,20 @@ fn run_event_loop(
                 Ok(()) => return Ok(()),
                 Err(error) => state.set_copy_failure(format!("{error:#}")),
             },
-            // The retired visibility row is never enabled, so it never reaches
-            // execution; separators are not selectable.
-            InputOutcome::Execute(MenuItem::WorkspaceVisibility(_) | MenuItem::Separator) => {}
+            // The picker opens on the client once this popup is gone, so the
+            // menu hands the pick to a helper, closes its popup and exits.
+            InputOutcome::Execute(MenuItem::ScopePick(item)) => {
+                match scope.hand_off_pick(item.mode, spawn_pick_helper) {
+                    Ok(()) => return Ok(()),
+                    Err(error) => state.set_failure(format!("{}: {error:#}", item.label)),
+                }
+            }
+            InputOutcome::Execute(MenuItem::FocusToggle(item)) => match scope.toggle_focus() {
+                Ok(_) => return Ok(()),
+                Err(error) => state.set_failure(format!("{}: {error:#}", item.label)),
+            },
+            // Separators are not selectable.
+            InputOutcome::Execute(MenuItem::Separator) => {}
         }
     }
 }
@@ -525,8 +556,9 @@ mod tests {
                     [[menu.items]]\nkey='b'\nlabel='b'\ncommand='b'\n";
         // Two items and the four frame rows, raised to the six-row minimum.
         assert_eq!(popup_size(Some(&core(menu)), || None), cells(64, 6));
-        // The built-in menu (no [menu] table) keeps the packaged 68 × 16.
-        assert_eq!(popup_size(Some(&core("")), || None), cells(68, 16));
+        // The built-in menu (no [menu] table) is 68 wide: 13 items, the
+        // missing-table warning and the frame.
+        assert_eq!(popup_size(Some(&core("")), || None), cells(68, 19));
         // An unreadable config still opens, at the old fallback.
         assert_eq!(popup_size(None, || None), cells(64, 16));
         // A broken [menu] table does too; the popup shows why.

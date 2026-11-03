@@ -25,6 +25,8 @@ clap.workspace = true
 toml.workspace = true
 tools-core.workspace = true
 fs4.workspace = true
+# setsid for the detached scope-pick helper (src/scope.rs), as move's kill executor.
+libc.workspace = true
 ratatui.workspace = true
 serde.workspace = true
 serde_json.workspace = true

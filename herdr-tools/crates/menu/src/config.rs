@@ -50,7 +50,11 @@ pub enum MenuItem {
     RotateFork(ActionItem),
     Redistribute(ActionItem),
     CopyContext(ActionItem),
-    WorkspaceVisibility(ActionItem),
+    /// `type = "focus"` or `"hide"`: open Herdr's native scope picker in that
+    /// mode. The retired `workspace_visibility` row parses as `hide`.
+    ScopePick(ScopePickItem),
+    /// `type = "focus_toggle"`: switch focus on or off, keeping its targets.
+    FocusToggle(ActionItem),
     Separator,
 }
 
@@ -67,6 +71,45 @@ pub struct ForkItem {
     pub key: char,
     pub label: String,
     pub placement: ForkPlacement,
+}
+
+/// A row that opens Herdr's native focus/hide picker. The picker is the
+/// fork's own overlay (it sees every machine; a plugin sees only Local), so the
+/// menu only asks Herdr to open it, with `scope.pick {mode}`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScopePickItem {
+    pub key: char,
+    pub label: String,
+    pub mode: ScopePickMode,
+}
+
+/// Which mark the picker's `space` toggles (`scope.pick`'s `mode`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScopePickMode {
+    Focus,
+    Hide,
+}
+
+impl ScopePickMode {
+    /// The wire and CLI spelling: `focus` or `hide`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Focus => "focus",
+            Self::Hide => "hide",
+        }
+    }
+}
+
+impl std::str::FromStr for ScopePickMode {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "focus" => Ok(Self::Focus),
+            "hide" => Ok(Self::Hide),
+            other => bail!("scope picker mode must be 'focus' or 'hide', got '{other}'"),
+        }
+    }
 }
 
 /// Placements the plugin can synthesize from Herdr's right/down split API.
@@ -163,9 +206,16 @@ impl Config {
             | MenuItem::RotateFork(_)
             | MenuItem::Redistribute(_)
             | MenuItem::CopyContext(_)
-            | MenuItem::WorkspaceVisibility(_)
+            | MenuItem::ScopePick(_)
+            | MenuItem::FocusToggle(_)
             | MenuItem::Separator => None,
         })
+    }
+
+    /// Whether any row needs Herdr's scope methods, so the menu reads
+    /// `scope.get` before drawing only when one does.
+    pub fn has_scope_items(&self) -> bool {
+        self.items.iter().any(MenuItem::needs_scope)
     }
 }
 
@@ -174,10 +224,11 @@ impl MenuItem {
         match self {
             Self::Shell(item) => Some(item.key),
             Self::Fork(item) => Some(item.key),
+            Self::ScopePick(item) => Some(item.key),
             Self::RotateFork(item)
             | Self::Redistribute(item)
             | Self::CopyContext(item)
-            | Self::WorkspaceVisibility(item) => Some(item.key),
+            | Self::FocusToggle(item) => Some(item.key),
             Self::Separator => None,
         }
     }
@@ -186,10 +237,11 @@ impl MenuItem {
         match self {
             Self::Shell(item) => Some(&item.label),
             Self::Fork(item) => Some(&item.label),
+            Self::ScopePick(item) => Some(&item.label),
             Self::RotateFork(item)
             | Self::Redistribute(item)
             | Self::CopyContext(item)
-            | Self::WorkspaceVisibility(item) => Some(&item.label),
+            | Self::FocusToggle(item) => Some(&item.label),
             Self::Separator => None,
         }
     }
@@ -201,13 +253,20 @@ impl MenuItem {
             | Self::RotateFork(_)
             | Self::Redistribute(_)
             | Self::CopyContext(_)
-            | Self::WorkspaceVisibility(_)
+            | Self::ScopePick(_)
+            | Self::FocusToggle(_)
             | Self::Separator => None,
         }
     }
 
     pub fn is_selectable(&self) -> bool {
         !matches!(self, Self::Separator)
+    }
+
+    /// Rows that only work on a Herdr with `scope.get` / `scope.set` /
+    /// `scope.pick`; on an older Herdr they read "(unavailable)".
+    pub fn needs_scope(&self) -> bool {
+        matches!(self, Self::ScopePick(_) | Self::FocusToggle(_))
     }
 }
 
@@ -337,10 +396,23 @@ fn parse_item(value: &Value) -> Result<MenuItem> {
             let (key, label) = action_identity(table)?;
             Ok(MenuItem::CopyContext(ActionItem { key, label }))
         }
-        "workspace_visibility" => {
+        // The retired `v` row toggled the Agents plugin's excluded workspaces.
+        // Herdr's native hide replaced that list, so existing menus keep the
+        // row and it now opens the hide picker.
+        mode @ ("focus" | "hide" | "workspace_visibility") => {
             reject_unknown_fields(table, &["type", "key", "label"])?;
             let (key, label) = action_identity(table)?;
-            Ok(MenuItem::WorkspaceVisibility(ActionItem { key, label }))
+            let mode = if mode == "focus" {
+                ScopePickMode::Focus
+            } else {
+                ScopePickMode::Hide
+            };
+            Ok(MenuItem::ScopePick(ScopePickItem { key, label, mode }))
+        }
+        "focus_toggle" => {
+            reject_unknown_fields(table, &["type", "key", "label"])?;
+            let (key, label) = action_identity(table)?;
+            Ok(MenuItem::FocusToggle(ActionItem { key, label }))
         }
         value => bail!("unsupported type '{value}'"),
     }
@@ -440,7 +512,7 @@ mod tests {
         assert_eq!(config.width, 68);
         assert!(config.used_default);
         assert_eq!(config.max_height, 24);
-        assert_eq!(config.items.len(), 10);
+        assert_eq!(config.items.len(), 13);
         assert!(matches!(
             config.items[0],
             MenuItem::Fork(ForkItem {
@@ -473,7 +545,28 @@ mod tests {
         assert!(matches!(config.items[5], MenuItem::RotateFork(_)));
         assert!(matches!(config.items[7], MenuItem::Redistribute(_)));
         assert!(matches!(config.items[8], MenuItem::CopyContext(_)));
-        assert!(matches!(config.items[9], MenuItem::WorkspaceVisibility(_)));
+        assert!(matches!(config.items[9], MenuItem::Separator));
+        assert!(matches!(
+            &config.items[10],
+            MenuItem::ScopePick(ScopePickItem {
+                key: 'f',
+                mode: ScopePickMode::Focus,
+                ..
+            })
+        ));
+        assert!(matches!(
+            &config.items[11],
+            MenuItem::ScopePick(ScopePickItem {
+                key: 'v',
+                mode: ScopePickMode::Hide,
+                ..
+            })
+        ));
+        assert!(matches!(
+            &config.items[12],
+            MenuItem::FocusToggle(ActionItem { key: 'F', .. })
+        ));
+        assert!(config.has_scope_items());
         assert_eq!(config.shell_items().count(), 0);
         assert!(config.warnings.is_empty());
     }
@@ -544,6 +637,69 @@ label = "rotate fork"
             &config.items[1],
             MenuItem::RotateFork(ActionItem { key: 'o', .. })
         ));
+    }
+
+    #[test]
+    fn scope_items_parse_and_the_retired_visibility_row_is_hide() {
+        let config = Config::parse(
+            r#"
+[[items]]
+type = "focus"
+key = "f"
+label = "focus…"
+
+[[items]]
+type = "hide"
+key = "x"
+label = "hide…"
+
+[[items]]
+type = "focus_toggle"
+key = "F"
+label = "focus mode"
+
+[[items]]
+type = "workspace_visibility"
+key = "v"
+label = "excluded workspaces"
+
+[[items]]
+type = "focus"
+key = "g"
+label = "focus"
+mode = "hide"
+"#,
+        )
+        .unwrap();
+
+        let pick = |key, label: &str, mode| {
+            MenuItem::ScopePick(ScopePickItem {
+                key,
+                label: label.into(),
+                mode,
+            })
+        };
+        assert_eq!(
+            config.items,
+            [
+                pick('f', "focus…", ScopePickMode::Focus),
+                pick('x', "hide…", ScopePickMode::Hide),
+                MenuItem::FocusToggle(ActionItem {
+                    key: 'F',
+                    label: "focus mode".into()
+                }),
+                pick('v', "excluded workspaces", ScopePickMode::Hide),
+            ]
+        );
+        // The mode is the type; an extra field is a skipped item, not a mode.
+        assert_eq!(config.warnings.len(), 1);
+        assert!(config.warnings[0].contains("unknown field 'mode'"));
+        assert!(config.has_scope_items());
+        assert!(
+            !Config::parse("[[items]]\nkey='a'\nlabel='a'\ncommand='a'\n")
+                .unwrap()
+                .has_scope_items()
+        );
     }
 
     #[test]
@@ -639,11 +795,11 @@ command = "upper"
 
         assert!(config.used_default);
         assert_eq!(config.width, BUILTIN_WIDTH);
-        assert_eq!(config.items.len(), 10);
+        assert_eq!(config.items.len(), 13);
         assert_eq!(config.warnings.len(), 1);
         assert!(config.warnings[0].contains("not found; using built-in defaults"));
-        // Ten items, two warning rows and the frame: the old default popup.
-        assert_eq!(config.popup_height(), 16);
+        // Thirteen items, two warning rows and the frame.
+        assert_eq!(config.popup_height(), 19);
     }
 
     #[test]

@@ -14,7 +14,8 @@
 //!
 //! Core holds no mode logic: a mode's own herdr calls live in its crate on top of
 //! [`Host::cli`], [`Host::cli_json`] and [`Host::request`]. Matchers and TUIs stay
-//! per mode for now.
+//! per mode for now. The one shared read is [`scope`]: Herdr's focus/hide verdict
+//! per local tab, which every pane list filters by.
 
 pub mod config;
 pub mod host;
@@ -22,6 +23,7 @@ pub mod invocation;
 pub mod legacy;
 pub mod paths;
 pub mod popup;
+pub mod scope;
 
 #[cfg(any(test, feature = "test-util"))]
 pub use host::testing;
@@ -31,6 +33,7 @@ pub use host::{Envelope, Host, HostError, PaneArea};
 pub use invocation::{Invocation, PluginContext};
 pub use paths::Paths;
 pub use popup::{PopupConfig, PopupDims, PopupProfile, PopupSize, ResolvedPopup};
+pub use scope::{ScopeFilter, ScopeReport, ScopeTab};
 
 /// The plugin id in `herdr-plugin.toml`. Popups, actions and config dirs all hang off it.
 pub const PLUGIN_ID: &str = "shadowfax.tools";
