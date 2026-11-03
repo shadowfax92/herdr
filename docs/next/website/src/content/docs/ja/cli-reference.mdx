@@ -135,6 +135,23 @@ herdr notification show <title> [--body TEXT] [--position top-left|top-right|bot
 
 `notification show` は設定済みの `[ui.toast]` 配信を使います。`--position` はアプリ内の Herdr トーストにのみ影響します。`--sound` のデフォルトは `none` で、`done` と `request` は通知が表示されたときにのみ、既存の完了音と要注意音を再生します。
 
+## フォーカスと非表示
+
+```bash
+herdr scope get [--json]
+herdr scope focus [TARGET...] [--add] [--json]
+herdr scope unfocus [--json]
+herdr scope toggle [--json]
+herdr scope hide TARGET... [--json]
+herdr scope unhide TARGET... [--json]
+herdr scope clear [--json]
+herdr scope pick [focus|hide]
+```
+
+フォーカスは指定したワークスペースやタブだけを、非表示はそれらを除いて、接続中のすべてのマシンにわたって表示します。対象は Spaces と Agents パネル、エージェントとワークスペースのキー、通知です。スコープはローカルサーバーが再起動するまで保持されます。`TARGET` は `[machine:]workspace[/tab]` です。マシンの既定は `local` で、`studio:` は保存済みマシン全体を、`*:ft` はすべてのマシンの `ft` を指します。
+
+`focus` はフォーカス対象を置き換えてフォーカスをオンにします。`--add` を付けると追加し、ターゲットなしでは保持している対象で再びオンにします。`unfocus` は対象を残したままフォーカスをオフにし、`toggle` は切り替えます。`hide` と `unhide` は非表示の対象を追加・削除します。設定による非表示は `*:label (config)` と表示され、`unhide '*:label'` でサーバーの再起動か設定の変更まで外せます。`clear` はフォーカスと実行時の非表示を消し、`[ui.sidebar.agents].hidden_workspaces` の非表示を戻します。`pick` は接続中のクライアントでピッカーを開き、クライアントがなければ `no_client` で失敗します。出力はフォーカスのオン・オフと、フォーカス・非表示の各対象を示します。`--json` は各ローカルタブの判定を含む `scope` レスポンスをそのまま出力します。`herdr scope` は常にローカルサーバーと通信し、`--machine` は受け付けません。
+
 ## セッション
 
 ```bash

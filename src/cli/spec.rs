@@ -4,6 +4,7 @@ use clap::{Arg, ArgAction, ArgGroup, Command, ValueHint};
 
 mod completion;
 mod machine;
+mod scope;
 
 pub(super) fn command() -> Command {
     let command = Command::new("herdr")
@@ -46,7 +47,8 @@ pub(super) fn command() -> Command {
         .subcommand(terminal_command())
         .subcommand(session_command())
         .subcommand(integration_command())
-        .subcommand(plugin_command());
+        .subcommand(plugin_command())
+        .subcommand(scope::command());
     configure_help(command, 0)
 }
 

@@ -139,6 +139,23 @@ herdr notification show <title> [--body TEXT] [--position top-left|top-right|bot
 
 `notification show` uses the configured `[ui.toast]` delivery. `--position` only affects in-app Herdr toasts. `--sound` defaults to `none`; `done` and `request` play the existing finished and needs-attention sounds only when the notification is shown.
 
+## Focus and hide
+
+```bash
+herdr scope get [--json]
+herdr scope focus [TARGET...] [--add] [--json]
+herdr scope unfocus [--json]
+herdr scope toggle [--json]
+herdr scope hide TARGET... [--json]
+herdr scope unhide TARGET... [--json]
+herdr scope clear [--json]
+herdr scope pick [focus|hide]
+```
+
+Focus shows only the given workspaces or tabs, and hide drops them, across every connected machine: in the Spaces and Agents panels, agent and workspace keys, and notifications. The scope lives on the local server until it restarts. `TARGET` is `[machine:]workspace[/tab]`. The machine defaults to `local`, `studio:` names a whole saved machine, and `*:ft` names `ft` on every machine.
+
+`focus` replaces the focused targets and turns focus on. With `--add` it adds to them, and with no targets it turns the kept targets back on. `unfocus` turns focus off and keeps its targets, and `toggle` flips it. `hide` and `unhide` add and remove hidden targets; a configured hide shows as `*:label (config)`, and `unhide '*:label'` removes it until the server restarts or the config changes. `clear` forgets focus and runtime hides and restores the hides from `[ui.sidebar.agents].hidden_workspaces`. `pick` opens the picker in the attached client and fails with `no_client` when none is attached. Output lists whether focus is on and every focused and hidden target; `--json` prints the raw `scope` response, including the server's verdict for each local tab. `herdr scope` always talks to the local server and does not accept `--machine`.
+
 ## Sessions
 
 ```bash

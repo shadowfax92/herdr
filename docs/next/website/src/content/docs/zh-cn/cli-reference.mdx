@@ -135,6 +135,23 @@ herdr notification show <title> [--body TEXT] [--position top-left|top-right|bot
 
 `notification show` 使用配置的 `[ui.toast]` 投递方式。`--position` 只影响 Herdr 应用内的 toast。`--sound` 默认为 `none`;`done` 和 `request` 只在通知实际显示时播放已有的完成音和需要关注音。
 
+## 聚焦与隐藏
+
+```bash
+herdr scope get [--json]
+herdr scope focus [TARGET...] [--add] [--json]
+herdr scope unfocus [--json]
+herdr scope toggle [--json]
+herdr scope hide TARGET... [--json]
+herdr scope unhide TARGET... [--json]
+herdr scope clear [--json]
+herdr scope pick [focus|hide]
+```
+
+聚焦只显示指定的工作区或标签页，隐藏则移除它们，作用于所有已连接的机器：Spaces 和 Agents 面板、智能体与工作区按键以及通知。范围保存在本地服务器上，直到它重启。`TARGET` 为 `[machine:]workspace[/tab]`。机器默认为 `local`，`studio:` 表示整台已保存的机器，`*:ft` 表示所有机器上的 `ft`。
+
+`focus` 替换聚焦目标并开启聚焦。加 `--add` 时追加目标，不带目标时重新开启已保留的目标。`unfocus` 关闭聚焦但保留目标，`toggle` 切换开关。`hide` 和 `unhide` 增删隐藏目标；配置中的隐藏显示为 `*:label (config)`，`unhide '*:label'` 可将其移除，直到服务器重启或配置改变。`clear` 清除聚焦和运行时隐藏，并恢复 `[ui.sidebar.agents].hidden_workspaces` 中的隐藏。`pick` 在已连接的客户端中打开选择器，没有客户端时以 `no_client` 失败。输出显示聚焦是否开启以及每个聚焦和隐藏目标；`--json` 原样输出 `scope` 响应，其中包含每个本地标签页的判定。`herdr scope` 始终与本地服务器通信，不接受 `--machine`。
+
 ## 会话
 
 ```bash
