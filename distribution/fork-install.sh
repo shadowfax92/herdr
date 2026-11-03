@@ -202,7 +202,20 @@ cleanup() {
     status=$?
     rm -rf "$TMP"
     if [ -n "$TOOLS_STAGE" ]; then
-        rm -rf "$TOOLS_STAGE"
+        # Interrupted between parking the old plugin dir and moving the new one
+        # in: put the old tree back instead of deleting the only copy, and keep
+        # the stage if even that fails.
+        previous="${TOOLS_STAGE}/previous"
+        if [ ! -e "${TOOLS_DIR:-}" ] && [ ! -L "${TOOLS_DIR:-}" ] &&
+            { [ -e "$previous" ] || [ -L "$previous" ]; }; then
+            if ! mv "$previous" "$TOOLS_DIR"; then
+                printf 'error: the previous %s is kept at %s\n' "$TOOLS_PLUGIN_ID" "$previous" >&2
+                TOOLS_STAGE=""
+            fi
+        fi
+        if [ -n "$TOOLS_STAGE" ]; then
+            rm -rf "$TOOLS_STAGE"
+        fi
     fi
     if [ "$status" -ne 0 ] && [ -n "$HERDR_INSTALLED" ]; then
         rerun="sh"

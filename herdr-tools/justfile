@@ -6,6 +6,8 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 # The laid-out plugin dir that `herdr plugin link` points at. Releases unpack to
 # the same path, so dev and release installs replace each other cleanly.
 plugin_dir := env("XDG_DATA_HOME", env("HOME") / ".local/share") / "herdr/plugins/shadowfax.tools"
+# The retired plugin repos, for the transition checks in `real`.
+old_plugins := env("HERDR_OLD_PLUGINS", env("HOME") / "code/side-projects/herdr-custom-plugins/my")
 
 default: ci
 
@@ -47,8 +49,10 @@ real: bin
     python3 crates/scratch/tests/actions_real.py
     python3 crates/scratch/tests/cleanup_real.py bin/herdr-tools
     python3 crates/scratch/tests/context_real.py bin/herdr-tools
-    python3 crates/scratch/tests/reap_menu_real.py bin/herdr-tools bin/herdr-tools menu menu
-    python3 crates/scratch/tests/cutover_real.py
+    # Transition checks drive the old plugins' own builds (the old menu's reap
+    # item, the old scratch's live sessions), so they run only while those exist.
+    if [ -x "{{old_plugins}}/herdr-menu/target/release/herdr-menu" ]; then python3 crates/scratch/tests/reap_menu_real.py bin/herdr-tools; else echo "skip reap_menu_real.py: no old herdr-menu build"; fi
+    if [ -x "{{old_plugins}}/herdr-scratch/target/release/herdr-scratch" ]; then python3 crates/scratch/tests/cutover_real.py "{{old_plugins}}/herdr-scratch/target/release/herdr-scratch" bin/herdr-tools link; else echo "skip cutover_real.py: no old herdr-scratch build"; fi
 
 # Build release, lay out {{plugin_dir}} by rename, and link it unless Herdr
 # already links shadowfax.tools from there. Uses the herdr on PATH (override
@@ -67,7 +71,16 @@ install:
     # scripts/package.sh is the layout the fork release ships too, so a dev
     # install and a release install cannot drift apart.
     stage="$(mktemp -d "$parent/.shadowfax.tools.stage.XXXXXX")"
-    trap 'rm -rf "$stage"' EXIT
+    # On any exit, an old tree still parked in the stage goes back into place
+    # (interrupted mid-swap) before the stage is removed; never lose the only copy.
+    restore() {
+        if [ ! -e "$dest" ] && [ ! -L "$dest" ] && { [ -e "$stage/previous" ] || [ -L "$stage/previous" ]; }; then
+            mv "$stage/previous" "$dest" || { echo "previous plugin kept at $stage/previous" >&2; return; }
+        fi
+        rm -rf "$stage"
+    }
+    trap restore EXIT
+    trap 'exit 1' HUP INT TERM
     scripts/package.sh target/release/herdr-tools "$stage"
     if [ -e "$dest" ] || [ -L "$dest" ]; then
         mv "$dest" "$stage/previous"

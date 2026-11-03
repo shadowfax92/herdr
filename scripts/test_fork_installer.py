@@ -185,6 +185,23 @@ esac
         leftovers = [p.name for p in plugins.iterdir() if p.name != PLUGIN_ID] if plugins.exists() else []
         self.assertEqual(leftovers, [])
 
+    def tests_that_an_interrupted_swap_restores_the_previous_plugin(self) -> None:
+        marker = self.make_old_tools_dir()
+        real_mv = shutil.which("mv")
+        (self.bin / "mv").unlink()
+        # Delivers SIGTERM to the installer at the worst moment: the old dir is
+        # parked in the stage and the new one is about to move into place.
+        self.write_command("mv", f"""#!/bin/sh
+case "$1" in
+  */.{PLUGIN_ID}.stage.*/{PLUGIN_ID}) kill -TERM "$PPID"; sleep 1; exit 1 ;;
+esac
+exec {real_mv} "$@"
+""")
+        result = self.run_installer()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(marker.read_text(), "old", result.stdout + result.stderr)
+        self.assert_no_staging_left()
+
     def tests_that_four_platforms_install_from_one_pinned_release(self) -> None:
         for os_name, arch, target in (
             ("Linux", "x86_64", "linux-x86_64"),

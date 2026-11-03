@@ -115,10 +115,10 @@ fn notify_error(error: &anyhow::Error) {
 /// **State: the cutover should copy it.** Collected comments and ready drafts
 /// are durable user data, and the old plugin kept them in its own state dir,
 /// `~/.local/state/herdr/plugins/shadowfax.comments/`. The new mode reads the
-/// `shadowfax.tools` state dir instead, with the same layout and the same scope
-/// hashing (session socket path + pane id), so copying
-/// `shadowfax.comments/{collections,ready}/` into
-/// `~/.local/state/herdr/plugins/shadowfax.tools/` (keeping the 0700 dirs and
+/// `shadowfax.tools/comment/` state dir instead (see [`state_root`]), with the
+/// same layout and the same scope hashing (session socket path + pane id), so
+/// copying `shadowfax.comments/{collections,ready}/` into
+/// `~/.local/state/herdr/plugins/shadowfax.tools/comment/` (keeping the 0700 dirs and
 /// 0600 files, and no symlinks) carries pending comments over to the same
 /// panes. Skip `runs/` and `reviews/` (interrupted sessions that expire after
 /// 24 hours) and `active/` / `drafts/` (left by older versions, unread now).

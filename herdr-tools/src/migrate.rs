@@ -11,9 +11,11 @@
 //! ```
 //!
 //! Each mode knows only its own old format and returns a fragment of the new
-//! file. Fragments merge table by table; the only shared table is `[popup]`, where
-//! `[[popup.profile]]` entries with the same name and width range combine their
-//! sizes (comments and scratch both had `laptop`/`2-3-ultrawide`/`full-ultrawide`).
+//! file. Fragments merge table by table; the only shared table is `[popup]`.
+//! `[[popup.profile]]` entries are appended in mode order, never combined: the
+//! resolver takes the first width match that sizes the requested key, so each
+//! mode keeps its own first-match order. (Combining same-named profiles would
+//! move a later mode's sizes into an earlier entry and could jump its order.)
 //! Any other key two modes set differently is an error rather than a silent pick.
 
 use std::path::{Path, PathBuf};
@@ -89,31 +91,10 @@ fn merge_table(target: &mut Table, source: Table, path: &str, mode: &str) -> Res
             (Some(Value::Array(existing)), Value::Array(incoming))
                 if key_path == "popup.profile" =>
             {
-                merge_profiles(existing, incoming, mode)?;
+                existing.extend(incoming);
             }
             (Some(existing), value) if *existing == value => {}
             (Some(_), _) => bail!("{mode} sets `{key_path}` differently from an earlier mode"),
-        }
-    }
-    Ok(())
-}
-
-/// Profiles with the same name and width range are one profile.
-fn merge_profiles(existing: &mut Vec<Value>, incoming: Vec<Value>, mode: &str) -> Result<()> {
-    let identity = |profile: &Value| {
-        ["name", "min_client_width", "max_client_width"].map(|key| profile.get(key).cloned())
-    };
-    for profile in incoming {
-        let same = existing
-            .iter_mut()
-            .find(|candidate| identity(candidate) == identity(&profile));
-        match (same, profile) {
-            (Some(Value::Table(same)), Value::Table(profile)) => {
-                let name = same.get("name").and_then(Value::as_str).unwrap_or("?");
-                let path = format!("popup.profile.{name}");
-                merge_table(same, profile, &path, mode)?;
-            }
-            (_, profile) => existing.push(profile),
         }
     }
     Ok(())
@@ -187,7 +168,7 @@ mod tests {
     }
 
     #[test]
-    fn fragments_merge_and_shared_profiles_combine() {
+    fn fragments_merge_and_profiles_append_in_mode_order() {
         let comment = table(
             r#"
 [comment]
@@ -221,8 +202,8 @@ size.scratch-nvim = { width = "70%", height = "95%" }
         let config = Config::parse(&text).unwrap();
 
         let profiles = &config.popup_config().profile;
-        assert_eq!(profiles.len(), 2, "{text}");
-        assert_eq!(profiles[0].size.len(), 2, "{text}");
+        assert_eq!(profiles.len(), 3, "{text}");
+        assert_eq!(profiles[0].size.len(), 1, "{text}");
         assert_eq!(
             config
                 .popup("scratch-nvim", Some(300))
@@ -238,6 +219,38 @@ size.scratch-nvim = { width = "70%", height = "95%" }
             .is_none());
         assert!(config.section_table("comment").unwrap().is_some());
         assert!(config.section_table("scratch").unwrap().is_some());
+    }
+
+    #[test]
+    fn a_later_mode_keeps_its_own_profile_order() {
+        // comment has `laptop` (<= 310); scratch has `special` (<= 300) first,
+        // then its own `laptop`. At 290 columns scratch must still get `special`.
+        let comment = table(
+            r#"
+[[popup.profile]]
+name = "laptop"
+max_client_width = 310
+size.comment-capture = { width = "95%", height = "90%" }
+"#,
+        );
+        let scratch = table(
+            r#"
+[[popup.profile]]
+name = "special"
+max_client_width = 300
+size.scratch-nvim = { width = "60%", height = "95%" }
+[[popup.profile]]
+name = "laptop"
+max_client_width = 310
+size.scratch-nvim = { width = "95%", height = "95%" }
+"#,
+        );
+        let merged = merge(vec![("comment", comment), ("scratch", scratch)]).unwrap();
+        let config = Config::parse(&toml::to_string_pretty(&merged).unwrap()).unwrap();
+        let at = |key: &str, width| config.popup(key, Some(width)).unwrap().profile;
+        assert_eq!(at("scratch-nvim", 290).as_deref(), Some("special"));
+        assert_eq!(at("scratch-nvim", 305).as_deref(), Some("laptop"));
+        assert_eq!(at("comment-capture", 290).as_deref(), Some("laptop"));
     }
 
     #[test]
