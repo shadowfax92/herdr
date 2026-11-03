@@ -158,19 +158,25 @@ impl ClientShellState {
         if endpoint_id == &self.active_endpoint_id && status != ClientEndpointStatus::Online {
             self.pending_workspace_highlight = None;
         }
+        let mut entered_online = false;
         if let Some(endpoint) = self
             .endpoints
             .iter_mut()
             .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
         {
+            entered_online = status == ClientEndpointStatus::Online
+                && endpoint.status != ClientEndpointStatus::Online;
             endpoint.status = status;
         }
-        // A server-side connection's mirror ends with it, so an endpoint that
-        // leaves Online is owed a fresh one on its next connection, whatever
-        // generation and boot that connection reports.
-        if status == ClientEndpointStatus::Online {
+        // Mirrors sync on the transition into Online only: the client loop
+        // re-marks an endpoint Online for every snapshot it installs, and a
+        // later snapshot that needs a mirror (new connection or boot) syncs
+        // itself (`mirror_due`). A server-side connection's mirror ends with
+        // it, so an endpoint that leaves Online is owed a fresh one on its next
+        // connection, whatever generation and boot that connection reports.
+        if entered_online {
             self.sync_scope_mirrors();
-        } else {
+        } else if status != ClientEndpointStatus::Online {
             self.scope_mirrors_sent.remove(endpoint_id);
         }
     }

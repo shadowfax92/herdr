@@ -248,3 +248,67 @@ fn a_refused_mirror_is_never_retried_for_that_boot_and_never_shows_a_notice() {
     assert_eq!(state.endpoint_notice_text(), None);
     assert!(take_mirrors(&mut state).is_empty());
 }
+
+#[test]
+fn a_snapshot_for_an_endpoint_already_online_runs_no_mirror_scan() {
+    let mut state = three_machines();
+    state.set_scope_projection(Some(focus("studio:main")));
+    take_mirrors(&mut state);
+    let scans = state.scope_mirror_scans();
+
+    // What the client loop does for every snapshot it installs: mark the
+    // endpoint Online, then cache the snapshot (same connection and boot).
+    let mut later = booted("studio-boot");
+    later.revision += 1;
+    state.set_endpoint_status(&studio(), ClientEndpointStatus::Online);
+    state.cache_endpoint_snapshot_inactive_for_generation(&studio(), 1, later);
+    assert_eq!(
+        state.scope_mirror_scans(),
+        scans,
+        "an unchanged snapshot of an online machine never scans"
+    );
+    assert!(take_mirrors(&mut state).is_empty());
+
+    // Coming back into Online after a drop still mirrors.
+    state.set_endpoint_status(&studio(), ClientEndpointStatus::Reconnecting);
+    state.set_endpoint_status(&studio(), ClientEndpointStatus::Online);
+    assert_eq!(take_mirrors(&mut state).len(), 1);
+}
+
+#[test]
+fn a_failed_mirror_is_resent_on_the_next_sync_but_a_superseded_one_is_not() {
+    let mut state = three_machines();
+    let catalog = [
+        profile(STUDIO_PROFILE, "studio"),
+        profile(BUILD_PROFILE, "build"),
+    ];
+    state.set_scope_projection(Some(focus("studio:main")));
+    let timed_out = take_mirrors(&mut state).remove(0);
+    let failure = |code: &str| {
+        Err(ClientShellEndpointError {
+            code: Some(code.into()),
+            message: "the mirror did not land".into(),
+        })
+    };
+    assert!(!state.finish_scope_request(&timed_out.2, &failure("endpoint_timeout")));
+    // No immediate retry; the next natural trigger (here a catalog reload)
+    // resends it, since the server may never have stored it.
+    assert!(take_mirrors(&mut state).is_empty());
+    state.set_endpoint_catalog(&catalog);
+    let resent = take_mirrors(&mut state);
+    assert_eq!(resent.len(), 1, "{resent:?}");
+    assert_eq!(resent[0].3, timed_out.3);
+    assert_ne!(resent[0].2, timed_out.2);
+
+    // A mirror the lane cancelled because a newer one replaced it: the newer
+    // one is still on its way, so nothing is resent.
+    state.set_scope_projection(Some(focus("studio:ops")));
+    let superseded = take_mirrors(&mut state).remove(0);
+    state.set_scope_projection(Some(focus("studio:main/outreach")));
+    let newer = take_mirrors(&mut state).remove(0);
+    assert!(!state.cancel_endpoint_request(&superseded.2));
+    state.set_endpoint_catalog(&catalog);
+    assert!(take_mirrors(&mut state).is_empty());
+    assert_eq!(state.scope_mirror_sent_to(&studio()), Some(&newer.3));
+    assert_eq!(state.endpoint_notice_text(), None);
+}

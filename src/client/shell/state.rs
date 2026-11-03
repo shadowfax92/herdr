@@ -1006,6 +1006,10 @@ pub(crate) struct ClientShellState {
     /// went to. Tracked apart from `pending_requests` (the active endpoint's),
     /// like `scope_request_ids`, and settled silently.
     pub(super) scope_mirror_request_ids: HashMap<String, (ClientEndpointId, String)>,
+    /// How many times `sync_scope_mirrors` scanned the endpoints, so tests can
+    /// prove a path does not scan at all.
+    #[cfg(test)]
+    pub(super) scope_mirror_scans: usize,
 }
 
 pub(super) fn product_announcement_state(
@@ -1185,6 +1189,8 @@ impl ClientShellState {
             scope_mirrors_sent: HashMap::new(),
             scope_mirror_refused: HashMap::new(),
             scope_mirror_request_ids: HashMap::new(),
+            #[cfg(test)]
+            scope_mirror_scans: 0,
         }
     }
 

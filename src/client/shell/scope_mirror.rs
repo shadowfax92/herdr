@@ -10,7 +10,7 @@
 //!
 //! ```text
 //!  Local scope.projection ─► set_scope_projection ─► scope_changed ─┐
-//!  remote snapshot or status (online, new connection, new boot) ────┤
+//!  remote machine goes Online; first snapshot of a connection/boot ┤
 //!  catalog reload (a machine's label) ──────────────────────────────┤
 //!                                                                   ▼
 //!   sync_scope_mirrors: one scope.mirror per online remote endpoint that
@@ -25,7 +25,8 @@
 //! The mirror carries `effective_scope()`, so the config-only fallback (a Local
 //! without `scope.projection`) mirrors too. Failures only log: the panels are
 //! already right, and only plugin lists on that machine lag. A server that
-//! refuses the method is never asked again for that boot.
+//! refuses the method is never asked again for that boot; any other failure
+//! forgets that mirror was sent, so the next trigger sends it again.
 use crate::api::schema::{Method, Request};
 use crate::scope::ScopeMirrorParams;
 
@@ -46,9 +47,11 @@ const MIRROR_REFUSED_CODES: &[&str] = &[
 /// The last mirror queued for one remote endpoint: what went to which
 /// connection (`generation`) and server boot. A reconnect, even to the same
 /// boot, is a new server-side connection with no mirror, so the generation is
-/// part of the key.
+/// part of the key. It is recorded when queued, not when acknowledged, so a
+/// failure of that same request (`request_id`) clears it again.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ScopeMirrorSent {
+    request_id: String,
     generation: Option<u64>,
     boot_id: String,
     params: ScopeMirrorParams,
@@ -57,15 +60,22 @@ pub(crate) struct ScopeMirrorSent {
 /// One mirror the sync decided to queue.
 struct PendingMirror {
     endpoint_id: ClientEndpointId,
-    sent: ScopeMirrorSent,
+    generation: Option<u64>,
+    boot_id: String,
+    params: ScopeMirrorParams,
 }
 
 impl ClientShellState {
     /// Queues a `scope.mirror` for every online remote endpoint whose current
     /// connection has not had this exact one. Cheap when nothing changed: one
-    /// comparison per remote endpoint, no clone. Runs on every scope change and
-    /// whenever a remote endpoint's snapshot, status, methods or label change.
+    /// comparison per remote endpoint, no clone. Runs on every scope change, when
+    /// a remote endpoint goes into Online, on its first snapshot of a new
+    /// connection or boot, and when its methods or label change.
     pub(super) fn sync_scope_mirrors(&mut self) {
+        #[cfg(test)]
+        {
+            self.scope_mirror_scans += 1;
+        }
         let mut pending = Vec::new();
         {
             let scope = self.effective_scope();
@@ -106,14 +116,12 @@ impl ClientShellState {
                 }
                 pending.push(PendingMirror {
                     endpoint_id: endpoint.endpoint_id.clone(),
-                    sent: ScopeMirrorSent {
-                        generation: endpoint.snapshot_generation,
-                        boot_id: snapshot.boot_id.clone(),
-                        params: ScopeMirrorParams {
-                            scope: Some(scope.as_ref().clone()),
-                            machine,
-                            machine_label: endpoint.label.clone(),
-                        },
+                    generation: endpoint.snapshot_generation,
+                    boot_id: snapshot.boot_id.clone(),
+                    params: ScopeMirrorParams {
+                        scope: Some(scope.as_ref().clone()),
+                        machine,
+                        machine_label: endpoint.label.clone(),
                     },
                 });
             }
@@ -128,7 +136,12 @@ impl ClientShellState {
     /// stale scope never follows the fresh one; the lane does the same for one
     /// already handed to it (`EndpointCommands::enqueue`).
     fn queue_scope_mirror(&mut self, mirror: PendingMirror) {
-        let PendingMirror { endpoint_id, sent } = mirror;
+        let PendingMirror {
+            endpoint_id,
+            generation,
+            boot_id,
+            params,
+        } = mirror;
         let mut superseded = Vec::new();
         self.scope_requests.retain(|action| match action {
             ClientShellAction::Endpoint {
@@ -146,19 +159,25 @@ impl ClientShellState {
         }
         let request_id = format!("client-shell:{}", self.next_request_id);
         self.next_request_id = self.next_request_id.saturating_add(1);
-        self.scope_mirror_request_ids.insert(
-            request_id.clone(),
-            (endpoint_id.clone(), sent.boot_id.clone()),
-        );
+        self.scope_mirror_request_ids
+            .insert(request_id.clone(), (endpoint_id.clone(), boot_id.clone()));
         self.scope_requests.push(ClientShellAction::Endpoint {
             endpoint_id: endpoint_id.clone(),
-            boot_id: sent.boot_id.clone(),
+            boot_id: boot_id.clone(),
             request: Box::new(Request {
-                id: request_id,
-                method: Method::ScopeMirror(sent.params.clone()),
+                id: request_id.clone(),
+                method: Method::ScopeMirror(params.clone()),
             }),
         });
-        self.scope_mirrors_sent.insert(endpoint_id, sent);
+        self.scope_mirrors_sent.insert(
+            endpoint_id,
+            ScopeMirrorSent {
+                request_id,
+                generation,
+                boot_id,
+                params,
+            },
+        );
     }
 
     /// Whether the shell holds scope requests the client loop has not
@@ -170,6 +189,10 @@ impl ClientShellState {
     /// Settles a mirror's result, if `request_id` is one: success, rejection,
     /// timeout and cancellation (superseded, lane gone) all stay silent apart
     /// from a debug log. A refusal of the method is remembered for that boot.
+    /// Any other failure means the server may lack the mirror, so the record
+    /// of it is dropped and the next sync trigger sends it again (no immediate
+    /// retry). Only when the record is still this request's: a mirror
+    /// superseded by a newer one leaves the newer record alone.
     /// Returns `None` for ids that are not mirrors.
     pub(super) fn finish_scope_mirror(
         &mut self,
@@ -187,6 +210,12 @@ impl ClientShellState {
             );
             if MIRROR_REFUSED_CODES.contains(&code) {
                 self.scope_mirror_refused.insert(endpoint_id, boot_id);
+            } else if self
+                .scope_mirrors_sent
+                .get(&endpoint_id)
+                .is_some_and(|sent| sent.request_id == request_id)
+            {
+                self.scope_mirrors_sent.remove(&endpoint_id);
             }
         }
         Some(false)
@@ -195,6 +224,12 @@ impl ClientShellState {
     /// Whether `request_id` is an unsettled mirror.
     pub(super) fn owns_scope_mirror_request(&self, request_id: &str) -> bool {
         self.scope_mirror_request_ids.contains_key(request_id)
+    }
+
+    /// How many mirror scans have run, for tests.
+    #[cfg(test)]
+    pub(crate) fn scope_mirror_scans(&self) -> usize {
+        self.scope_mirror_scans
     }
 
     /// The mirror last queued for `endpoint_id`, for tests.
