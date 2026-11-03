@@ -965,6 +965,10 @@ pub(crate) struct ClientShellState {
     pub(super) endpoint_error_deadline: Option<std::time::Instant>,
     pub(super) dismissed_product_announcement: Option<(String, String)>,
     pub(super) landing_glow: super::landing_glow::LandingGlow,
+    /// The Local endpoint's projected focus/hide scope (`crate::scope`); `None`
+    /// until one arrives or when Local cannot project one. Read it through
+    /// `effective_scope`.
+    pub(super) scope_projection: Option<crate::scope::ScopeState>,
 }
 
 pub(super) fn product_announcement_state(
@@ -1135,6 +1139,7 @@ impl ClientShellState {
             endpoint_error_deadline: None,
             dismissed_product_announcement: None,
             landing_glow: Default::default(),
+            scope_projection: None,
         }
     }
 
