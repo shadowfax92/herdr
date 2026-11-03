@@ -307,6 +307,23 @@ fn toggling_a_marked_row_removes_the_target_that_names_it() {
 }
 
 #[test]
+fn the_picker_keeps_the_keyboard_while_a_closing_popup_is_still_known() {
+    // The menu popup asks for the picker and closes; the pick can arrive
+    // before the snapshot that clears the popup.
+    let (mut state, _) = state_with(&[]);
+    state.popup_terminal_id = Some("closing-menu-popup".into());
+    record(&mut state, KeybindAction::FocusPicker);
+    let before = picker(&state).selected.clone();
+    let outcome = press(&mut state, KeyCode::Char('j'));
+    assert_ne!(picker(&state).selected, before, "j must move the picker");
+    assert!(
+        outcome.requests.is_empty(),
+        "no key may reach the popup or the pane: {:?}",
+        outcome.requests
+    );
+}
+
+#[test]
 fn escape_and_an_unchanged_enter_send_nothing() {
     let (mut state, _) = state_with(&[]);
     record(&mut state, KeybindAction::FocusPicker);

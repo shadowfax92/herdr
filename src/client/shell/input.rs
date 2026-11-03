@@ -617,12 +617,18 @@ impl ClientShellState {
         {
             return None;
         }
+        // These overlays own the keyboard even over a popup. The scope picker
+        // is one because a plugin popup (the herdr-tools menu) opens it while
+        // closing itself: `scope.pick` can reach the client before the
+        // snapshot that drops the popup, and keys routed to that stale popup
+        // land in the focused pane instead of the picker.
         if matches!(
             self.overlay,
             Some(
                 ClientShellOverlay::Onboarding
                     | ClientShellOverlay::ProductAnnouncement(_)
                     | ClientShellOverlay::ReleaseNotes(_)
+                    | ClientShellOverlay::ScopePicker(_)
             )
         ) {
             if key.kind == KeyEventKind::Press {
