@@ -446,6 +446,25 @@ impl ClientShellState {
         self.open_scope_picker_overlay(mode);
     }
 
+    /// A server's `scope.toggle` (a plugin menu, on whichever machine is
+    /// active): the `toggle_focus` keybind's path, run outside a key press. The
+    /// returned outcome carries the jump into the new scope; the `scope.set`
+    /// itself goes to Local through `request_scope_set`.
+    pub(crate) fn toggle_scope_focus_from_endpoint(&mut self) -> ClientShellInput {
+        let mut outcome = ClientShellInput::default();
+        self.toggle_scope_focus(&mut outcome);
+        outcome
+    }
+
+    /// The open picker's mode, so client-loop tests can see a control opened it.
+    #[cfg(test)]
+    pub(crate) fn scope_picker_mode(&self) -> Option<ScopePickMode> {
+        match self.overlay.as_ref() {
+            Some(ClientShellOverlay::ScopePicker(picker)) => Some(picker.mode),
+            _ => None,
+        }
+    }
+
     /// Sends `scope.set` to the Local server, even while a remote machine is
     /// active: the scope lives only there. The new scope arrives back as a
     /// projection; nothing changes locally until it does.

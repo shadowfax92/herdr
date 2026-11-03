@@ -10,12 +10,21 @@ pub(crate) enum EndpointControlMessage {
     HealthPong,
     AgentViewProjection(DecodedAgentViewProjection),
     AgentCompletions(crate::protocol::endpoint::EndpointAgentCompletions),
-    /// Focus/hide scope; the client loop applies it only from Local.
-    ScopeProjection(crate::protocol::endpoint::EndpointScopeProjection),
-    /// Open the focus/hide picker; honored only from Local.
-    ScopePick(crate::scope::ScopePickMode),
+    /// Focus and hide; see `ScopeControl` for which endpoints each applies from.
+    Scope(ScopeControl),
     Snapshot(Box<crate::protocol::ClientShellSnapshot>),
     Ignored,
+}
+
+/// The focus/hide controls a server may send. The scope itself lives on the
+/// Local server, so its projection counts only from Local. Pick and toggle are
+/// requests to act, and may come from any machine's server: a plugin menu runs
+/// on whichever machine is active, and whatever the client does with them, it
+/// writes to Local.
+pub(crate) enum ScopeControl {
+    Projection(crate::protocol::endpoint::EndpointScopeProjection),
+    Pick(crate::scope::ScopePickMode),
+    Toggle,
 }
 
 pub(crate) fn decode_endpoint_control(
@@ -30,19 +39,34 @@ pub(crate) fn decode_endpoint_control(
             .map(EndpointControlMessage::AgentCompletions)
             .unwrap_or(EndpointControlMessage::Ignored));
     }
-    // Both scope controls are optional: a payload this client cannot read (a
-    // future scope shape or pick mode) is dropped rather than failing the
-    // endpoint, and the client keeps its last scope.
+    // Scope controls are optional: a payload this client cannot read (a future
+    // scope shape or pick mode) is dropped rather than failing the endpoint,
+    // and the client keeps its last scope.
+    let scope = |control: Option<ScopeControl>| {
+        Ok(control.map_or(
+            EndpointControlMessage::Ignored,
+            EndpointControlMessage::Scope,
+        ))
+    };
     if kind == crate::protocol::endpoint::SCOPE_PROJECTION_KIND {
-        return Ok(serde_json::from_str(data)
-            .map(EndpointControlMessage::ScopeProjection)
-            .unwrap_or(EndpointControlMessage::Ignored));
+        return scope(
+            serde_json::from_str(data)
+                .ok()
+                .map(ScopeControl::Projection),
+        );
     }
     if kind == crate::protocol::endpoint::SCOPE_PICK_KIND {
-        return Ok(
+        return scope(
             serde_json::from_str::<crate::protocol::endpoint::EndpointScopePick>(data)
-                .map(|pick| EndpointControlMessage::ScopePick(pick.mode))
-                .unwrap_or(EndpointControlMessage::Ignored),
+                .ok()
+                .map(|pick| ScopeControl::Pick(pick.mode)),
+        );
+    }
+    if kind == crate::protocol::endpoint::SCOPE_TOGGLE_KIND {
+        return scope(
+            serde_json::from_str::<crate::protocol::endpoint::EndpointScopeToggle>(data)
+                .ok()
+                .map(|_| ScopeControl::Toggle),
         );
     }
     if kind == crate::protocol::endpoint::AGENT_VIEW_PROJECTION_KIND {
@@ -197,7 +221,7 @@ mod tests {
         else {
             panic!("scope projection control");
         };
-        let EndpointControlMessage::ScopeProjection(decoded) =
+        let EndpointControlMessage::Scope(ScopeControl::Projection(decoded)) =
             decode_endpoint_control(&kind, &data).unwrap()
         else {
             panic!("decoded scope projection");
@@ -217,9 +241,19 @@ mod tests {
             };
             assert!(matches!(
                 decode_endpoint_control(&kind, &data).unwrap(),
-                EndpointControlMessage::ScopePick(decoded) if decoded == mode
+                EndpointControlMessage::Scope(ScopeControl::Pick(decoded)) if decoded == mode
             ));
         }
+
+        let crate::protocol::ServerMessage::EndpointControl { kind, data } =
+            crate::protocol::endpoint::scope_toggle_message().unwrap()
+        else {
+            panic!("scope toggle control");
+        };
+        assert!(matches!(
+            decode_endpoint_control(&kind, &data).unwrap(),
+            EndpointControlMessage::Scope(ScopeControl::Toggle)
+        ));
     }
 
     #[test]
@@ -230,6 +264,7 @@ mod tests {
                 crate::protocol::endpoint::SCOPE_PICK_KIND,
                 r#"{"mode":"future"}"#,
             ),
+            (crate::protocol::endpoint::SCOPE_TOGGLE_KIND, "42"),
         ] {
             assert!(matches!(
                 decode_endpoint_control(kind, data).unwrap(),

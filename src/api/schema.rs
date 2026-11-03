@@ -85,6 +85,10 @@ pub enum Method {
     /// Opens the focus/hide picker on the foreground client.
     #[serde(rename = "scope.pick")]
     ScopePick(crate::scope::ScopePickParams),
+    /// Flips focus on or off through the foreground client, which owns the
+    /// Local server's scope even while another machine is active.
+    #[serde(rename = "scope.toggle")]
+    ScopeToggle(EmptyParams),
     #[serde(rename = "session.snapshot")]
     SessionSnapshot(EmptyParams),
     #[serde(rename = "workspace.create")]

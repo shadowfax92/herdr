@@ -2133,16 +2133,19 @@ async fn run_client_loop(
                                 }
                                 continue;
                             }
-                            Ok(endpoint::EndpointControlMessage::ScopeProjection(projection)) => {
-                                let control = shell_runtime::EndpointScopeControl::Projection(
-                                    projection.scope,
-                                );
-                                route_scope_control(&mut state, &endpoint_id, control);
-                                continue;
-                            }
-                            Ok(endpoint::EndpointControlMessage::ScopePick(mode)) => {
-                                let control = shell_runtime::EndpointScopeControl::Pick(mode);
-                                route_scope_control(&mut state, &endpoint_id, control);
+                            Ok(endpoint::EndpointControlMessage::Scope(control)) => {
+                                if finish_scope_control(
+                                    &mut state,
+                                    &endpoint_id,
+                                    control,
+                                    &mut write_stream,
+                                    &mut pending_activation,
+                                    &mut endpoint_commands,
+                                    &mut prefix_input_source,
+                                    &mut scheduled_activation,
+                                )? {
+                                    return Ok(());
+                                }
                                 continue;
                             }
                             Ok(endpoint::EndpointControlMessage::Ignored) => {

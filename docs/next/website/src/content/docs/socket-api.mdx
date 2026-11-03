@@ -107,7 +107,7 @@ Raw socket method names use dot notation:
 | Popup | `popup.close` |
 | Layout | `layout.export`, `layout.apply`, `layout.set_split_ratio` |
 | Agent | `agent.list`, `agent.get`, `agent.read`, `agent.explain`, `agent.send_keys`, `agent.prompt`, `agent.wait`, `agent.rename`, `agent.focus`, `agent.start`, `agent.view.set`, `agent.view.clear` |
-| Focus and hide | `scope.get`, `scope.set`, `scope.clear`, `scope.pick` |
+| Focus and hide | `scope.get`, `scope.set`, `scope.clear`, `scope.pick`, `scope.toggle` |
 | Events | `events.subscribe`, `events.wait` |
 | Integrations | `integration.install`, `integration.uninstall` |
 | Plugins | `plugin.link`, `plugin.list`, `plugin.unlink`, `plugin.enable`, `plugin.disable`, `plugin.action.list`, `plugin.action.invoke`, `plugin.log.list`, `plugin.pane.open`, `plugin.pane.focus`, `plugin.pane.close` |
@@ -528,10 +528,22 @@ without reimplementing the rule:
 ```
 
 `mode` is `focus` (the default) or `hide` and only chooses which mark `space`
-toggles. The request goes to the foreground client only and returns
-`type: "ok"`. With no client attached it fails with `no_client`. A client reads
-the scope, and honors `scope.pick`, only from its local server; scopes on
-remote servers are ignored.
+toggles.
+
+`scope.toggle` takes no params and switches focus on or off in the attached
+client, the same as the `toggle_focus` key:
+
+```json
+{"id":"scope_toggle","method":"scope.toggle","params":{}}
+```
+
+Both requests go to the foreground client only, or to the most recently active
+client when none is in front, and return `type: "ok"` once it has been asked.
+With no client attached they fail with `no_client`. A client honors them from
+any server it is connected to, so a plugin running on a saved machine's server
+can open the picker or toggle focus. Whatever the client changes, it writes to
+its local server with `scope.set`, and it reads the scope only from its local
+server; scopes on remote servers are ignored.
 
 ## Plugin APIs
 

@@ -1124,7 +1124,9 @@ impl App {
             Method::ScopeGet(_) => return self.handle_scope_get(request.id),
             Method::ScopeSet(params) => return self.handle_scope_set(request.id, params),
             Method::ScopeClear(_) => return self.handle_scope_clear(request.id),
-            Method::ScopePick(_) => return Self::handle_scope_pick_without_client(request.id),
+            Method::ScopePick(_) | Method::ScopeToggle(_) => {
+                return Self::handle_scope_client_request_without_client(request.id);
+            }
             Method::AgentStart(params) => return self.handle_agent_start(request.id, params),
             Method::AgentPrompt(_) => {
                 return responses::encode_error(

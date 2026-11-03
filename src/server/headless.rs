@@ -1555,13 +1555,18 @@ impl HeadlessServer {
         .unwrap_or_else(|_| "{}".to_string())
     }
 
-    /// `scope.pick`: asks one client to open its focus/hide picker. Like the
-    /// window title, it goes to the foreground client only; a picker on every
-    /// attached client would leave stray overlays on screens nobody watches.
-    /// When no surface is foreground (the client is viewing another machine,
-    /// which leaves this server's surface inactive), the most recently active
-    /// shell still gets it, since the picker belongs to that client either way.
-    fn handle_scope_pick_api(&mut self, id: String, mode: crate::scope::ScopePickMode) -> String {
+    /// `scope.pick` and `scope.toggle`: hands one scope control to a client.
+    /// Like the window title, it goes to the foreground client only; a picker
+    /// or a toggle on every attached client would act on screens nobody
+    /// watches (a toggle twice would undo itself). When no surface is
+    /// foreground (the client is viewing another machine, which leaves this
+    /// server's surface inactive), the most recently active shell still gets
+    /// it, since the picker and the scope belong to that client either way.
+    fn handle_scope_client_api(
+        &mut self,
+        id: String,
+        message: serde_json::Result<ServerMessage>,
+    ) -> String {
         let attached = |client: &ClientConnection| {
             matches!(client.mode, ClientConnectionMode::ClientShell) && client.writer.is_some()
         };
@@ -1575,10 +1580,10 @@ impl HeadlessServer {
                     .max_by_key(|(_, client)| client.last_activity)
                     .map(|(&client_id, _)| client_id)
             });
-        let sent = match (target, crate::protocol::endpoint::scope_pick_message(mode)) {
+        let sent = match (target, message) {
             (Some(client_id), Ok(message)) => self.send_to_client(client_id, message),
             (_, Err(err)) => {
-                warn!(err = %err, "failed to encode scope pick");
+                warn!(err = %err, "failed to encode scope control");
                 false
             }
             (None, _) => false,
@@ -1593,7 +1598,7 @@ impl HeadlessServer {
                 id,
                 error: api::schema::ErrorBody {
                     code: "no_client".into(),
-                    message: "no client is attached to open the scope picker".into(),
+                    message: "no client is attached to act on the scope".into(),
                 },
             })
         }
@@ -3036,7 +3041,14 @@ impl HeadlessServer {
                 return true;
             }
             api::schema::Method::ScopePick(params) => {
-                let response = self.handle_scope_pick_api(msg.request.id.clone(), params.mode);
+                let message = crate::protocol::endpoint::scope_pick_message(params.mode);
+                let response = self.handle_scope_client_api(msg.request.id.clone(), message);
+                let _ = msg.respond_to.send(response);
+                return false;
+            }
+            api::schema::Method::ScopeToggle(_) => {
+                let message = crate::protocol::endpoint::scope_toggle_message();
+                let response = self.handle_scope_client_api(msg.request.id.clone(), message);
                 let _ = msg.respond_to.send(response);
                 return false;
             }

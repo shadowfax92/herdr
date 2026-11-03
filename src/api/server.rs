@@ -621,6 +621,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::ScopeSet(_) => "scope.set",
         Method::ScopeClear(_) => "scope.clear",
         Method::ScopePick(_) => "scope.pick",
+        Method::ScopeToggle(_) => "scope.toggle",
         Method::SessionSnapshot(_) => "session.snapshot",
         Method::WorkspaceCreate(_) => "workspace.create",
         Method::WorkspaceList(_) => "workspace.list",

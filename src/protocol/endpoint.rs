@@ -39,6 +39,11 @@ pub const SCOPE_PROJECTION_KIND: &str = "endpoint.scope-projection.v1";
 /// `scope.pick`: asks the foreground client to open its focus/hide picker.
 pub const SCOPE_PICK_CAPABILITY: &str = "scope_pick";
 pub const SCOPE_PICK_KIND: &str = "endpoint.scope-pick.v1";
+/// `scope.toggle`: asks the foreground client to flip focus on or off. Like
+/// pick, it may come from any machine's server (a plugin menu runs on the
+/// active machine), and the client writes the result to its Local server.
+pub const SCOPE_TOGGLE_CAPABILITY: &str = "scope_toggle";
+pub const SCOPE_TOGGLE_KIND: &str = "endpoint.scope-toggle.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndpointAgentCompletions {
@@ -115,6 +120,11 @@ pub struct EndpointScopePick {
     pub mode: crate::scope::ScopePickMode,
 }
 
+/// Optional control advertised by `SCOPE_TOGGLE_CAPABILITY`. It carries nothing
+/// today; an object leaves room for optional fields.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointScopeToggle {}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndpointServerWelcome {
     pub generation: u32,
@@ -179,6 +189,13 @@ pub fn scope_projection_message(
     })
 }
 
+pub fn scope_toggle_message() -> serde_json::Result<ServerMessage> {
+    Ok(ServerMessage::EndpointControl {
+        kind: SCOPE_TOGGLE_KIND.into(),
+        data: serde_json::to_string(&EndpointScopeToggle::default())?,
+    })
+}
+
 pub fn scope_pick_message(mode: crate::scope::ScopePickMode) -> serde_json::Result<ServerMessage> {
     Ok(ServerMessage::EndpointControl {
         kind: SCOPE_PICK_KIND.into(),
@@ -224,6 +241,7 @@ impl EndpointServerWelcome {
                 AGENT_COMPLETIONS_CAPABILITY.into(),
                 SCOPE_PROJECTION_CAPABILITY.into(),
                 SCOPE_PICK_CAPABILITY.into(),
+                SCOPE_TOGGLE_CAPABILITY.into(),
             ],
             error: None,
         }
@@ -441,6 +459,7 @@ mod tests {
                 AGENT_COMPLETIONS_CAPABILITY.to_string(),
                 SCOPE_PROJECTION_CAPABILITY.to_string(),
                 SCOPE_PICK_CAPABILITY.to_string(),
+                SCOPE_TOGGLE_CAPABILITY.to_string(),
             ]
         );
         // An incompatible welcome advertises nothing, so a client that failed
@@ -476,6 +495,12 @@ mod tests {
         };
         assert_eq!(kind, SCOPE_PICK_KIND);
         assert_eq!(data, r#"{"mode":"hide"}"#);
+
+        let ServerMessage::EndpointControl { kind, data } = scope_toggle_message().unwrap() else {
+            panic!("scope toggle should use endpoint control");
+        };
+        assert_eq!(kind, SCOPE_TOGGLE_KIND);
+        assert_eq!(data, "{}");
     }
 
     #[test]

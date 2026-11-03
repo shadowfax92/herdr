@@ -3,9 +3,10 @@
 //!
 //! The server owns `AppState.scope`; these handlers read and replace it, and the
 //! headless render loop projects every change to attached clients as the
-//! `scope.projection` endpoint control. `scope.pick` never reaches here from a
-//! running server: the headless server sends it to the foreground client
-//! itself, so this layer only answers it when no client can exist.
+//! `scope.projection` endpoint control. `scope.pick` and `scope.toggle` never
+//! reach here from a running server: the headless server hands them to the
+//! foreground client itself, so this layer only answers them when no client
+//! can exist.
 
 use crate::api::schema::ResponseResult;
 use crate::app::App;
@@ -45,13 +46,10 @@ impl App {
         encode_success(id, self.scope_result())
     }
 
-    /// Answered only in app mode, where no shell client can be attached.
-    pub(super) fn handle_scope_pick_without_client(id: String) -> String {
-        encode_error(
-            id,
-            "no_client",
-            "no client is attached to open the scope picker",
-        )
+    /// `scope.pick` and `scope.toggle` act through a client. Answered here only
+    /// in app mode, where no shell client can be attached.
+    pub(super) fn handle_scope_client_request_without_client(id: String) -> String {
+        encode_error(id, "no_client", "no client is attached to act on the scope")
     }
 
     fn scope_result(&self) -> ResponseResult {
@@ -418,17 +416,21 @@ mod tests {
     }
 
     #[test]
-    fn pick_without_a_server_reports_no_client() {
+    fn pick_and_toggle_without_a_server_report_no_client() {
         let mut app = app_with_workspaces();
-        let response = request(
-            &mut app,
+        let before = app.state.scope.clone();
+        for method in [
             Method::ScopePick(crate::scope::ScopePickParams::default()),
-        );
-        assert_eq!(response["error"]["code"], "no_client");
+            Method::ScopeToggle(EmptyParams::default()),
+        ] {
+            let response = request(&mut app, method);
+            assert_eq!(response["error"]["code"], "no_client");
+        }
+        assert_eq!(app.state.scope, before);
     }
 
     #[test]
-    fn set_and_clear_change_the_ui_but_get_and_pick_do_not() {
+    fn set_and_clear_change_the_ui_but_get_pick_and_toggle_do_not() {
         let request = |method| Request {
             id: "scope".into(),
             method,
@@ -444,6 +446,10 @@ mod tests {
         ))));
         assert!(!crate::api::request_changes_ui(&request(
             Method::ScopePick(crate::scope::ScopePickParams::default())
+        )));
+        // The client answers a toggle with its own scope.set, which renders.
+        assert!(!crate::api::request_changes_ui(&request(
+            Method::ScopeToggle(EmptyParams::default())
         )));
     }
 }

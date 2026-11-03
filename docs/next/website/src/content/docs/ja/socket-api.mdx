@@ -103,7 +103,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | ポップアップ | `popup.close` |
 | レイアウト | `layout.export`、`layout.apply`、`layout.set_split_ratio` |
 | エージェント | `agent.list`、`agent.get`、`agent.read`、`agent.explain`、`agent.send_keys`、`agent.prompt`、`agent.wait`、`agent.rename`、`agent.focus`、`agent.start` |
-| フォーカスと非表示 | `scope.get`、`scope.set`、`scope.clear`、`scope.pick` |
+| フォーカスと非表示 | `scope.get`、`scope.set`、`scope.clear`、`scope.pick`、`scope.toggle` |
 | イベント | `events.subscribe`、`events.wait` |
 | インテグレーション | `integration.install`、`integration.uninstall` |
 | プラグイン | `plugin.link`、`plugin.list`、`plugin.unlink`、`plugin.enable`、`plugin.disable`、`plugin.action.list`、`plugin.action.invoke`、`plugin.log.list`、`plugin.pane.open`、`plugin.pane.focus`、`plugin.pane.close` |
@@ -445,10 +445,21 @@ source が一致しない場合、アクティブなビューは変わりませ�
 ```
 
 `mode` は `focus` (既定) か `hide` で、`space` が切り替える印だけを決めます。
-リクエストは前面のクライアントだけに届き、`type: "ok"` を返します。クライアントが
-接続されていなければ `no_client` で失敗します。クライアントはスコープを読み、
-`scope.pick` に応じるのをローカルサーバーからだけに限り、リモートサーバーのスコープは
-無視します。
+
+`scope.toggle` はパラメーターを取らず、`toggle_focus` キーと同じように接続中の
+クライアントでフォーカスのオン・オフを切り替えます。
+
+```json
+{"id":"scope_toggle","method":"scope.toggle","params":{}}
+```
+
+どちらのリクエストも前面のクライアントだけに届き、前面がなければ直近に操作された
+クライアントに届いて、依頼した時点で `type: "ok"` を返します。クライアントが
+接続されていなければ `no_client` で失敗します。クライアントは接続中のどのサーバー
+からでもこれらに応じるので、保存済みマシンのサーバーで動くプラグインもピッカーを
+開いたりフォーカスを切り替えたりできます。クライアントが変えた内容は常に `scope.set`
+でローカルサーバーに書き込まれ、スコープはローカルサーバーからだけ読み、リモート
+サーバーのスコープは無視します。
 
 ## プラグイン API
 

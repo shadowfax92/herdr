@@ -1,6 +1,6 @@
 //! Focus and hide on the headless server: the scope projection reaches every
 //! attached shell on attach and on change, the client lane may change it with
-//! its surface off, and `scope.pick` goes to one client only.
+//! its surface off, and `scope.pick` and `scope.toggle` go to one client only.
 use super::*;
 
 use crate::scope::{ScopePickMode, ScopeSetParams, ScopeState, ScopeTarget};
@@ -244,4 +244,64 @@ async fn pick_goes_to_the_foreground_client_only() {
         }]
     );
     assert!(picks(&background_rx).is_empty());
+}
+
+#[tokio::test]
+async fn toggle_goes_to_one_client_whose_scope_set_flips_focus() {
+    let mut server = test_headless_server();
+    let (_, response) = api(
+        &mut server,
+        api::schema::Method::ScopeToggle(api::schema::EmptyParams::default()),
+    );
+    assert_eq!(response["error"]["code"], "no_client");
+
+    let background = attach(&mut server, 47, true);
+    let foreground = attach(&mut server, 48, true);
+    assert_eq!(server.foreground_client_id, Some(48));
+    api(&mut server, focus_on("elsewhere"));
+    server.render_and_stream();
+    drain_controls(&background);
+    drain_controls(&foreground);
+
+    // The server only relays the toggle: the scope stays as it was until the
+    // client answers.
+    let (changed, response) = api(
+        &mut server,
+        api::schema::Method::ScopeToggle(api::schema::EmptyParams::default()),
+    );
+    assert!(!changed);
+    assert_eq!(response["result"]["type"], "ok");
+    assert!(server.app.state.scope.focus.active);
+    let toggles = |shell| {
+        drain_controls(shell)
+            .into_iter()
+            .filter(|(kind, _)| kind == protocol::endpoint::SCOPE_TOGGLE_KIND)
+            .count()
+    };
+    assert_eq!(toggles(&foreground), 1);
+    assert_eq!(toggles(&background), 0);
+
+    // The client's answer: its toggle path sends the flipped flag on the
+    // client lane, and every shell sees the new scope.
+    let boot_id = server.client_shell_boot_id.clone();
+    assert!(
+        server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+            client_id: 48,
+            boot_id,
+            request: Box::new(api::schema::Request {
+                id: "client-shell:1".into(),
+                method: api::schema::Method::ScopeSet(ScopeSetParams {
+                    focus_active: Some(false),
+                    ..ScopeSetParams::default()
+                }),
+            }),
+        })
+    );
+    server.render_and_stream();
+    for shell in [&foreground, &background] {
+        let projections = scope_projections(&drain_controls(shell));
+        assert_eq!(projections.len(), 1);
+        assert!(!projections[0].scope.focus.active);
+        assert_eq!(projections[0].scope.focus.targets.len(), 1);
+    }
 }

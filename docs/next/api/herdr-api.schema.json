@@ -5068,6 +5068,23 @@
           "type": "object"
         },
         {
+          "description": "Flips focus on or off through the foreground client, which owns the\nLocal server's scope even while another machine is active.",
+          "properties": {
+            "method": {
+              "const": "scope.toggle",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
           "properties": {
             "method": {
               "const": "session.snapshot",

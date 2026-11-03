@@ -103,7 +103,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | 弹窗 | `popup.close` |
 | 布局 | `layout.export`、`layout.apply`、`layout.set_split_ratio` |
 | 智能体 | `agent.list`、`agent.get`、`agent.read`、`agent.explain`、`agent.send_keys`、`agent.prompt`、`agent.wait`、`agent.rename`、`agent.focus`、`agent.start` |
-| 聚焦与隐藏 | `scope.get`、`scope.set`、`scope.clear`、`scope.pick` |
+| 聚焦与隐藏 | `scope.get`、`scope.set`、`scope.clear`、`scope.pick`、`scope.toggle` |
 | 事件 | `events.subscribe`、`events.wait` |
 | 集成 | `integration.install`、`integration.uninstall` |
 | 插件 | `plugin.link`、`plugin.list`、`plugin.unlink`、`plugin.enable`、`plugin.disable`、`plugin.action.list`、`plugin.action.invoke`、`plugin.log.list`、`plugin.pane.open`、`plugin.pane.focus`、`plugin.pane.close` |
@@ -432,9 +432,19 @@ source 不匹配时,活动视图保持不变。set 和 clear 响应使用
 {"id":"scope_pick","method":"scope.pick","params":{"mode":"hide"}}
 ```
 
-`mode` 为 `focus` (默认) 或 `hide`，只决定 `space` 切换哪种标记。请求只发送给前台客户端，
-并返回 `type: "ok"`；没有客户端连接时以 `no_client` 失败。客户端只从本地服务器读取范围并
-响应 `scope.pick`，远程服务器上的范围会被忽略。
+`mode` 为 `focus` (默认) 或 `hide`，只决定 `space` 切换哪种标记。
+
+`scope.toggle` 不带参数，在已连接的客户端中开启或关闭聚焦，与 `toggle_focus` 按键相同：
+
+```json
+{"id":"scope_toggle","method":"scope.toggle","params":{}}
+```
+
+两种请求都只发送给前台客户端；没有前台客户端时发送给最近活动的客户端，送达后返回
+`type: "ok"`。没有客户端连接时以 `no_client` 失败。客户端会响应任何已连接服务器发来的
+这两种请求，因此运行在已保存机器服务器上的插件也能打开选择器或切换聚焦。客户端所做的
+更改总是通过 `scope.set` 写入本地服务器；它只从本地服务器读取范围，远程服务器上的范围
+会被忽略。
 
 ## 插件 API
 

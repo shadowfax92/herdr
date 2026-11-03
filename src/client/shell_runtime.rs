@@ -101,50 +101,79 @@ fn is_local_scope_request(
     endpoint_id.is_local() && matches!(method, crate::api::schema::Method::ScopeSet(_))
 }
 
-/// The scope controls a server may send; see `route_endpoint_scope_control`.
-pub(super) enum EndpointScopeControl {
-    Projection(crate::scope::ScopeState),
-    Pick(crate::scope::ScopePickMode),
-}
-
-/// Applies a scope control when it comes from Local and drops it otherwise:
-/// focus and hide are the owner's, kept on their local server, and a remote
-/// server's scope (or picker request) belongs to whoever runs that server.
-/// Returns whether the shell needs a new frame.
+/// Applies one scope control to the shell and returns the input outcome to
+/// finish, or `None` when the control is dropped. A projection counts only from
+/// Local: focus and hide are the owner's and live on their local server, and a
+/// remote server's scope belongs to whoever runs it. Pick and toggle count from
+/// any endpoint, because a plugin menu runs on the active machine's server;
+/// they only open the picker or flip focus, and every resulting `scope.set`
+/// goes to Local (`request_scope_set`).
 pub(super) fn route_endpoint_scope_control(
     shell: &mut shell::ClientShellState,
     endpoint_id: &endpoint::ClientEndpointId,
-    control: EndpointScopeControl,
-) -> bool {
-    if !endpoint_id.is_local() {
-        debug!(endpoint = %endpoint_id.storage_key(), "ignoring a remote endpoint's scope control");
-        return false;
-    }
+    control: endpoint::ScopeControl,
+) -> Option<shell::ClientShellInput> {
+    let repaint = || shell::ClientShellInput {
+        repaint: true,
+        ..shell::ClientShellInput::default()
+    };
     match control {
-        EndpointScopeControl::Projection(scope) => shell.set_scope_projection(Some(scope)),
-        EndpointScopeControl::Pick(mode) => shell.open_scope_picker(mode),
+        endpoint::ScopeControl::Projection(projection) => {
+            if !endpoint_id.is_local() {
+                debug!(
+                    endpoint = %endpoint_id.storage_key(),
+                    "ignoring a remote endpoint's scope projection"
+                );
+                return None;
+            }
+            shell.set_scope_projection(Some(projection.scope));
+            Some(repaint())
+        }
+        endpoint::ScopeControl::Pick(mode) => {
+            shell.open_scope_picker(mode);
+            Some(repaint())
+        }
+        endpoint::ScopeControl::Toggle => Some(shell.toggle_scope_focus_from_endpoint()),
     }
-    true
 }
 
-/// The client loop's entry for scope controls: routes one, then repaints when the
-/// scope or the picker changed what the shell shows. A projection arrives on its
-/// own when only the scope changed, so nothing else would trigger that frame.
-pub(super) fn route_scope_control(
+/// The client loop's entry for scope controls. The outcome goes through the
+/// same finish as keyboard input: a toggle's `scope.set` and any jump into the
+/// new scope are dispatched, and a projection that arrived alone (only the
+/// scope changed) still gets its frame. Returns whether the client should exit.
+pub(super) fn finish_scope_control(
     state: &mut ClientState,
     endpoint_id: &endpoint::ClientEndpointId,
-    control: EndpointScopeControl,
-) {
-    let Some(shell) = state.shell.as_mut() else {
-        return;
+    control: endpoint::ScopeControl,
+    endpoints: &mut endpoint::EndpointRegistry,
+    pending_activation: &mut Option<endpoint::PendingEndpointActivation>,
+    endpoint_commands: &mut endpoint_commands::EndpointCommands,
+    prefix_input_source: &mut impl crate::platform::PrefixInputSource,
+    scheduled_activation: &mut Option<ClientLoopEvent>,
+) -> Result<bool, ClientError> {
+    let (outcome, frame) = {
+        let Some(shell) = state.shell.as_mut() else {
+            return Ok(false);
+        };
+        let Some(outcome) = route_endpoint_scope_control(shell, endpoint_id, control) else {
+            return Ok(false);
+        };
+        let frame = outcome
+            .repaint
+            .then(|| shell.compose(state.reported_size.0, state.reported_size.1))
+            .flatten();
+        (outcome, frame)
     };
-    if !route_endpoint_scope_control(shell, endpoint_id, control) {
-        return;
-    }
-    let frame = shell.compose(state.reported_size.0, state.reported_size.1);
-    if let Some(frame) = frame {
-        state.present_frame(frame);
-    }
+    finish_client_shell_input(
+        state,
+        outcome,
+        frame,
+        endpoints,
+        pending_activation,
+        endpoint_commands,
+        prefix_input_source,
+        scheduled_activation,
+    )
 }
 
 /// Follows the Local endpoint's `scope.projection` capability across (re)connects.
@@ -1006,10 +1035,11 @@ mod tests {
     }
 
     mod scope {
-        //! Focus and hide reach the shell only from Local, and the shell's
-        //! `scope.set` reaches Local even while another machine is active.
+        //! The scope projection counts only from Local; pick and toggle count
+        //! from any endpoint; and the shell's `scope.set` reaches Local even
+        //! while another machine is active.
         use super::*;
-        use crate::scope::{ScopeFocus, ScopeSetParams, ScopeState, ScopeTarget};
+        use crate::scope::{ScopeFocus, ScopePickMode, ScopeSetParams, ScopeState, ScopeTarget};
 
         #[derive(Clone)]
         struct Capture(std::sync::Arc<std::sync::Mutex<Vec<ClientMessage>>>);
@@ -1020,6 +1050,8 @@ mod tests {
                 Ok(())
             }
         }
+
+        type Sent = std::sync::Arc<std::sync::Mutex<Vec<ClientMessage>>>;
 
         fn remote() -> endpoint::ClientEndpointId {
             endpoint::ClientEndpointId::Ssh(
@@ -1037,58 +1069,26 @@ mod tests {
             }
         }
 
-        #[test]
-        fn a_local_projection_reaches_effective_scope_and_a_remote_one_does_not() {
-            let mut state = ClientState::test_new();
-            let shell = state.shell.as_mut().unwrap();
-            let fallback = shell.effective_scope().into_owned();
-
-            assert!(!route_endpoint_scope_control(
-                shell,
-                &remote(),
-                EndpointScopeControl::Projection(focused("studio:main")),
-            ));
-            assert_eq!(*shell.effective_scope(), fallback);
-
-            let local = focused("setup");
-            assert!(route_endpoint_scope_control(
-                shell,
-                &endpoint::ClientEndpointId::Local,
-                EndpointScopeControl::Projection(local.clone()),
-            ));
-            assert_eq!(*shell.effective_scope(), local);
-            assert!(!route_endpoint_scope_control(
-                shell,
-                &remote(),
-                EndpointScopeControl::Projection(ScopeState::default()),
-            ));
-            assert_eq!(*shell.effective_scope(), local);
-            // A remote picker request is dropped too.
-            assert!(!route_endpoint_scope_control(
-                shell,
-                &remote(),
-                EndpointScopeControl::Pick(crate::scope::ScopePickMode::Hide),
-            ));
-
-            // Only Local losing the capability drops the projection, which
-            // hands filtering back to the config's hidden workspaces.
-            sync_local_scope_capability(shell, &remote(), false);
-            sync_local_scope_capability(shell, &endpoint::ClientEndpointId::Local, true);
-            assert_eq!(*shell.effective_scope(), local);
-            sync_local_scope_capability(shell, &endpoint::ClientEndpointId::Local, false);
-            assert_eq!(*shell.effective_scope(), fallback);
+        fn projection(scope: ScopeState) -> endpoint::ScopeControl {
+            endpoint::ScopeControl::Projection(crate::protocol::endpoint::EndpointScopeProjection {
+                boot_id: "boot".into(),
+                revision: 1,
+                scope,
+            })
         }
 
-        #[test]
-        fn scope_set_rides_locals_lane_while_a_remote_is_active() {
+        /// A shell whose Local endpoint is online, viewing a remote machine:
+        /// the registry's active endpoint is the remote and Local's surface is
+        /// off. Returns what each endpoint's transport is sent.
+        fn viewing_a_remote() -> (ClientState, endpoint::EndpointRegistry, Sent, Sent) {
             let negotiation = || {
                 endpoint::EndpointNegotiation::new(
                     vec!["scope.set".into(), "workspace.focus".into()],
                     Vec::new(),
                 )
             };
-            let local_sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-            let remote_sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let local_sent = Sent::default();
+            let remote_sent = Sent::default();
             let mut endpoints =
                 endpoint::EndpointRegistry::new(Capture(local_sent.clone()), 1, negotiation());
             endpoints.insert(
@@ -1114,11 +1114,142 @@ mod tests {
                 &endpoint::ClientEndpointId::Local,
                 endpoint::ClientEndpointStatus::Online,
             );
+            (state, endpoints, local_sent, remote_sent)
+        }
+
+        /// The `scope.set` params of every request Local was sent.
+        fn scope_sets(sent: &Sent) -> Vec<ScopeSetParams> {
+            sent.lock()
+                .unwrap()
+                .iter()
+                .map(|message| {
+                    let ClientMessage::ClientShellEndpointRequest { boot_id, request } = message
+                    else {
+                        panic!("expected an endpoint request, got {message:?}");
+                    };
+                    assert_eq!(boot_id, "boot-v1");
+                    let request: crate::api::schema::Request =
+                        serde_json::from_str(request).unwrap();
+                    let crate::api::schema::Method::ScopeSet(params) = request.method else {
+                        panic!("expected scope.set, got {:?}", request.method);
+                    };
+                    params
+                })
+                .collect()
+        }
+
+        #[test]
+        fn a_local_projection_reaches_effective_scope_and_a_remote_one_does_not() {
+            let mut state = ClientState::test_new();
+            let shell = state.shell.as_mut().unwrap();
+            let fallback = shell.effective_scope().into_owned();
+
+            assert!(route_endpoint_scope_control(
+                shell,
+                &remote(),
+                projection(focused("studio:main"))
+            )
+            .is_none());
+            assert_eq!(*shell.effective_scope(), fallback);
+
+            let local = focused("setup");
+            let outcome = route_endpoint_scope_control(
+                shell,
+                &endpoint::ClientEndpointId::Local,
+                projection(local.clone()),
+            )
+            .expect("Local projection applies");
+            assert!(outcome.repaint && outcome.actions.is_empty());
+            assert_eq!(*shell.effective_scope(), local);
+            assert!(route_endpoint_scope_control(
+                shell,
+                &remote(),
+                projection(ScopeState::default())
+            )
+            .is_none());
+            assert_eq!(*shell.effective_scope(), local);
+
+            // Only Local losing the capability drops the projection, which
+            // hands filtering back to the config's hidden workspaces.
+            sync_local_scope_capability(shell, &remote(), false);
+            sync_local_scope_capability(shell, &endpoint::ClientEndpointId::Local, true);
+            assert_eq!(*shell.effective_scope(), local);
+            sync_local_scope_capability(shell, &endpoint::ClientEndpointId::Local, false);
+            assert_eq!(*shell.effective_scope(), fallback);
+        }
+
+        #[test]
+        fn a_remote_pick_opens_the_picker() {
+            let mut state = ClientState::test_new();
+            let shell = state.shell.as_mut().unwrap();
+            assert_eq!(shell.scope_picker_mode(), None);
+            let outcome = route_endpoint_scope_control(
+                shell,
+                &remote(),
+                endpoint::ScopeControl::Pick(ScopePickMode::Hide),
+            )
+            .expect("a pick from any endpoint applies");
+            assert!(outcome.repaint);
+            assert_eq!(shell.scope_picker_mode(), Some(ScopePickMode::Hide));
+            // A second pick, from Local, only switches the open picker's mode.
+            route_endpoint_scope_control(
+                shell,
+                &endpoint::ClientEndpointId::Local,
+                endpoint::ScopeControl::Pick(ScopePickMode::Focus),
+            );
+            assert_eq!(shell.scope_picker_mode(), Some(ScopePickMode::Focus));
+        }
+
+        #[test]
+        fn a_remote_toggle_flips_focus_on_local() {
+            let (mut state, mut endpoints, local_sent, remote_sent) = viewing_a_remote();
+            let shell = state.shell.as_mut().unwrap();
+            route_endpoint_scope_control(
+                shell,
+                &endpoint::ClientEndpointId::Local,
+                projection(focused("setup")),
+            );
+            let outcome =
+                route_endpoint_scope_control(shell, &remote(), endpoint::ScopeControl::Toggle)
+                    .expect("a toggle from any endpoint applies");
+            assert!(outcome.repaint);
+
+            let mut endpoint_commands = endpoint_commands::EndpointCommands::default();
+            dispatch_client_shell_actions(
+                outcome.actions,
+                &mut endpoint_commands,
+                &mut endpoints,
+                state.shell.as_mut(),
+                &mut Vec::new(),
+                &mut None,
+            )
+            .unwrap();
+
+            // Focus was on, so the toggle asks Local to switch it off. The
+            // scope itself changes only when Local projects it back.
+            assert_eq!(
+                scope_sets(&local_sent),
+                [ScopeSetParams {
+                    focus_active: Some(false),
+                    ..ScopeSetParams::default()
+                }]
+            );
+            assert!(remote_sent.lock().unwrap().is_empty());
+            assert!(state.shell.as_ref().unwrap().effective_scope().focus.active);
+        }
+
+        #[test]
+        fn scope_set_rides_locals_lane_while_a_remote_is_active() {
+            let (mut state, mut endpoints, local_sent, remote_sent) = viewing_a_remote();
             let params = ScopeSetParams {
                 focus_active: Some(false),
                 ..ScopeSetParams::default()
             };
-            shell.request_scope_set(params.clone());
+            state
+                .shell
+                .as_mut()
+                .unwrap()
+                .request_scope_set(params.clone());
 
             // Any other Local request stays gated while Local is not active.
             let other = shell::ClientShellAction::Endpoint {
@@ -1144,14 +1275,7 @@ mod tests {
             )
             .unwrap();
 
-            let sent = local_sent.lock().unwrap();
-            assert_eq!(sent.len(), 1, "{sent:?}");
-            let ClientMessage::ClientShellEndpointRequest { boot_id, request } = &sent[0] else {
-                panic!("expected an endpoint request, got {:?}", sent[0]);
-            };
-            assert_eq!(boot_id, "boot-v1");
-            let request: crate::api::schema::Request = serde_json::from_str(request).unwrap();
-            assert_eq!(request.method, crate::api::schema::Method::ScopeSet(params));
+            assert_eq!(scope_sets(&local_sent), [params]);
             assert!(remote_sent.lock().unwrap().is_empty());
             assert!(state
                 .shell
