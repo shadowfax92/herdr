@@ -5,7 +5,15 @@ impl ClientContextMenuOverlay {
         use ClientContextMenuAction as Action;
 
         let item = |label, action| ClientContextMenuItem { label, action };
-        match &self.target {
+        // Every workspace variant ends with the scope entries, so they sit in
+        // the same place whatever the workspace is.
+        let scope_items = || {
+            [
+                item("Focus", Action::FocusScope),
+                item("Hide", Action::HideScope),
+            ]
+        };
+        let mut items = match &self.target {
             ClientContextMenuTarget::Workspace { is_git: false, .. } => {
                 vec![item("Rename", Action::Rename), item("Close", Action::Close)]
             }
@@ -45,11 +53,13 @@ impl ClientContextMenuOverlay {
                     Action::ToggleGroup,
                 ),
             ],
-            ClientContextMenuTarget::Tab { .. } => vec![
-                item("New tab", Action::NewTab),
-                item("Rename", Action::Rename),
-                item("Close", Action::Close),
-            ],
+            ClientContextMenuTarget::Tab { .. } => {
+                return vec![
+                    item("New tab", Action::NewTab),
+                    item("Rename", Action::Rename),
+                    item("Close", Action::Close),
+                ]
+            }
             ClientContextMenuTarget::Pane {
                 source_pane_id,
                 has_manual_label,
@@ -77,9 +87,11 @@ impl ClientContextMenuOverlay {
                     ),
                     item("Close pane", Action::ClosePane),
                 ]);
-                items
+                return items;
             }
-        }
+        };
+        items.extend(scope_items());
+        items
     }
 }
 
@@ -260,6 +272,16 @@ impl ClientShellState {
             ClientContextMenuAction::RemoveWorktree => {
                 self.begin_worktree_action_for(KeybindAction::RemoveWorktree, workspace_id, outcome)
             }
+            ClientContextMenuAction::FocusScope => self.add_workspace_to_scope(
+                &workspace_id,
+                crate::scope::ScopePickMode::Focus,
+                outcome,
+            ),
+            ClientContextMenuAction::HideScope => self.add_workspace_to_scope(
+                &workspace_id,
+                crate::scope::ScopePickMode::Hide,
+                outcome,
+            ),
             ClientContextMenuAction::ToggleGroup => {
                 let key = self.snapshot.as_deref().and_then(|snapshot| {
                     snapshot

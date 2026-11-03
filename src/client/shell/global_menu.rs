@@ -19,8 +19,14 @@ pub(super) fn global_menu_item_has_badge(
             && snapshot.integration_updates_available)
 }
 
+/// The sidebar menu's rows, shared by the desktop menu and the mobile
+/// switcher. `focus_active` is the scope's focus switch (`effective_scope`):
+/// the "focus on"/"focus off" row is labelled with the flip it performs.
+/// Renderers and `activate_global_menu_item` address rows by index into this
+/// one list, so every caller must pass the same arguments.
 pub(super) fn global_menu_items(
     snapshot: &ClientShellSnapshot,
+    focus_active: bool,
 ) -> Vec<(&'static str, ClientGlobalMenuAction)> {
     let mut items = vec![
         (
@@ -46,6 +52,24 @@ pub(super) fn global_menu_items(
             ClientGlobalMenuAction::WhatsNew,
         ));
     }
+    items.extend([
+        (
+            "focus…",
+            ClientGlobalMenuAction::Binding(crate::input::KeybindAction::FocusPicker),
+        ),
+        (
+            "hide…",
+            ClientGlobalMenuAction::Binding(crate::input::KeybindAction::HidePicker),
+        ),
+        (
+            if focus_active {
+                "focus off"
+            } else {
+                "focus on"
+            },
+            ClientGlobalMenuAction::Binding(crate::input::KeybindAction::ToggleFocus),
+        ),
+    ]);
     items.push((
         "detach",
         ClientGlobalMenuAction::Binding(crate::input::KeybindAction::Detach),
@@ -64,11 +88,16 @@ impl ClientShellState {
         }
     }
 
+    pub(super) fn global_menu_focus_active(&self) -> bool {
+        self.effective_scope().focus.active
+    }
+
     pub(super) fn move_global_menu_selection(&mut self, delta: isize) {
+        let focus_active = self.global_menu_focus_active();
         let item_count = self
             .snapshot
             .as_deref()
-            .map(global_menu_items)
+            .map(|snapshot| global_menu_items(snapshot, focus_active))
             .map_or(0, |items| items.len());
         let Some(ClientShellOverlay::GlobalMenu(menu)) = self.overlay.as_mut() else {
             return;
@@ -82,8 +111,9 @@ impl ClientShellState {
         index: usize,
         outcome: &mut ClientShellInput,
     ) {
+        let focus_active = self.global_menu_focus_active();
         let Some(action) = self.snapshot.as_deref().and_then(|snapshot| {
-            global_menu_items(snapshot)
+            global_menu_items(snapshot, focus_active)
                 .get(index)
                 .map(|(_, action)| *action)
         }) else {

@@ -173,6 +173,22 @@ impl ClientShellState {
                     self.focus_next_attention_agent(outcome);
                     return;
                 }
+                // Focus and hide live on the Local server whichever machine is
+                // active, so these never reach the active endpoint's API.
+                if action == crate::input::KeybindAction::FocusPicker {
+                    self.open_scope_picker(crate::scope::ScopePickMode::Focus);
+                    outcome.repaint = true;
+                    return;
+                }
+                if action == crate::input::KeybindAction::HidePicker {
+                    self.open_scope_picker(crate::scope::ScopePickMode::Hide);
+                    outcome.repaint = true;
+                    return;
+                }
+                if action == crate::input::KeybindAction::ToggleFocus {
+                    self.toggle_scope_focus(outcome);
+                    return;
+                }
                 if self.handle_endpoint_navigation(action, outcome) {
                     return;
                 }

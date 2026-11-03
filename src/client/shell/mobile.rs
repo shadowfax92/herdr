@@ -368,6 +368,7 @@ pub(super) fn render_mobile_switcher(
     active_endpoint_id: &ClientEndpointId,
     config: &ClientShellConfig,
     selected_workspace_id: Option<&WorkspaceNavigationTarget>,
+    focus_active: bool,
     scroll: &mut usize,
     reveal_workspace: &mut bool,
     hits: &mut ShellHitMap,
@@ -442,6 +443,7 @@ pub(super) fn render_mobile_switcher(
         active_endpoint_id,
         config,
         selected_workspace_id,
+        focus_active,
         viewport.width.saturating_sub(1),
     );
     let total_rows = items.iter().map(|item| item.lines.len()).sum::<usize>();
@@ -578,6 +580,7 @@ fn mobile_items(
     active_endpoint_id: &ClientEndpointId,
     config: &ClientShellConfig,
     selected_workspace_id: Option<&WorkspaceNavigationTarget>,
+    focus_active: bool,
     content_width: u16,
 ) -> Vec<MobileItem> {
     let palette = &config.palette;
@@ -927,7 +930,7 @@ fn mobile_items(
     }
 
     items.push(MobileItem::section("menu", palette));
-    for (index, (label, _)) in super::global_menu::global_menu_items(snapshot)
+    for (index, (label, _)) in super::global_menu::global_menu_items(snapshot, focus_active)
         .into_iter()
         .enumerate()
     {
@@ -1072,8 +1075,9 @@ impl ClientShellState {
                 );
             }
             Some(ClientMobileTarget::Menu(index)) => {
+                let focus_active = self.global_menu_focus_active();
                 let actionable = self.snapshot.as_deref().is_some_and(|snapshot| {
-                    super::global_menu::global_menu_items(snapshot)
+                    super::global_menu::global_menu_items(snapshot, focus_active)
                         .get(index)
                         .is_some_and(|(_, action)| {
                             *action != super::global_menu::ClientGlobalMenuAction::WhatsNew

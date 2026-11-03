@@ -638,6 +638,24 @@
           "description": "Focus the next agent in the agent panel, on any machine, whose status is listed in ui.sidebar.agents.attention. Unset by default."
         },
         {
+          "key": "keys.focus_picker",
+          "type": "keybinding",
+          "default": "unset",
+          "description": "Open the focus and hide picker with space marking focus: pick workspaces or tabs, on any machine, to show alone. Unset by default."
+        },
+        {
+          "key": "keys.hide_picker",
+          "type": "keybinding",
+          "default": "unset",
+          "description": "Open the focus and hide picker with space marking hide: pick workspaces or tabs, on any machine, to leave the panels and stop notifying. Unset by default."
+        },
+        {
+          "key": "keys.toggle_focus",
+          "type": "keybinding",
+          "default": "unset",
+          "description": "Switch focus on or off without changing what is focused. Unset by default."
+        },
+        {
           "key": "keys.focus_agent",
           "type": "keybinding",
           "default": "unset",

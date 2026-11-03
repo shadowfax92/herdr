@@ -41,8 +41,10 @@ impl ClientShellState {
     fn scope_changed(&mut self) {}
 
     /// Opens the focus/hide picker, from a keybind, a menu, or a plugin's
-    /// `scope.pick`.
-    pub(crate) fn open_scope_picker(&mut self, _mode: ScopePickMode) {}
+    /// `scope.pick` (`super::scope_picker` owns the overlay).
+    pub(crate) fn open_scope_picker(&mut self, mode: ScopePickMode) {
+        self.open_scope_picker_overlay(mode);
+    }
 
     /// Sends `scope.set` to the Local server, even while a remote machine is
     /// active: the scope lives only there. The new scope arrives back as a

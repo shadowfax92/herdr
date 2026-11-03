@@ -1383,6 +1383,56 @@ impl ClientShellState {
                 return;
             }
         }
+        if matches!(self.overlay, Some(ClientShellOverlay::ScopePicker(_))) {
+            let row_hit = self
+                .hits
+                .scope_picker_rows
+                .iter()
+                .find(|(rect, _)| super::contains(*rect, point))
+                .map(|(_, key)| key.clone());
+            match mouse.kind {
+                MouseEventKind::Moved => {
+                    if let (Some(key), Some(ClientShellOverlay::ScopePicker(picker))) =
+                        (row_hit, self.overlay.as_mut())
+                    {
+                        picker.selected = Some(key);
+                        outcome.repaint = true;
+                    }
+                }
+                MouseEventKind::Down(MouseButton::Left) => {
+                    let control = self
+                        .hits
+                        .scope_picker_controls
+                        .iter()
+                        .find(|(rect, _)| super::contains(*rect, point))
+                        .map(|(_, control)| *control);
+                    if let Some(control) = control {
+                        self.activate_scope_picker_control(control, outcome);
+                    } else if let Some(key) = row_hit {
+                        // A click marks the row with the picker's mode, like space.
+                        let mode = match self.overlay.as_ref() {
+                            Some(ClientShellOverlay::ScopePicker(picker)) => picker.mode,
+                            _ => return,
+                        };
+                        self.toggle_scope_picker_row(Some(&key), mode);
+                        outcome.repaint = true;
+                    } else if !super::contains(self.hits.scope_picker_popup, point) {
+                        self.overlay = None;
+                        outcome.repaint = true;
+                    }
+                }
+                MouseEventKind::ScrollUp => {
+                    self.move_scope_picker_selection(-3);
+                    outcome.repaint = true;
+                }
+                MouseEventKind::ScrollDown => {
+                    self.move_scope_picker_selection(3);
+                    outcome.repaint = true;
+                }
+                _ => {}
+            }
+            return;
+        }
         if matches!(self.overlay, Some(ClientShellOverlay::GlobalMenu(_))) {
             let row_hit = self
                 .hits

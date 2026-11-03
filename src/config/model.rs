@@ -389,6 +389,12 @@ pub struct KeysConfig {
     /// Focus the next agent in the agent panel, on any machine, whose status
     /// is listed in `ui.sidebar.agents.attention`. Unset by default.
     pub next_attention_agent: BindingConfig,
+    /// Open the focus/hide picker in focus mode. Unset by default.
+    pub focus_picker: BindingConfig,
+    /// Open the focus/hide picker in hide mode. Unset by default.
+    pub hide_picker: BindingConfig,
+    /// Switch focus on or off, keeping the focused targets. Unset by default.
+    pub toggle_focus: BindingConfig,
     /// Focus an agent by index 1-9. Unset by default.
     pub focus_agent: BindingConfig,
     /// Local-client shortcut that sends a clipboard image to a remote Herdr session. Default: "ctrl+v".
@@ -530,6 +536,12 @@ pub(crate) struct KeysConfigOverlay {
     next_agent: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     next_attention_agent: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    focus_picker: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hide_picker: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    toggle_focus: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     focus_agent: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -679,6 +691,9 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(previous_agent);
         apply_field!(next_agent);
         apply_field!(next_attention_agent);
+        apply_field!(focus_picker);
+        apply_field!(hide_picker);
+        apply_field!(toggle_focus);
         apply_field!(focus_agent);
         apply_field!(remote_image_paste);
         apply_field!(new_tab);
@@ -786,6 +801,9 @@ impl KeysConfig {
         copy_effective_action_field!(previous_agent, keybinds.previous_agent);
         copy_effective_action_field!(next_agent, keybinds.next_agent);
         copy_effective_action_field!(next_attention_agent, keybinds.next_attention_agent);
+        copy_effective_action_field!(focus_picker, keybinds.focus_picker);
+        copy_effective_action_field!(hide_picker, keybinds.hide_picker);
+        copy_effective_action_field!(toggle_focus, keybinds.toggle_focus);
         copy_effective_indexed_field!(focus_agent, keybinds.focus_agent);
         copy_user_field!(remote_image_paste);
         copy_effective_action_field!(new_tab, keybinds.new_tab);
@@ -1162,6 +1180,9 @@ impl Default for KeysConfig {
             previous_agent: BindingConfig::empty(),
             next_agent: BindingConfig::empty(),
             next_attention_agent: BindingConfig::empty(),
+            focus_picker: BindingConfig::empty(),
+            hide_picker: BindingConfig::empty(),
+            toggle_focus: BindingConfig::empty(),
             focus_agent: BindingConfig::empty(),
             remote_image_paste: "ctrl+v".into(),
             new_tab: BindingConfig::one("prefix+c"),

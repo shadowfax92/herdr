@@ -391,6 +391,9 @@ pub struct Keybinds {
     pub previous_agent: ActionKeybinds,
     pub next_agent: ActionKeybinds,
     pub next_attention_agent: ActionKeybinds,
+    pub focus_picker: ActionKeybinds,
+    pub hide_picker: ActionKeybinds,
+    pub toggle_focus: ActionKeybinds,
     pub focus_agent: Vec<IndexedKeybind>,
     pub new_tab: ActionKeybinds,
     pub rename_tab: ActionKeybinds,
@@ -580,6 +583,9 @@ impl Config {
             previous_agent: empty_action!(),
             next_agent: empty_action!(),
             next_attention_agent: empty_action!(),
+            focus_picker: empty_action!(),
+            hide_picker: empty_action!(),
+            toggle_focus: empty_action!(),
             focus_agent: Vec::new(),
             new_tab: empty_action!(),
             rename_tab: empty_action!(),
@@ -717,6 +723,9 @@ impl Config {
             apply_action!(keybinds.previous_agent, previous_agent, source);
             apply_action!(keybinds.next_agent, next_agent, source);
             apply_action!(keybinds.next_attention_agent, next_attention_agent, source);
+            apply_action!(keybinds.focus_picker, focus_picker, source);
+            apply_action!(keybinds.hide_picker, hide_picker, source);
+            apply_action!(keybinds.toggle_focus, toggle_focus, source);
             apply_indexed!(
                 keybinds.focus_agent,
                 focus_agent,
@@ -1744,6 +1753,49 @@ next_tab = "prefix+n"
             vec![BindingTrigger::Prefix((
                 KeyCode::Char('g'),
                 KeyModifiers::empty()
+            ))]
+        );
+    }
+
+    #[test]
+    fn scope_keybinds_are_unset_by_default_and_parse_when_set() {
+        let kb = Config::default().keybinds();
+        assert!(kb.focus_picker.bindings.is_empty());
+        assert!(kb.hide_picker.bindings.is_empty());
+        assert!(kb.toggle_focus.bindings.is_empty());
+
+        let config: Config = toml::from_str(
+            r#"
+[keys]
+focus_picker = "prefix+alt+f"
+hide_picker = ["prefix+alt+h", "ctrl+alt+h"]
+toggle_focus = "alt+backslash"
+"#,
+        )
+        .unwrap();
+        let kb = config.keybinds();
+        assert_eq!(
+            binding_triggers(&kb.focus_picker),
+            vec![BindingTrigger::Prefix((
+                KeyCode::Char('f'),
+                KeyModifiers::ALT
+            ))]
+        );
+        assert_eq!(
+            binding_triggers(&kb.hide_picker),
+            vec![
+                BindingTrigger::Prefix((KeyCode::Char('h'), KeyModifiers::ALT)),
+                BindingTrigger::Direct((
+                    KeyCode::Char('h'),
+                    KeyModifiers::CONTROL | KeyModifiers::ALT
+                )),
+            ]
+        );
+        assert_eq!(
+            binding_triggers(&kb.toggle_focus),
+            vec![BindingTrigger::Direct((
+                KeyCode::Char('\\'),
+                KeyModifiers::ALT
             ))]
         );
     }

@@ -30,6 +30,10 @@ pub(crate) struct OverlayRender {
     pub(crate) release_notes_scrollbar: Rect,
     pub(crate) release_notes_scroll_metrics: Option<crate::pane::ScrollMetrics>,
     pub(crate) release_notes_max_scroll: usize,
+    pub(crate) scope_picker_popup: Rect,
+    pub(crate) scope_picker_rows: Vec<(Rect, super::super::scope_picker::ScopePickerRowKey)>,
+    pub(crate) scope_picker_controls: Vec<(Rect, super::super::scope_picker::ScopePickerControl)>,
+    pub(crate) scope_picker_viewport_rows: usize,
     pub(crate) cursor: Option<crate::protocol::CursorState>,
 }
 
@@ -47,6 +51,7 @@ pub(crate) fn render_client_overlay(
         ClientShellOverlay::Navigator(_)
             | ClientShellOverlay::ContextMenu(_)
             | ClientShellOverlay::GlobalMenu(_)
+            | ClientShellOverlay::ScopePicker(_)
     ) {
         for y in b.area.y..b.area.bottom() {
             for x in b.area.x..b.area.right() {
@@ -79,6 +84,7 @@ pub(crate) fn render_client_overlay(
         ClientShellOverlay::WorktreeRemove(v) => {
             worktree_overlays::render_worktree_remove_overlay(b, v, p)
         }
+        ClientShellOverlay::ScopePicker(v) => render_scope_picker_overlay(b, v, endpoints, p),
         ClientShellOverlay::ContextMenu(_) | ClientShellOverlay::GlobalMenu(_) => None,
     }
 }
@@ -88,9 +94,10 @@ pub(crate) fn render_global_menu(
     launcher: Rect,
     menu: &ClientGlobalMenuOverlay,
     snapshot: &ClientShellSnapshot,
+    focus_active: bool,
     palette: &Palette,
 ) -> Option<OverlayRender> {
-    let items = super::super::global_menu::global_menu_items(snapshot);
+    let items = super::super::global_menu::global_menu_items(snapshot, focus_active);
     let screen = buffer.area;
     let width = items
         .iter()
@@ -1046,6 +1053,244 @@ fn render_navigator_overlay(
         worktree_search: Rect::default(),
         worktree_rows: Vec::new(),
         cursor,
+        ..OverlayRender::default()
+    })
+}
+
+/// The focus/hide picker (`scope_picker`): every machine, workspace and tab
+/// with its mark, previewing the staged scope. Rows the staged scope would not
+/// show are dimmed; nothing reaches the server until apply.
+fn render_scope_picker_overlay(
+    b: &mut Buffer,
+    v: &super::super::scope_picker::ClientScopePickerOverlay,
+    endpoints: &[ClientShellEndpoint],
+    p: &Palette,
+) -> Option<OverlayRender> {
+    use super::super::scope_picker::{
+        scope_picker_marks, scope_picker_rows, scope_picker_selected_index, unlisted_scope_targets,
+        ScopePickerControl,
+    };
+    use crate::scope::ScopePickMode;
+
+    let a = b.area;
+    let width = a.width.saturating_sub(4).min(80);
+    let height = a.height.saturating_sub(2).min(36);
+    if width < 24 || height < 10 {
+        return None;
+    }
+    let q = Rect::new(
+        a.x + (a.width - width) / 2,
+        a.y + (a.height - height) / 2,
+        width,
+        height,
+    )
+    .intersection(a);
+    let i = panel(b, q, p.accent, p.panel_bg)?;
+    let base = Style::default().bg(p.panel_bg);
+    let selected_style = Style::default()
+        .fg(contrast(p))
+        .bg(p.accent)
+        .add_modifier(Modifier::BOLD);
+    put_text(
+        b,
+        q.x + 2,
+        q.y,
+        q.width.saturating_sub(4),
+        match v.mode {
+            ScopePickMode::Focus => " Focus ",
+            ScopePickMode::Hide => " Hide ",
+        },
+        base.fg(p.accent),
+    );
+
+    // Header: which mark space toggles (click to switch), and the focus switch.
+    let mut controls = Vec::new();
+    put_text(b, i.x, i.y, i.width, " space", base.fg(p.overlay0));
+    let mut x = i.x + display_width(" space ");
+    for (mode, label) in [
+        (ScopePickMode::Focus, " focus "),
+        (ScopePickMode::Hide, " hide "),
+    ] {
+        let w = display_width(label);
+        if x + w > i.right() {
+            break;
+        }
+        let rect = Rect::new(x, i.y, w, 1);
+        let style = if v.mode == mode {
+            selected_style
+        } else {
+            base.fg(p.text)
+        };
+        b.set_style(rect, style);
+        put_text(b, x, i.y, w, label, style);
+        controls.push((rect, ScopePickerControl::Mode(mode)));
+        x += w + 1;
+    }
+    let (focus_state, focus_color) = if v.staged.focus.active {
+        ("focus on ", p.green)
+    } else {
+        ("focus off ", p.overlay0)
+    };
+    put_right_text(
+        b,
+        i,
+        i.y,
+        focus_state,
+        base.fg(focus_color).add_modifier(Modifier::BOLD),
+    );
+    put_text(
+        b,
+        i.x,
+        i.y + 1,
+        i.width,
+        &"─".repeat(i.width as usize),
+        base.fg(p.surface1),
+    );
+
+    let body = Rect::new(i.x, i.y + 2, i.width, i.height.saturating_sub(5));
+    let rows = scope_picker_rows(endpoints, &v.staged);
+    let selected = scope_picker_selected_index(&rows, v.selected.as_ref());
+    let viewport = usize::from(body.height).max(1);
+    let scroll = v
+        .scroll
+        .clamp(selected.saturating_sub(viewport - 1), selected)
+        .min(rows.len().saturating_sub(viewport));
+    let mut row_hits = Vec::new();
+    for (ix, row) in rows.iter().enumerate().skip(scroll).take(viewport) {
+        let rect = Rect::new(body.x, body.y + (ix - scroll) as u16, body.width, 1);
+        row_hits.push((rect, row.key.clone()));
+        let marks = scope_picker_marks(&v.staged, row);
+        let is_selected = ix == selected;
+        let style = if is_selected {
+            selected_style
+        } else if !row.shown {
+            base.fg(p.overlay0)
+        } else if row.depth == 0 {
+            base.fg(p.subtext0).add_modifier(Modifier::BOLD)
+        } else {
+            base.fg(p.text)
+        };
+        b.set_style(rect, style);
+        let mark = if marks.focus {
+            "◉"
+        } else if marks.hidden {
+            "⊘"
+        } else {
+            "·"
+        };
+        let indent = u16::from(row.depth) * 2 + 1;
+        put_text(
+            b,
+            rect.x,
+            rect.y,
+            rect.width,
+            &format!(
+                "{:width$}{mark} {}",
+                "",
+                row.label,
+                width = usize::from(indent)
+            ),
+            style,
+        );
+        if !is_selected && (marks.focus || marks.hidden) {
+            put_text(
+                b,
+                rect.x + indent,
+                rect.y,
+                rect.width.saturating_sub(indent).min(1),
+                mark,
+                style.fg(if marks.focus { p.green } else { p.red }),
+            );
+        }
+        let mut meta = Vec::new();
+        let machine_state;
+        if row.depth == 0 && row.endpoint_status != ClientEndpointStatus::Online {
+            let (glyph, state, _) = endpoint_status_presentation(row.endpoint_status, p);
+            machine_state = format!("{glyph} {state}");
+            meta.push(machine_state.as_str());
+        }
+        if marks.focus && marks.hidden {
+            meta.push("also hidden");
+        }
+        if marks.config {
+            meta.push("(config)");
+        }
+        if !meta.is_empty() {
+            let meta_style = if is_selected {
+                style
+            } else {
+                style.fg(p.overlay0)
+            };
+            put_right_text(b, rect, rect.y, &format!("{} ", meta.join(" ")), meta_style);
+        }
+    }
+
+    let unlisted = unlisted_scope_targets(&v.staged, &rows);
+    if unlisted > 0 {
+        put_text(
+            b,
+            i.x,
+            i.bottom() - 3,
+            i.width,
+            // Offline machines' targets and labels that match nothing.
+            &if unlisted == 1 {
+                " 1 unlisted target is kept on apply".to_owned()
+            } else {
+                format!(" {unlisted} unlisted targets are kept on apply")
+            },
+            base.fg(p.overlay0),
+        );
+    }
+    put_text(
+        b,
+        i.x,
+        i.bottom() - 2,
+        i.width,
+        " ↑↓/j/k move · space mark · f focus · x hide · tab mode · a on/off · c clear",
+        base.fg(p.overlay0),
+    );
+    let toggle_label = if v.staged.focus.active {
+        " a focus off "
+    } else {
+        " a focus on "
+    };
+    let labels = [
+        (toggle_label, ScopePickerControl::ToggleActive),
+        (" c clear ", ScopePickerControl::Clear),
+        (" ↵ apply ", ScopePickerControl::Apply),
+        (" esc cancel ", ScopePickerControl::Cancel),
+    ];
+    let widths = labels.map(|(label, _)| display_width(label));
+    let secondary = Style::default()
+        .fg(p.text)
+        .bg(p.surface0)
+        .add_modifier(Modifier::BOLD);
+    for (rect, (label, control)) in row(i, &widths, 1, i.height.saturating_sub(1))
+        .into_iter()
+        .zip(labels)
+    {
+        if rect.width == 0 {
+            continue;
+        }
+        button(
+            b,
+            rect,
+            label,
+            if control == ScopePickerControl::Apply {
+                selected_style
+            } else {
+                secondary
+            },
+        );
+        controls.push((rect, control));
+    }
+
+    Some(OverlayRender {
+        area: q,
+        scope_picker_popup: q,
+        scope_picker_rows: row_hits,
+        scope_picker_controls: controls,
+        scope_picker_viewport_rows: viewport,
         ..OverlayRender::default()
     })
 }

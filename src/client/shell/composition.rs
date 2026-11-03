@@ -609,6 +609,7 @@ impl ClientShellState {
         {
             let mut composed = frame.to_ratatui_buffer()?;
             occlusion.cover(composed.area);
+            let focus_active = self.global_menu_focus_active();
             super::mobile::render_mobile_switcher(
                 &mut composed,
                 Rect::new(0, 0, cols, rows),
@@ -619,6 +620,7 @@ impl ClientShellState {
                 self.navigate_workspace_id
                     .as_ref()
                     .filter(|_| valid_navigation_target),
+                focus_active,
                 &mut self.mobile_switcher_scroll,
                 &mut self.reveal_mobile_workspace,
                 &mut self.hits,
@@ -665,6 +667,7 @@ impl ClientShellState {
                     self.hits.global_launcher,
                     menu,
                     snapshot,
+                    self.global_menu_focus_active(),
                     &self.config.palette,
                 )?;
                 occlusion.cover(rendered.area);
@@ -706,6 +709,10 @@ impl ClientShellState {
                 self.hits.release_notes_scrollbar = rendered.release_notes_scrollbar;
                 self.hits.release_notes_scroll_metrics = rendered.release_notes_scroll_metrics;
                 self.hits.release_notes_max_scroll = rendered.release_notes_max_scroll;
+                self.hits.scope_picker_popup = rendered.scope_picker_popup;
+                self.hits.scope_picker_rows = rendered.scope_picker_rows;
+                self.hits.scope_picker_controls = rendered.scope_picker_controls;
+                self.hits.scope_picker_viewport_rows = rendered.scope_picker_viewport_rows;
                 rendered.cursor
             };
             frame.replace_from_ratatui_buffer_preserving_effects(&composed, cursor);

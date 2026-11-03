@@ -235,7 +235,8 @@ fn mobile_header_and_switcher_render_released_sections_and_stable_targets() {
     let opened = state.handle_raw_events(vec![click(state.hits.mobile_switch)]);
     assert!(opened.repaint);
     assert_eq!(state.mode, ClientShellMode::Navigate);
-    let switcher = state.compose(44, 20).expect("mobile switcher");
+    // Tall enough to show every section down to the menu's last row unscrolled.
+    let switcher = state.compose(44, 23).expect("mobile switcher");
     let switcher_text = switcher
         .cells
         .chunks(switcher.width as usize)

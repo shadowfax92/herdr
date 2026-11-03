@@ -419,8 +419,12 @@ fn global_menu_opens_from_sidebar_and_routes_client_actions() {
     assert!(help.actions.is_empty());
     assert!(matches!(state.overlay, Some(ClientShellOverlay::Help(_))));
 
+    let detach_index = super::super::global_menu::global_menu_items(&snapshot(), false)
+        .iter()
+        .position(|(label, _)| *label == "detach")
+        .expect("detach row");
     state.overlay = Some(ClientShellOverlay::GlobalMenu(ClientGlobalMenuOverlay {
-        highlighted: 3,
+        highlighted: detach_index,
     }));
     let detach = state.handle_input_bytes(b"\r");
     assert!(detach.detach);

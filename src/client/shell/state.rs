@@ -139,6 +139,12 @@ pub(super) struct ShellHitMap {
     pub(super) release_notes_scrollbar: Rect,
     pub(super) release_notes_scroll_metrics: Option<crate::pane::ScrollMetrics>,
     pub(super) release_notes_max_scroll: usize,
+    pub(super) scope_picker_popup: Rect,
+    pub(super) scope_picker_rows: Vec<(Rect, super::scope_picker::ScopePickerRowKey)>,
+    pub(super) scope_picker_controls: Vec<(Rect, super::scope_picker::ScopePickerControl)>,
+    /// Body height of the last rendered picker, so keyboard moves keep the
+    /// selection on screen.
+    pub(super) scope_picker_viewport_rows: usize,
 }
 
 #[derive(Clone)]
@@ -292,6 +298,7 @@ pub(super) enum ClientShellOverlayKind {
     ContextMenu,
     GlobalMenu,
     Settings,
+    ScopePicker,
 }
 
 #[derive(Debug)]
@@ -526,6 +533,10 @@ pub(super) enum ClientContextMenuAction {
     Zoom,
     ToggleRightClickPassthrough,
     ClosePane,
+    /// Adds the workspace to the focus targets and switches focus on.
+    FocusScope,
+    /// Adds the workspace to the hidden targets.
+    HideScope,
 }
 
 #[derive(Debug)]
@@ -595,6 +606,7 @@ pub(super) enum ClientShellOverlay {
     ContextMenu(ClientContextMenuOverlay),
     GlobalMenu(ClientGlobalMenuOverlay),
     Settings(ClientSettingsOverlay),
+    ScopePicker(super::scope_picker::ClientScopePickerOverlay),
 }
 
 impl ClientShellOverlay {
@@ -613,6 +625,7 @@ impl ClientShellOverlay {
             Self::ContextMenu(_) => ClientShellOverlayKind::ContextMenu,
             Self::GlobalMenu(_) => ClientShellOverlayKind::GlobalMenu,
             Self::Settings(_) => ClientShellOverlayKind::Settings,
+            Self::ScopePicker(_) => ClientShellOverlayKind::ScopePicker,
         }
     }
 }
@@ -969,6 +982,10 @@ pub(crate) struct ClientShellState {
     /// until one arrives or when Local cannot project one. Read it through
     /// `effective_scope`.
     pub(super) scope_projection: Option<crate::scope::ScopeState>,
+    /// Every `scope.set` the shell asked for, so tests can assert the payload
+    /// without a Local server (`submit_scope_set`).
+    #[cfg(test)]
+    pub(super) scope_set_requests: Vec<crate::scope::ScopeSetParams>,
 }
 
 pub(super) fn product_announcement_state(
@@ -1140,6 +1157,8 @@ impl ClientShellState {
             dismissed_product_announcement: None,
             landing_glow: Default::default(),
             scope_projection: None,
+            #[cfg(test)]
+            scope_set_requests: Vec::new(),
         }
     }
 

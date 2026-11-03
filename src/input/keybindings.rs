@@ -34,6 +34,12 @@ pub(crate) enum KeybindAction {
     PreviousAgent,
     NextAgent,
     NextAttentionAgent,
+    /// Open the focus/hide picker with `space` toggling focus.
+    FocusPicker,
+    /// Open the focus/hide picker with `space` toggling hide.
+    HidePicker,
+    /// Switch focus on or off without changing its targets.
+    ToggleFocus,
     NewTab,
     RenameTab,
     PreviousTab,
@@ -119,6 +125,9 @@ pub(crate) fn resolve_non_indexed_action(
             &keybinds.next_attention_agent,
             KeybindAction::NextAttentionAgent,
         ),
+        (&keybinds.focus_picker, KeybindAction::FocusPicker),
+        (&keybinds.hide_picker, KeybindAction::HidePicker),
+        (&keybinds.toggle_focus, KeybindAction::ToggleFocus),
         (&keybinds.new_tab, KeybindAction::NewTab),
         (&keybinds.rename_tab, KeybindAction::RenameTab),
         (&keybinds.previous_tab, KeybindAction::PreviousTab),
