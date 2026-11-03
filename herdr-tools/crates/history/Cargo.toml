@@ -10,8 +10,8 @@ publish.workspace = true
 name = "tools_history"
 path = "src/lib.rs"
 
-# The old plugin's own dependencies, already in Cargo.lock so the port needs no
-# lockfile change; drop any the port ends up not using.
+# herdr-talon's dependencies, minus toml_edit (only its dropped keybinding
+# installer used it).
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
@@ -23,7 +23,6 @@ regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
-toml_edit.workspace = true
 unicode-segmentation.workspace = true
 uuid.workspace = true
 

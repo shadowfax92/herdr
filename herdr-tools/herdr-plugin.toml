@@ -59,13 +59,15 @@ height = 24
 command = ["./bin/herdr-tools", "move", "picker"]
 
 # --- history ---
+# Formerly herdr-talon. `open` snapshots the focused pane and opens the `history`
+# popup, sized by config key `history` (default: this pane's 90% x 90%).
 
 [[actions]]
 id = "history"
 title = "Browse pane history"
 description = "Browse recent focused-pane output and copy a target or selection."
 contexts = ["pane"]
-command = ["./bin/herdr-tools", "history", "launch"]
+command = ["./bin/herdr-tools", "history", "open"]
 
 [[panes]]
 id = "history"

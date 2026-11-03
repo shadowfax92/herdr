@@ -1829,7 +1829,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "toml",
- "toml_edit",
  "tools-core",
  "unicode-segmentation",
  "uuid",
