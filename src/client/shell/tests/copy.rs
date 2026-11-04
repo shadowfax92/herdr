@@ -327,6 +327,7 @@ fn pasted_help_and_copy_queries_normalize_single_line_text() {
         offset_from_bottom: 0,
         max_offset_from_bottom: 0,
         entry_offset_from_bottom: 0,
+        app_pages_up: 0,
         selection: None,
         search_prompt: Some(ClientCopySearchPrompt {
             direction: crate::api::schema::PaneCopySearchDirection::Forward,
@@ -946,6 +947,151 @@ fn keyboard_selection_does_not_return_after_resize_or_screen_switch() {
             "movement must not resurrect the old anchor"
         );
     }
+}
+
+fn fullscreen_app_in_copy_mode() -> (ClientShellState, PaneSurfaceFrame) {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    let mut pane_surface = surface();
+    pane_surface.panes[0].alternate_screen_active = true;
+    pane_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+        offset_from_bottom: 0,
+        max_offset_from_bottom: 0,
+        viewport_rows: 2,
+    });
+    state.set_pane_surface(pane_surface.clone());
+    state.compose(106, 20).expect("composed frame");
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
+        &mut ClientShellInput::default(),
+    );
+    assert_eq!(state.mode, ClientShellMode::Copy);
+    (state, pane_surface)
+}
+
+/// The keys `outcome` sends to pane_1, as (code, kind) pairs.
+fn keys_sent_to_pane(
+    outcome: &ClientShellInput,
+) -> Vec<(
+    crate::protocol::ClientKeyCode,
+    crate::protocol::ClientKeyKind,
+)> {
+    outcome
+        .requests
+        .iter()
+        .flat_map(|request| match request {
+            ClientMessage::ClientShellPaneInput { pane_id, events } if pane_id == "pane_1" => {
+                events
+                    .iter()
+                    .filter_map(|event| match event {
+                        ClientPaneInputEvent::Key { code, kind, .. } => Some((code.clone(), *kind)),
+                        _ => None,
+                    })
+                    .collect()
+            }
+            _ => Vec::new(),
+        })
+        .collect()
+}
+
+fn press_key(
+    state: &mut ClientShellState,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+) -> ClientShellInput {
+    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+        code, modifiers,
+    ))])
+}
+
+#[test]
+fn copy_mode_pages_a_fullscreen_app_and_pages_it_back_on_exit() {
+    use crate::protocol::{ClientKeyCode, ClientKeyKind};
+    let stroke = |code: ClientKeyCode| {
+        vec![
+            (code.clone(), ClientKeyKind::Press),
+            (code, ClientKeyKind::Release),
+        ]
+    };
+
+    let (mut state, _) = fullscreen_app_in_copy_mode();
+    state.handle_input_bytes(b"v");
+    assert!(state.copy_mode.as_ref().unwrap().selection.is_some());
+
+    // Every page key reaches the app as one PgUp/PgDn keystroke, and Herdr
+    // scrolls nothing itself: the alternate screen has no Herdr scrollback.
+    for (code, modifiers, sent) in [
+        (
+            KeyCode::Char('u'),
+            KeyModifiers::CONTROL,
+            ClientKeyCode::PageUp,
+        ),
+        (
+            KeyCode::PageUp,
+            KeyModifiers::empty(),
+            ClientKeyCode::PageUp,
+        ),
+        (
+            KeyCode::Char('u'),
+            KeyModifiers::CONTROL,
+            ClientKeyCode::PageUp,
+        ),
+        (
+            KeyCode::Char('d'),
+            KeyModifiers::CONTROL,
+            ClientKeyCode::PageDown,
+        ),
+    ] {
+        let page = press_key(&mut state, code, modifiers);
+        assert_eq!(keys_sent_to_pane(&page), stroke(sent));
+        assert!(page.actions.is_empty(), "no Herdr scroll for {code:?}");
+        assert_eq!(state.mode, ClientShellMode::Copy);
+    }
+    let copy_mode = state.copy_mode.as_ref().unwrap();
+    assert_eq!(copy_mode.app_pages_up, 2);
+    assert!(
+        copy_mode.selection.is_none() && state.selection.is_none(),
+        "the app's content moved under the selection"
+    );
+
+    // Leaving copy mode pages the app back down to where it follows output.
+    let exit = press_key(&mut state, KeyCode::Char('q'), KeyModifiers::empty());
+    assert_eq!(state.mode, ClientShellMode::Terminal);
+    assert_eq!(
+        keys_sent_to_pane(&exit),
+        [
+            stroke(ClientKeyCode::PageDown),
+            stroke(ClientKeyCode::PageDown)
+        ]
+        .concat()
+    );
+
+    // Paging down past where copy mode started sends nothing extra on exit.
+    let (mut state, _) = fullscreen_app_in_copy_mode();
+    let page = press_key(&mut state, KeyCode::Char('f'), KeyModifiers::CONTROL);
+    assert_eq!(keys_sent_to_pane(&page), stroke(ClientKeyCode::PageDown));
+    let exit = press_key(&mut state, KeyCode::Esc, KeyModifiers::empty());
+    assert_eq!(state.mode, ClientShellMode::Terminal);
+    assert!(keys_sent_to_pane(&exit).is_empty());
+}
+
+#[test]
+fn copy_mode_sends_no_page_back_after_the_fullscreen_app_quits() {
+    let (mut state, mut pane_surface) = fullscreen_app_in_copy_mode();
+    press_key(&mut state, KeyCode::Char('u'), KeyModifiers::CONTROL);
+    assert_eq!(state.copy_mode.as_ref().unwrap().app_pages_up, 1);
+
+    // The app quit and the shell is back on the normal screen: a PgDn now
+    // would reach the shell.
+    pane_surface.surface_revision += 1;
+    pane_surface.panes[0].content_revision += 2;
+    pane_surface.panes[0].alternate_screen_active = false;
+    state.set_pane_surface(pane_surface);
+    state.compose(106, 20).expect("changed frame");
+
+    let exit = press_key(&mut state, KeyCode::Char('q'), KeyModifiers::empty());
+    assert_eq!(state.mode, ClientShellMode::Terminal);
+    assert!(keys_sent_to_pane(&exit).is_empty());
 }
 
 #[test]

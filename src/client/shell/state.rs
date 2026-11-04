@@ -858,6 +858,10 @@ pub(super) struct ClientCopyModeState {
     pub(super) offset_from_bottom: usize,
     pub(super) max_offset_from_bottom: usize,
     pub(super) entry_offset_from_bottom: usize,
+    /// Net pages copy mode scrolled a fullscreen app up (see
+    /// `page_fullscreen_app`), paged back down on exit so the app follows
+    /// its output again.
+    pub(super) app_pages_up: u32,
     pub(super) selection: Option<ClientCopySelection>,
     pub(super) search_prompt: Option<ClientCopySearchPrompt>,
     pub(super) search_query: String,

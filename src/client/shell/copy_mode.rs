@@ -99,6 +99,7 @@ impl ClientShellState {
             offset_from_bottom: metrics.offset_from_bottom,
             max_offset_from_bottom: metrics.max_offset_from_bottom,
             entry_offset_from_bottom: metrics.offset_from_bottom,
+            app_pages_up: 0,
             selection: None,
             search_prompt: None,
             search_query: String::new(),
@@ -569,6 +570,9 @@ impl ClientShellState {
     }
 
     fn move_copy_page(&mut self, direction: i8, half_page: bool, outcome: &mut ClientShellInput) {
+        if self.page_fullscreen_app(direction, outcome) {
+            return;
+        }
         let Some((_, height)) = self.copy_geometry() else {
             return;
         };
@@ -600,6 +604,38 @@ impl ClientShellState {
         self.push_pane_scroll_offset(pane_id, next_offset, outcome);
         self.sync_copy_selection();
         outcome.repaint = true;
+    }
+
+    /// Pages a fullscreen app instead of Herdr's scrollback. An app on the
+    /// alternate screen (Claude Code's fullscreen TUI, less, nvim) keeps its
+    /// history itself and Herdr keeps none for that screen, so copy mode's page
+    /// keys (ctrl+u/d, ctrl+b/f, PgUp/PgDn) reach it as PgUp/PgDn, the keys such
+    /// apps scroll on; the app decides how far a page goes. The app's content
+    /// moves under any selection, so the selection is dropped rather than
+    /// left covering other text. Returns false on the normal screen.
+    fn page_fullscreen_app(&mut self, direction: i8, outcome: &mut ClientShellInput) -> bool {
+        let Some(copy_mode) = self
+            .copy_mode
+            .as_mut()
+            .filter(|copy_mode| copy_mode.alternate_screen_active)
+        else {
+            return false;
+        };
+        copy_mode.app_pages_up = if direction < 0 {
+            copy_mode.app_pages_up.saturating_add(1)
+        } else {
+            copy_mode.app_pages_up.saturating_sub(1)
+        };
+        let pane_id = copy_mode.pane_id.clone();
+        self.clear_copy_mode_selection();
+        let code = if direction < 0 {
+            KeyCode::PageUp
+        } else {
+            KeyCode::PageDown
+        };
+        push_app_key_stroke(pane_id, code, 1, outcome);
+        outcome.repaint = true;
+        true
     }
 
     fn move_copy_history(&mut self, top: bool, outcome: &mut ClientShellInput) {
@@ -869,6 +905,18 @@ impl ClientShellState {
         }
         self.selection = None;
         self.selection_highlight_clear_deadline = None;
+        // Like the scroll restore below, for a fullscreen app paged up from
+        // copy mode: an app such as Claude Code stops following its output while
+        // scrolled up. Only while the pane is still on the alternate screen; once
+        // the app has quit, these keys would reach the shell instead.
+        if copy_mode.alternate_screen_active && copy_mode.app_pages_up > 0 {
+            push_app_key_stroke(
+                copy_mode.pane_id.clone(),
+                KeyCode::PageDown,
+                copy_mode.app_pages_up,
+                outcome,
+            );
+        }
         self.push_pane_scroll_offset(
             copy_mode.pane_id,
             copy_mode.entry_offset_from_bottom,
@@ -876,5 +924,23 @@ impl ClientShellState {
         );
         self.mode = ClientShellMode::Terminal;
         outcome.repaint = true;
+    }
+}
+
+/// Sends `count` full keystrokes of `code` to a pane, as if typed. Copy mode
+/// consumed the user's own key, so the press and its release are both
+/// synthesized here; panes without key-release reporting encode the release
+/// as nothing.
+fn push_app_key_stroke(pane_id: String, code: KeyCode, count: u32, outcome: &mut ClientShellInput) {
+    let press = crate::input::TerminalKey::new(code, KeyModifiers::empty());
+    let release = press
+        .clone()
+        .with_kind(crossterm::event::KeyEventKind::Release);
+    for _ in 0..count {
+        for key in [press.clone(), release.clone()] {
+            if let Some(event) = ClientPaneInputEvent::from_terminal_key(key) {
+                super::push_target_event(ClientInputTarget::Pane(pane_id.clone()), event, outcome);
+            }
+        }
     }
 }
