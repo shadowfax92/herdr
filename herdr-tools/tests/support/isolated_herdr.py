@@ -69,6 +69,12 @@ class IsolatedHerdr:
             HERDR_CONFIG_PATH=str(herdr_config),
             HERDR_SESSION=self.session,
             TERM="xterm-256color",
+            # Claude Code's updater installs into $XDG_DATA_HOME/claude/versions
+            # but relinks $HOME/.local/bin/claude, and HOME stays real here. A
+            # `claude` run in a test pane would point the owner's launcher into
+            # this temp root, and the rmtree on exit leaves it dangling, so every
+            # later `claude` launch on the machine fails with ENOENT.
+            DISABLE_AUTOUPDATER="1",
         )
         self.env = env
         self.plugin_config_dir = config_home / "herdr/plugins/config/shadowfax.tools"
