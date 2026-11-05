@@ -6,6 +6,7 @@ use super::{model::LoadedConfig, Config, CONFIG_PATH_ENV_VAR};
 
 const KNOWN_TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
     "advanced",
+    "copy_hints",
     "experimental",
     "keys",
     "onboarding",
@@ -345,6 +346,14 @@ fn load_live_config_from_str(content: &str) -> Result<LoadedConfig, Vec<String>>
     );
     load_live_section(
         table,
+        "copy_hints",
+        "copy hints config",
+        &mut diagnostics,
+        &mut invalid_sections,
+        |section| config.copy_hints = section,
+    );
+    load_live_section(
+        table,
         "advanced",
         "advanced config",
         &mut diagnostics,
@@ -377,6 +386,7 @@ fn load_live_config_from_str(content: &str) -> Result<LoadedConfig, Vec<String>>
     );
 
     diagnostics.extend(config.theme.diagnostics());
+    diagnostics.extend(crate::copy_hints::HintRules::compile(&config.copy_hints).1);
 
     Ok(LoadedConfig {
         config,
@@ -1038,6 +1048,83 @@ mouse_captur = true
         assert!(loaded.diagnostics[0].contains("invalid ui config"));
         assert!(!loaded.diagnostics[0].starts_with("unknown config key"));
         assert_eq!(loaded.invalid_sections, vec!["ui"]);
+    }
+
+    #[test]
+    fn live_reload_reports_bad_copy_hint_patterns_and_applies_every_other_setting() {
+        let loaded = load_live_config_from_str(
+            r#"
+[ui]
+copy_on_select = false
+
+[copy_hints]
+alphabett = "jk"
+
+[[copy_hints.patterns]]
+name = "broken"
+regex = "("
+
+[[copy_hints.patterns]]
+name = "number"
+regex = 5
+"#,
+        )
+        .unwrap();
+
+        assert!(loaded.invalid_sections.is_empty());
+        assert!(!loaded.config.ui.copy_on_select);
+        assert_eq!(
+            loaded.diagnostics,
+            vec![
+                "unknown config key copy_hints.alphabett; ignoring key",
+                "copy_hints.patterns[1].regex must be a string; skipping pattern",
+                "copy_hints.patterns[0] \"broken\" has an invalid regex (unclosed group); skipping pattern",
+            ]
+        );
+    }
+
+    #[test]
+    fn live_reload_keeps_a_mistyped_copy_hints_table_apart_from_ui() {
+        let loaded = load_live_config_from_str(
+            "[ui]\ncopy_on_select = false\n\n[copy_hints]\nalphabet = 5\n",
+        )
+        .unwrap();
+
+        assert_eq!(loaded.invalid_sections, vec!["copy_hints"]);
+        assert!(!loaded.config.ui.copy_on_select);
+        assert_eq!(loaded.diagnostics.len(), 1);
+        assert!(
+            loaded.diagnostics[0].starts_with("invalid copy hints config:")
+                && loaded.diagnostics[0].ends_with("; keeping current copy_hints settings"),
+            "{:?}",
+            loaded.diagnostics
+        );
+    }
+
+    #[test]
+    fn startup_keeps_the_rest_of_the_file_when_a_copy_hint_entry_is_mistyped() {
+        let _guard = crate::config::test_config_env_lock().lock().unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "herdr-config-copy-hint-entry-{}.toml",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "[ui]\ncopy_on_select = false\n\n[[copy_hints.patterns]]\nname = \"number\"\nregex = 5\n",
+        )
+        .unwrap();
+        std::env::set_var(CONFIG_PATH_ENV_VAR, &path);
+
+        let loaded = Config::load();
+
+        std::env::remove_var(CONFIG_PATH_ENV_VAR);
+        let _ = std::fs::remove_file(path);
+
+        assert!(!loaded.config.ui.copy_on_select, "no reset to defaults");
+        assert_eq!(
+            loaded.diagnostics,
+            vec!["copy_hints.patterns[0].regex must be a string; skipping pattern"]
+        );
     }
 
     #[test]

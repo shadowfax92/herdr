@@ -27,13 +27,15 @@
     not(test),
     expect(
         dead_code,
-        reason = "the client copy-hints sub-state, the only caller, lands in a later commit"
+        reason = "scan's only caller, the client copy-hints sub-state, lands in a later commit"
     )
 )]
 
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::ops::Range;
+
+use crate::config::CopyHintsConfig;
 
 /// History's default alphabet: 17 keys, home row first.
 pub(crate) const DEFAULT_HINT_ALPHABET: &str = "asdfwerzxcuioptbm";
@@ -70,7 +72,11 @@ pub(crate) const BUILTIN_HINT_PATTERNS: &[(&str, &str)] = &[
     ("diff", r"(?:---|\+\+\+) [ab]/(?<match>.*)"),
 ];
 
-/// Everything one scan needs: the label alphabet and the compiled patterns.
+/// `[copy_hints]` validated and compiled: everything one scan needs.
+///
+/// Never invalid. `compile` drops every entry that fails validation, with a
+/// diagnostic, and falls back to the default alphabet, so `scan` cannot fail
+/// and nothing at key time handles a config error.
 #[derive(Clone, Debug)]
 pub(crate) struct HintRules {
     alphabet: HintAlphabet,
@@ -113,6 +119,85 @@ pub(crate) struct HintOccurrence {
 }
 
 impl HintRules {
+    /// Validates and compiles a `[copy_hints]` table. It never fails: each
+    /// problem becomes one diagnostic and costs only the item it is in.
+    /// - `alphabet`: absent gives the default; an invalid one is reported and
+    ///   the default is used.
+    /// - `patterns`: an entry without a usable regex string, or whose regex
+    ///   does not compile, is reported and skipped; the others still apply.
+    /// - `enabled_builtin_patterns`: absent enables every built-in in table
+    ///   order. A list enables those names in its order; an unknown name is
+    ///   reported and skipped, and a repeated one is ignored.
+    ///
+    /// Startup diagnostics (`Config::collect_diagnostics`), live-reload
+    /// diagnostics and the client's rules all come from this one function.
+    pub(crate) fn compile(config: &CopyHintsConfig) -> (Self, Vec<String>) {
+        let mut diagnostics = Vec::new();
+        let alphabet = match config.alphabet.as_deref() {
+            None => HintAlphabet::default(),
+            Some(keys) => HintAlphabet::parse(keys).unwrap_or_else(|why| {
+                diagnostics.push(format!(
+                    "copy_hints.alphabet = {keys:?} is invalid ({why}); using the default {DEFAULT_HINT_ALPHABET:?}"
+                ));
+                HintAlphabet::default()
+            }),
+        };
+
+        let mut patterns = Vec::new();
+        for source in config.patterns.sources(&mut diagnostics) {
+            match regex::Regex::new(source.regex) {
+                Ok(regex) => patterns.push(regex),
+                Err(err) => {
+                    let name = source
+                        .name
+                        .map(|name| format!(" {name:?}"))
+                        .unwrap_or_default();
+                    diagnostics.push(format!(
+                        "copy_hints.patterns[{}]{name} has an invalid regex ({}); skipping pattern",
+                        source.index,
+                        regex_error_reason(&err)
+                    ));
+                }
+            }
+        }
+
+        let enabled = match config.enabled_builtin_patterns.as_deref() {
+            None => BUILTIN_HINT_PATTERNS
+                .iter()
+                .map(|(name, _)| *name)
+                .collect(),
+            Some(names) => names.iter().map(String::as_str).collect::<Vec<_>>(),
+        };
+        let mut seen = HashSet::new();
+        for name in enabled.into_iter().filter(|name| seen.insert(*name)) {
+            let Some((_, source)) = BUILTIN_HINT_PATTERNS
+                .iter()
+                .find(|(builtin, _)| *builtin == name)
+            else {
+                let known = BUILTIN_HINT_PATTERNS
+                    .iter()
+                    .map(|(name, _)| *name)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                diagnostics.push(format!(
+                    "copy_hints.enabled_builtin_patterns has unknown pattern {name:?} (known: {known}); skipping it"
+                ));
+                continue;
+            };
+            // The built-ins go through the same fallible compile as custom
+            // patterns, so the table needs no unwrap; a test keeps this arm
+            // unreachable.
+            match regex::Regex::new(source) {
+                Ok(regex) => patterns.push(regex),
+                Err(err) => diagnostics.push(format!(
+                    "built-in copy hint pattern {name:?} does not compile ({}); skipping it",
+                    regex_error_reason(&err)
+                )),
+            }
+        }
+        (Self { alphabet, patterns }, diagnostics)
+    }
+
     /// Matches every line, collapses equal texts into one target, and labels
     /// the targets bottom-most first: by each target's last occurrence, the
     /// lowest line wins and then the rightmost start. Pure and deterministic.
@@ -182,6 +267,19 @@ impl Default for HintAlphabet {
     fn default() -> Self {
         Self(DEFAULT_HINT_ALPHABET.chars().collect())
     }
+}
+
+/// The reason line of a regex error. Its `Display` spans several lines (the
+/// pattern, a caret, then the reason), and a config diagnostic is one line.
+fn regex_error_reason(err: &regex::Error) -> String {
+    let message = err.to_string();
+    let reason = message
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default();
+    reason.strip_prefix("error: ").unwrap_or(reason).to_owned()
 }
 
 /// Non-overlapping `(full, capture)` byte ranges of one line, leftmost first.
@@ -498,6 +596,158 @@ mod tests {
         assert_eq!(by_row(2), Some("b"));
         assert_eq!(by_row(1), Some("mb"));
         assert_eq!(by_row(0), Some("mm"));
+    }
+
+    fn compiled(toml: &str) -> (HintRules, Vec<String>) {
+        let config: crate::config::Config = toml::from_str(toml).expect("config parses");
+        HintRules::compile(&config.copy_hints)
+    }
+
+    #[test]
+    fn an_absent_table_compiles_every_builtin_without_diagnostics() {
+        let (rules, diagnostics) = HintRules::compile(&CopyHintsConfig::default());
+
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(rules.alphabet, HintAlphabet::default());
+        assert_eq!(rules.patterns.len(), BUILTIN_HINT_PATTERNS.len());
+    }
+
+    #[test]
+    fn the_owners_table_compiles_cleanly_and_custom_patterns_win_ties() {
+        let (rules, diagnostics) = compiled(
+            r#"
+[[copy_hints.patterns]]
+name = "git-ssh"
+regex = 'git@[a-zA-Z0-9.-]+:[a-zA-Z0-9/.-]+\.git'
+
+[[copy_hints.patterns]]
+name = "user-uuid"
+regex = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+
+[[copy_hints.patterns]]
+name = "user-sha"
+regex = "[0-9a-f]{7,40}"
+
+[[copy_hints.patterns]]
+name = "file-line"
+regex = '/[^ \t\r\n]+:[0-9]+'
+
+[[copy_hints.patterns]]
+name = "hostname"
+regex = '(?i)\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\b'
+"#,
+        );
+
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        let targets = rules.scan(&["   HEAD 814366bf · edited /Users/nik/herdr/src/main.rs:88"]);
+        assert_eq!(
+            labeled(&targets),
+            [("a", "/Users/nik/herdr/src/main.rs:88"), ("s", "814366bf")]
+        );
+    }
+
+    #[test]
+    fn a_bad_pattern_is_reported_and_the_others_still_match() {
+        let (rules, diagnostics) = compiled(
+            r#"
+[copy_hints]
+enabled_builtin_patterns = []
+
+[[copy_hints.patterns]]
+name = "ticket"
+regex = 'TKT-[0-9]+'
+
+[[copy_hints.patterns]]
+name = "broken"
+regex = '(oops'
+
+[[copy_hints.patterns]]
+regex = 'PR-[0-9]+'
+
+[[copy_hints.patterns]]
+regex = '[unclosed'
+"#,
+        );
+
+        assert_eq!(
+            diagnostics,
+            [
+                "copy_hints.patterns[1] \"broken\" has an invalid regex (unclosed group); skipping pattern",
+                "copy_hints.patterns[3] has an invalid regex (unclosed character class); skipping pattern",
+            ]
+        );
+        assert_eq!(
+            texts(&rules.scan(&["see TKT-1 and PR-2 (oops"])),
+            ["PR-2", "TKT-1"]
+        );
+    }
+
+    #[test]
+    fn unknown_builtins_and_bad_alphabets_fall_back_with_diagnostics() {
+        let (rules, diagnostics) = compiled(
+            r#"
+[copy_hints]
+alphabet = "aa"
+enabled_builtin_patterns = ["url", "nope", "url"]
+"#,
+        );
+
+        assert_eq!(
+            diagnostics,
+            [
+                "copy_hints.alphabet = \"aa\" is invalid ('a' appears twice); using the default \"asdfwerzxcuioptbm\"",
+                "copy_hints.enabled_builtin_patterns has unknown pattern \"nope\" (known: ip, uuid, sha, digit, url, path, hex, kubernetes, git-status, git-status-branch, diff); skipping it",
+            ]
+        );
+        assert_eq!(rules.alphabet, HintAlphabet::default());
+        assert_eq!(rules.patterns.len(), 1, "url, once");
+        assert_eq!(
+            texts(&rules.scan(&["https://herdr.dev /tmp/a"])),
+            ["https://herdr.dev"]
+        );
+    }
+
+    #[test]
+    fn a_custom_alphabet_labels_the_targets() {
+        let (rules, diagnostics) = compiled("[copy_hints]\nalphabet = \"jk\"\n");
+
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(
+            labeled(&rules.scan(&["/a/x", "/b/y", "/c/z"])),
+            [("j", "/c/z"), ("kj", "/b/y"), ("kk", "/a/x")]
+        );
+    }
+
+    /// The docs list the built-in names a user can enable; the table here is
+    /// the one source, and this keeps the two from drifting.
+    #[test]
+    fn the_config_reference_lists_every_builtin_in_order() {
+        let reference: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/docs/next/website/src/data/config-reference.json"
+        )))
+        .expect("config reference parses");
+        let entry = reference["sections"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|section| section["keys"].as_array().into_iter().flatten())
+            .find(|entry| entry["key"] == "copy_hints.enabled_builtin_patterns")
+            .expect("copy_hints.enabled_builtin_patterns is documented");
+        let documented = entry["values"]
+            .as_array()
+            .expect("values")
+            .iter()
+            .map(|value| value.as_str().expect("name"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            documented,
+            BUILTIN_HINT_PATTERNS
+                .iter()
+                .map(|(name, _)| *name)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

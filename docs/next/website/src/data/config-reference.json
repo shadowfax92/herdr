@@ -892,6 +892,43 @@
       ]
     },
     {
+      "id": "copy_hints",
+      "title": "Copy hints",
+      "keys": [
+        {
+          "key": "copy_hints.alphabet",
+          "type": "string",
+          "default": "\"asdfwerzxcuioptbm\"",
+          "description": "Keys that make up copy hint labels, most comfortable first: at least two distinct lowercase letters or digits. The bottom-most targets get the first keys. An invalid alphabet is reported and the default is used."
+        },
+        {
+          "key": "copy_hints.enabled_builtin_patterns",
+          "type": "list of strings",
+          "default": "every built-in, in this order",
+          "values": [
+            "ip",
+            "uuid",
+            "sha",
+            "digit",
+            "url",
+            "path",
+            "hex",
+            "kubernetes",
+            "git-status",
+            "git-status-branch",
+            "diff"
+          ],
+          "description": "Built-in patterns matched after copy_hints.patterns, in the listed priority order. An unknown name is reported and skipped; an empty list leaves only the custom patterns."
+        },
+        {
+          "key": "copy_hints.patterns",
+          "type": "list of tables",
+          "default": "[]",
+          "description": "Custom [[copy_hints.patterns]] tables, each a regex and an optional name for diagnostics, tried before the built-ins in the order written. A named group called match copies only that part of the match. An entry without a regex string, or whose regex does not compile, is reported and skipped; the rest still apply."
+        }
+      ]
+    },
+    {
       "id": "ui",
       "title": "UI and sidebar",
       "keys": [

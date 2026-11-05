@@ -1,5 +1,6 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 
+mod copy_hints;
 mod io;
 mod keybinds;
 mod landing_glow;
@@ -39,6 +40,7 @@ pub use self::{
     window_title::{WindowTitlePart, WindowTitleTemplate, WindowTitleToken},
 };
 
+pub use self::copy_hints::CopyHintsConfig;
 pub use self::landing_glow::LandingGlowConfig;
 
 pub(crate) use self::keybinds::parse_key_combo;
@@ -122,6 +124,7 @@ impl Config {
             .chain(self.remote_image_paste_key().err())
             .chain(self.theme.diagnostics())
             .chain(self.ui.sound.diagnostics())
+            .chain(crate::copy_hints::HintRules::compile(&self.copy_hints).1)
             .chain(tab_bar_right_diagnostics(&self.ui.tab_bar_right))
             .chain(window_title_diagnostics(&self.ui.window_title))
             .chain(self.invalid_sidebar_bounds_diagnostic())
