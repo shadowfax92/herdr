@@ -46,6 +46,8 @@ pub(crate) struct ClientShellConfig {
     pub(super) right_click_passthrough_modifiers: Option<crossterm::event::KeyModifiers>,
     pub(super) redraw_on_focus_gained: bool,
     pub(super) landing_glow: crate::config::LandingGlowConfig,
+    /// `[copy_hints]` compiled at load and on live reload, never per scan.
+    pub(super) copy_hint_rules: crate::copy_hints::HintRules,
     pub(super) switch_ascii_input_source_in_prefix: bool,
     pub(super) local_config_path: std::path::PathBuf,
     pub(super) preferences_path: Option<std::path::PathBuf>,
@@ -872,6 +874,30 @@ pub(super) struct ClientCopyModeState {
     pub(super) search_current_global: Option<u64>,
     pub(super) search_generation: u64,
     pub(super) copy_after_search: bool,
+    /// The copy hints sub-state (`super::copy_hints`). While it is `Some`,
+    /// hints take every key.
+    pub(super) hints: Option<super::copy_hints::ClientCopyHints>,
+}
+
+impl ClientCopyModeState {
+    /// Whether a sub-state takes every key, the prefix included: the search
+    /// prompt or copy hints. Input routing asks this rather than naming each
+    /// sub-state, so another one is one edit here.
+    pub(super) fn captures_all_keys(&self) -> bool {
+        self.search_prompt.is_some() || self.hints.is_some()
+    }
+
+    /// Whether a pane of inner `size`, scrolled to `scroll` as (offset, max
+    /// offset), shows the viewport copy mode is on, that is no `pane.scroll`
+    /// of copy mode's is still in flight. The copy-mode painters and the hint
+    /// capture share this one rule, so a capture never freezes a page that
+    /// the overlays would refuse to paint over.
+    pub(super) fn shows_viewport(&self, size: (u16, u16), scroll: Option<(usize, usize)>) -> bool {
+        self.geometry == size
+            && scroll.is_some_and(|(offset, max)| {
+                offset == self.offset_from_bottom && max == self.max_offset_from_bottom
+            })
+    }
 }
 
 pub(crate) struct ClientShellState {
@@ -1692,6 +1718,7 @@ impl ClientShellState {
                 self.pending_pane_surface = Some(surface);
             }
         }
+        self.reconcile_copy_hints();
         self.resume_mobile_switcher_if_ready();
         self.reconcile_input_source();
     }
@@ -1907,6 +1934,7 @@ impl ClientShellState {
         self.pane_surface = Some(surface);
         self.pane_surface_generation = self.active_snapshot_generation;
         self.invalidate_link_hover();
+        self.reconcile_copy_hints();
         self.resume_mobile_switcher_if_ready();
         self.reconcile_input_source();
     }
@@ -1922,11 +1950,17 @@ impl ClientShellState {
     }
 
     pub(crate) fn show_copy_feedback(&mut self, now: std::time::Instant) -> bool {
+        self.show_clipboard_notice("copied to clipboard", now)
+    }
+
+    /// A short notice in the clipboard toast, such as copy hints' "no copy
+    /// targets". It follows `ui.toast.clipboard.enabled`, like the copy toast.
+    pub(super) fn show_clipboard_notice(&mut self, message: &str, now: std::time::Instant) -> bool {
         if !self.config.clipboard_toast_enabled {
             return false;
         }
         self.copy_feedback = Some(crate::app::state::CopyFeedback {
-            message: "copied to clipboard".to_owned(),
+            message: message.to_owned(),
         });
         self.copy_feedback_deadline = Some(now + std::time::Duration::from_secs(2));
         true

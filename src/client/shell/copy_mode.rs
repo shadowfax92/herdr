@@ -111,6 +111,7 @@ impl ClientShellState {
             search_current_global: None,
             search_generation: 0,
             copy_after_search: false,
+            hints: None,
         });
         self.mode = ClientShellMode::Copy;
         true
@@ -121,6 +122,11 @@ impl ClientShellState {
         key: &crate::input::TerminalKey,
         outcome: &mut ClientShellInput,
     ) {
+        // Copy hints take every key while open, ahead of the search prompt,
+        // copy-mode commands and the motion table below.
+        if self.route_copy_hints_key(key, outcome) {
+            return;
+        }
         if self.route_copy_search_prompt_key(key, outcome) {
             return;
         }
@@ -256,6 +262,7 @@ impl ClientShellState {
             '^' => {
                 self.request_copy_motion(crate::api::schema::PaneCopyMotion::FirstNonBlank, outcome)
             }
+            'f' => self.enter_copy_hints(outcome),
             '/' => self.open_copy_search(crate::api::schema::PaneCopySearchDirection::Forward),
             '?' => self.open_copy_search(crate::api::schema::PaneCopySearchDirection::Backward),
             'n' => self.repeat_copy_search(false, outcome),

@@ -335,6 +335,20 @@ Command entries run immediately and then at `interval_seconds` without blocking 
 
 Separators appear only between visible entries. Set `tab_bar_right_separator = ""` for direct concatenation. On a narrow tab row, the complete status area yields to the tabs and their controls.
 
+Copy hints (`keys.copy_hints`, default `prefix+f`) label the paths, URLs, hashes and other copy targets on the focused pane; see [Copy mode](/docs/keyboard/#copy-mode). The `[copy_hints]` table sets the label keys and the patterns. Custom patterns are tried first, in the order written, then the built-ins listed under `copy_hints.enabled_builtin_patterns` in the [Config reference](/docs/config-reference/). A named group called `match` copies only that part of a match:
+
+```toml
+[copy_hints]
+alphabet = "asdfwerzxcuioptbm"             # the default; the first keys make the shortest labels
+enabled_builtin_patterns = ["url", "path"] # default: every built-in
+
+[[copy_hints.patterns]]
+name = "ticket"
+regex = 'TKT-(?<match>[0-9]+)'             # underlines TKT-123 and copies 123
+```
+
+Write regexes in single-quoted strings so TOML keeps their backslashes. A pattern that does not compile, an unknown built-in name, or an invalid alphabet is reported by `herdr config check` and costs only that entry; every other setting still applies, at startup and on reload.
+
 ### Outer terminal window title
 
 Herdr emulates the terminals in its panes, so an `OSC 0`/`OSC 2` title written inside a pane stops at Herdr. Herdr writes its own title to the terminal it runs in, which is what window managers and terminal tab bars read:

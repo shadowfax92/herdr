@@ -62,6 +62,8 @@ pub(crate) enum KeybindAction {
     EditScrollback,
     ClearPane,
     CopyMode,
+    /// Freeze the focused pane and label its copy targets (copy hints).
+    CopyHints,
     Zoom,
     EnterResizeMode,
     ResizePaneLeft,
@@ -139,6 +141,7 @@ pub(crate) fn resolve_non_indexed_action(
         (&keybinds.edit_scrollback, KeybindAction::EditScrollback),
         (&keybinds.clear_pane, KeybindAction::ClearPane),
         (&keybinds.copy_mode, KeybindAction::CopyMode),
+        (&keybinds.copy_hints, KeybindAction::CopyHints),
         (&keybinds.focus_pane_left, KeybindAction::FocusPaneLeft),
         (&keybinds.focus_pane_down, KeybindAction::FocusPaneDown),
         (&keybinds.focus_pane_up, KeybindAction::FocusPaneUp),

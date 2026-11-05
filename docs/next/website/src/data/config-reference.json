@@ -746,6 +746,12 @@
           "description": "Enter keyboard copy mode for the focused pane."
         },
         {
+          "key": "keys.copy_hints",
+          "type": "keybinding",
+          "default": "\"prefix+f\"",
+          "description": "Freeze the focused pane and label the paths, URLs, hashes and other copy targets on its visible rows; type a label to copy that text. f does the same inside copy mode, on the rows you scrolled to. Patterns live in copy_hints."
+        },
+        {
           "key": "keys.focus_pane_left",
           "type": "keybinding",
           "default": "\"prefix+h\"",

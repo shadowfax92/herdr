@@ -408,6 +408,7 @@ pub struct Keybinds {
     pub edit_scrollback: ActionKeybinds,
     pub clear_pane: ActionKeybinds,
     pub copy_mode: ActionKeybinds,
+    pub copy_hints: ActionKeybinds,
     pub focus_pane_left: ActionKeybinds,
     pub focus_pane_down: ActionKeybinds,
     pub focus_pane_up: ActionKeybinds,
@@ -600,6 +601,7 @@ impl Config {
             edit_scrollback: empty_action!(),
             clear_pane: empty_action!(),
             copy_mode: empty_action!(),
+            copy_hints: empty_action!(),
             focus_pane_left: empty_action!(),
             focus_pane_down: empty_action!(),
             focus_pane_up: empty_action!(),
@@ -755,6 +757,7 @@ impl Config {
             apply_action!(keybinds.edit_scrollback, edit_scrollback, source);
             apply_action!(keybinds.clear_pane, clear_pane, source);
             apply_action!(keybinds.copy_mode, copy_mode, source);
+            apply_action!(keybinds.copy_hints, copy_hints, source);
             apply_action!(keybinds.focus_pane_left, focus_pane_left, source);
             apply_action!(keybinds.focus_pane_down, focus_pane_down, source);
             apply_action!(keybinds.focus_pane_up, focus_pane_up, source);
@@ -1817,6 +1820,31 @@ toggle_focus = "alt+backslash"
                 KeyModifiers::empty()
             ))]
         );
+    }
+
+    #[test]
+    fn copy_hints_defaults_to_prefix_f_rebinds_and_unbinds() {
+        let kb = Config::default().keybinds();
+        assert_eq!(
+            binding_triggers(&kb.copy_hints),
+            vec![BindingTrigger::Prefix((
+                KeyCode::Char('f'),
+                KeyModifiers::empty()
+            ))]
+        );
+
+        let config: Config = toml::from_str("[keys]\ncopy_hints = \"prefix+alt+f\"\n").unwrap();
+        assert_eq!(
+            binding_triggers(&config.keybinds().copy_hints),
+            vec![BindingTrigger::Prefix((
+                KeyCode::Char('f'),
+                KeyModifiers::ALT
+            ))]
+        );
+
+        let config: Config = toml::from_str("[keys]\ncopy_hints = \"\"\n").unwrap();
+        assert!(config.keybinds().copy_hints.bindings.is_empty());
+        assert!(config.collect_diagnostics().is_empty());
     }
 
     #[test]

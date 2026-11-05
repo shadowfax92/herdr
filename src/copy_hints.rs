@@ -23,13 +23,6 @@
 //! One rule differs from History: the bottom-most target gets the shortest,
 //! earliest label, because new output, an agent's above all, arrives at the
 //! bottom of a pane.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "scan's only caller, the client copy-hints sub-state, lands in a later commit"
-    )
-)]
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};

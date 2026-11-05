@@ -685,6 +685,13 @@ impl ClientShellState {
     /// Hit-test order determines which overlapping control receives the event;
     /// the sidebar toggle takes precedence over the agent scrollbar beneath it.
     pub(super) fn handle_mouse(&mut self, mouse: MouseEvent, outcome: &mut ClientShellInput) {
+        // A frozen hint pane shows old cells while clicks, drags and the wheel
+        // act on live ones: a drag would select, and copy_on_select copy, text
+        // the user cannot see. Hints close first, and the event is then handled
+        // as usual on what the user now sees.
+        if mouse.kind != MouseEventKind::Moved && self.close_copy_hints() {
+            outcome.repaint = true;
+        }
         self.update_link_hover(mouse, outcome);
         let point = (mouse.column, mouse.row);
         if self.mode == ClientShellMode::Navigate

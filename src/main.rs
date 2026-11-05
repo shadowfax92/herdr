@@ -182,6 +182,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # rename_pane = "prefix+shift+p"
 # edit_scrollback = "prefix+e"
 # clear_pane = ""                  # unbound; e.g. "prefix+ctrl+k"
+# copy_hints = "prefix+f"          # label the paths, URLs and hashes on screen; type a label to copy it
 # focus_pane_left = "prefix+h"
 # focus_pane_down = "prefix+j"
 # focus_pane_up = "prefix+k"
@@ -406,6 +407,16 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # By default, droid is muted.
 # [ui.sound.agents]
 # droid = "off"
+
+# Copy hints (keys.copy_hints, or f in copy mode): label keys and patterns.
+# Custom patterns are tried before the built-ins; a named group called
+# "match" copies only that part. Single-quoted strings keep backslashes.
+# [copy_hints]
+# alphabet = "asdfwerzxcuioptbm"
+# enabled_builtin_patterns = ["url", "path"]   # default: every built-in
+# [[copy_hints.patterns]]
+# name = "ticket"
+# regex = 'TKT-(?<match>[0-9]+)'
 
 [session]
 # Resume supported AI-agent panes into their native conversation sessions after

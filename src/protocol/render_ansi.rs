@@ -746,8 +746,11 @@ fn repeat_ime_anchor_after_sync() -> bool {
     true
 }
 
-/// Writes all cells in the frame (full redraw).
-fn cell_width(cell: &CellData) -> usize {
+/// Columns a cell's symbol occupies as this encoder draws it: after writing
+/// it, the encoder skips `width - 1` cells. Copy hints use the same rule, so
+/// their capture agrees with the screen about which cells are the spacers of
+/// a wide character.
+pub(crate) fn cell_width(cell: &CellData) -> usize {
     if is_halfwidth_katakana_voiced_grapheme(&cell.symbol) {
         return 2;
     }

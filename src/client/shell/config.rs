@@ -152,6 +152,8 @@ impl ClientShellConfig {
             right_click_passthrough_modifiers: config.ui.right_click_passthrough_modifiers(),
             redraw_on_focus_gained: config.ui.redraw_on_focus_gained,
             landing_glow: config.ui.landing_glow,
+            // The startup diagnostics for this table came from Config::load.
+            copy_hint_rules: crate::copy_hints::HintRules::compile(&config.copy_hints).0,
             switch_ascii_input_source_in_prefix: config
                 .experimental
                 .switch_ascii_input_source_in_prefix,
@@ -384,6 +386,11 @@ impl ClientShellConfig {
             self.theme_runtime = crate::app::client_theme_runtime_from_config(config);
             self.theme_name = self.theme_runtime.manual_name.clone();
             self.palette = crate::app::client_palette_from_config(config);
+        }
+        // load_live_config already reported this table's problems. An open
+        // hint session keeps the labels it was captured with.
+        if !invalid_section("copy_hints") {
+            self.copy_hint_rules = crate::copy_hints::HintRules::compile(&config.copy_hints).0;
         }
         if !invalid_section("experimental") {
             self.switch_ascii_input_source_in_prefix =

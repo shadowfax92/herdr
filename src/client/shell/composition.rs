@@ -328,7 +328,14 @@ impl ClientShellState {
         let mobile_navigate_panel = !layout.mobile_header.is_empty()
             && self.mode == ClientShellMode::Navigate
             && self.endpoint_error.is_none();
-        let mode_bar = if mobile_navigate_panel || self.overlay.is_some() {
+        // No mode bar while copy hints are open: in a single-pane layout it
+        // covers the pane's last row, often a fullscreen agent's footer with
+        // paths and branches, and labels there must stay readable. The labels
+        // show the typed keys themselves. This lives here, not in
+        // render_mode_bar, which paints the bar's background before it looks at
+        // the mode.
+        let mode_bar = if mobile_navigate_panel || self.overlay.is_some() || self.copy_hints_open()
+        {
             None
         } else {
             render::render_mode_bar(
@@ -469,6 +476,7 @@ impl ClientShellState {
                 }
             }
         }
+        self.render_copy_hints(&mut frame, &mut occlusion);
         restore_mode_bar(&mut frame, mode_bar, mode_bar_cells.as_deref());
         self.hits.notification_toast = Rect::default();
         let has_config_diagnostic = self.config_diagnostic.is_some();
@@ -757,11 +765,11 @@ fn client_copy_surface_coherent(copy_mode: Option<&ClientCopyModeState>, hit: &P
     copy_mode
         .filter(|copy_mode| copy_mode.pane_id == hit.pane_id)
         .is_none_or(|copy_mode| {
-            copy_mode.geometry == (hit.inner_rect.width, hit.inner_rect.height)
-                && hit.scroll.is_some_and(|scroll| {
-                    scroll.offset_from_bottom == copy_mode.offset_from_bottom
-                        && scroll.max_offset_from_bottom == copy_mode.max_offset_from_bottom
-                })
+            copy_mode.shows_viewport(
+                (hit.inner_rect.width, hit.inner_rect.height),
+                hit.scroll
+                    .map(|scroll| (scroll.offset_from_bottom, scroll.max_offset_from_bottom)),
+            )
         })
 }
 

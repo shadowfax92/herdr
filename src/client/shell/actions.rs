@@ -169,6 +169,10 @@ impl ClientShellState {
                     }
                     return;
                 }
+                if action == crate::input::KeybindAction::CopyHints {
+                    self.enter_copy_hints(outcome);
+                    return;
+                }
                 if action == crate::input::KeybindAction::NextAttentionAgent {
                     self.focus_next_attention_agent(outcome);
                     return;

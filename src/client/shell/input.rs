@@ -745,7 +745,7 @@ impl ClientShellState {
                 if self
                     .copy_mode
                     .as_ref()
-                    .is_none_or(|copy_mode| copy_mode.search_prompt.is_none())
+                    .is_none_or(|copy_mode| !copy_mode.captures_all_keys())
                     && self.config.keybinds.matches_prefix(key)
                 {
                     self.mode = ClientShellMode::Prefix;
@@ -1125,7 +1125,7 @@ impl ClientShellState {
         ) || self
             .copy_mode
             .as_ref()
-            .is_some_and(|copy_mode| copy_mode.search_prompt.is_some())
+            .is_some_and(ClientCopyModeState::captures_all_keys)
         {
             return None;
         }
