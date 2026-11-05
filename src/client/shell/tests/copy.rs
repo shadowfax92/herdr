@@ -2779,3 +2779,48 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
         );
     }
 }
+
+#[test]
+fn copy_mode_enters_while_a_held_surface_clears_the_hit_map() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    let mut pane_surface = surface();
+    pane_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+        offset_from_bottom: 0,
+        max_offset_from_bottom: 20,
+        viewport_rows: 2,
+    });
+    state.set_pane_surface(pane_surface.clone());
+    state.compose(106, 20).expect("composed frame");
+
+    // A busy agent's next surface arrives ahead of its snapshot: it waits, and
+    // the hit map stays empty until the pair composes.
+    pane_surface.projection_revision = 2;
+    pane_surface.surface_revision = 2;
+    state.set_pane_surface(pane_surface);
+    assert!(state.hits.panes.is_empty());
+
+    let enter = state.handle_input_bytes(b"\x02[");
+    assert_eq!(state.mode, ClientShellMode::Copy, "prefix+[ was dropped");
+    assert!(enter.requests.is_empty(), "nothing reaches the pane");
+    let copy_mode = state.copy_mode.as_ref().expect("copy mode");
+    assert_eq!(copy_mode.geometry, (4, 2));
+    assert_eq!(
+        (
+            copy_mode.offset_from_bottom,
+            copy_mode.max_offset_from_bottom
+        ),
+        (0, 20)
+    );
+    assert_eq!(
+        copy_mode.cursor,
+        crate::api::schema::PaneTextPoint { row: 21, col: 1 },
+        "the cursor starts at the terminal cursor"
+    );
+
+    let mut next = snapshot();
+    next.revision = 2;
+    state.set_snapshot(Box::new(next));
+    state.compose(106, 20).expect("paired frame");
+    assert_eq!(state.mode, ClientShellMode::Copy);
+}

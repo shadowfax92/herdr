@@ -38,67 +38,68 @@ impl ClientShellState {
         if self.copy_mode.is_some() {
             self.exit_copy_mode(false, outcome);
         }
-        let Some(hit) = self
-            .hits
-            .panes
-            .iter()
-            .find(|hit| hit.pane_id == pane_id)
-            .cloned()
-        else {
+        // Copy mode reads its text and moves its scroll through the endpoint,
+        // so it does not start on a machine that cannot answer.
+        if self.endpoint_status(&self.active_endpoint_id) != Some(ClientEndpointStatus::Online) {
+            return false;
+        }
+        // The session starts from the retained surface, the frame the user is
+        // looking at, not from `hits`: compose rebuilds the hit map, and it
+        // stays empty while a surface waits for its snapshot. On a busy agent
+        // pane that wait covers much of the time, and reading `hits` here
+        // silently dropped the key that enters copy mode.
+        let Some(surface) = self.pane_surface.as_ref() else {
             return false;
         };
-        let Some(metrics) = hit.scroll else {
+        let Some(pane) = surface.panes.iter().find(|pane| pane.pane_id == pane_id) else {
             return false;
         };
-        let viewport_top = metrics
-            .max_offset_from_bottom
-            .saturating_sub(metrics.offset_from_bottom)
+        let Some(metrics) = pane.scroll else {
+            return false;
+        };
+        let inner = pane.inner_rect;
+        let (content_revision, alternate_screen_active) =
+            (pane.content_revision, pane.alternate_screen_active);
+        let offset_from_bottom = usize::try_from(metrics.offset_from_bottom).unwrap_or(usize::MAX);
+        let max_offset_from_bottom =
+            usize::try_from(metrics.max_offset_from_bottom).unwrap_or(usize::MAX);
+        let viewport_top = max_offset_from_bottom
+            .saturating_sub(offset_from_bottom)
             .min(u32::MAX as usize) as u32;
-        let cursor = self
-            .pane_surface
+        let cursor = surface
+            .frame
+            .cursor
             .as_ref()
-            .and_then(|surface| {
-                let pane = surface.panes.iter().find(|pane| pane.pane_id == pane_id)?;
-                let cursor = surface
-                    .frame
-                    .cursor
-                    .as_ref()
-                    .filter(|cursor| cursor.visible)?;
-                let inner = pane.inner_rect;
-                (cursor.x >= inner.x
+            .filter(|cursor| {
+                cursor.visible
+                    && cursor.x >= inner.x
                     && cursor.x < inner.x.saturating_add(inner.width)
                     && cursor.y >= inner.y
-                    && cursor.y < inner.y.saturating_add(inner.height))
-                .then_some(crate::api::schema::PaneTextPoint {
+                    && cursor.y < inner.y.saturating_add(inner.height)
+            })
+            .map_or(
+                crate::api::schema::PaneTextPoint {
+                    row: viewport_top.saturating_add(u32::from(inner.height.saturating_sub(1))),
+                    col: 0,
+                },
+                |cursor| crate::api::schema::PaneTextPoint {
                     row: viewport_top.saturating_add(u32::from(cursor.y - inner.y)),
                     col: cursor.x - inner.x,
-                })
-            })
-            .unwrap_or(crate::api::schema::PaneTextPoint {
-                row: viewport_top
-                    .saturating_add(u32::from(hit.inner_rect.height.saturating_sub(1))),
-                col: 0,
-            });
+                },
+            );
         self.selection = None;
         self.stop_selection_autoscroll();
         self.selection_highlight_clear_deadline = None;
         self.reset_copy_pipeline();
-        let (content_revision, alternate_screen_active) = self
-            .pane_surface
-            .as_ref()
-            .and_then(|surface| surface.panes.iter().find(|pane| pane.pane_id == pane_id))
-            .map_or((0, false), |pane| {
-                (pane.content_revision, pane.alternate_screen_active)
-            });
         self.copy_mode = Some(ClientCopyModeState {
             pane_id,
             content_revision,
-            geometry: (hit.inner_rect.width, hit.inner_rect.height),
+            geometry: (inner.width, inner.height),
             alternate_screen_active,
             cursor,
-            offset_from_bottom: metrics.offset_from_bottom,
-            max_offset_from_bottom: metrics.max_offset_from_bottom,
-            entry_offset_from_bottom: metrics.offset_from_bottom,
+            offset_from_bottom,
+            max_offset_from_bottom,
+            entry_offset_from_bottom: offset_from_bottom,
             app_pages_up: 0,
             selection: None,
             search_prompt: None,
