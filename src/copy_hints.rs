@@ -31,7 +31,8 @@ use crate::config::CopyHintsConfig;
 pub(crate) const DEFAULT_HINT_ALPHABET: &str = "asdfwerzxcuioptbm";
 
 /// tmux-fingers' built-in patterns in their default priority order, copied
-/// verbatim, noise included (see the tests).
+/// verbatim, noise included (see the tests). tmux-fingers is Copyright (c)
+/// 2019 Morantron and MIT licensed: <https://github.com/Morantron/tmux-fingers>.
 pub(crate) const BUILTIN_HINT_PATTERNS: &[(&str, &str)] = &[
     ("ip", r"\d{1,3}(?:\.\d{1,3}){3}"),
     (
