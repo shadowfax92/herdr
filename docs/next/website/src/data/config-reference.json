@@ -839,7 +839,13 @@
           "key": "keys.zoom",
           "type": "keybinding",
           "default": "\"prefix+z\"",
-          "description": "Toggle zoom for the focused pane. The legacy key name `fullscreen` is accepted as an alias."
+          "description": "Toggle zoom for the focused pane. On a wide tab the zoomed pane is centred between the ui.zoom_margin_percent side margins. The legacy key name `fullscreen` is accepted as an alias."
+        },
+        {
+          "key": "keys.zoom_full",
+          "type": "keybinding",
+          "default": "\"prefix+shift+z\"",
+          "description": "Zoom the focused pane to the full tab width, without the ui.zoom_margin_percent side margins. Pressed on a zoom with margins, it widens it; pressed on a full-width zoom, it unzooms."
         },
         {
           "key": "keys.resize_mode",
@@ -1065,6 +1071,18 @@
           "type": "boolean",
           "default": "true",
           "description": "Keep split panes visually separated instead of sharing divider borders."
+        },
+        {
+          "key": "ui.zoom_margin_percent",
+          "type": "integer",
+          "default": "20",
+          "description": "Percent of the tab width left empty on each side of a pane zoomed with keys.zoom, which centres it, once the tab is at least ui.zoom_margin_min_width columns wide. The pane's terminal is resized to the narrower width. 0 turns margins off; values above 40 are clamped to 40. keys.zoom_full always zooms to the full width."
+        },
+        {
+          "key": "ui.zoom_margin_min_width",
+          "type": "integer",
+          "default": "400",
+          "description": "Narrowest tab, in columns, whose zoomed pane gets ui.zoom_margin_percent side margins. Narrower tabs zoom to the full width."
         },
         {
           "key": "ui.show_agent_labels_on_pane_borders",

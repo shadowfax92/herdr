@@ -183,6 +183,7 @@ pub(crate) fn keybind_help_groups(
                 entry(binding_label(&keybinds.copy_mode), "copy mode"),
                 entry(binding_label(&keybinds.copy_hints), "copy hints"),
                 entry(binding_label(&keybinds.zoom), "zoom pane"),
+                entry(binding_label(&keybinds.zoom_full), "zoom pane full width"),
                 entry(binding_label(&keybinds.resize_mode), "resize mode"),
                 entry(
                     binding_label(&keybinds.resize_pane_left),

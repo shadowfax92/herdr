@@ -424,6 +424,7 @@ pub struct Keybinds {
     pub split_horizontal: ActionKeybinds,
     pub close_pane: ActionKeybinds,
     pub zoom: ActionKeybinds,
+    pub zoom_full: ActionKeybinds,
     pub resize_mode: ActionKeybinds,
     pub resize_pane_left: ActionKeybinds,
     pub resize_pane_down: ActionKeybinds,
@@ -617,6 +618,7 @@ impl Config {
             split_horizontal: empty_action!(),
             close_pane: empty_action!(),
             zoom: empty_action!(),
+            zoom_full: empty_action!(),
             resize_mode: empty_action!(),
             resize_pane_left: empty_action!(),
             resize_pane_down: empty_action!(),
@@ -773,6 +775,7 @@ impl Config {
             apply_action!(keybinds.split_horizontal, split_horizontal, source);
             apply_action!(keybinds.close_pane, close_pane, source);
             apply_action!(keybinds.zoom, zoom, source);
+            apply_action!(keybinds.zoom_full, zoom_full, source);
             apply_action!(keybinds.resize_mode, resize_mode, source);
             apply_action!(keybinds.resize_pane_left, resize_pane_left, source);
             apply_action!(keybinds.resize_pane_down, resize_pane_down, source);
@@ -1845,6 +1848,47 @@ toggle_focus = "alt+backslash"
         let config: Config = toml::from_str("[keys]\ncopy_hints = \"\"\n").unwrap();
         assert!(config.keybinds().copy_hints.bindings.is_empty());
         assert!(config.collect_diagnostics().is_empty());
+    }
+
+    #[test]
+    fn zoom_full_defaults_to_prefix_shift_z_without_a_conflict() {
+        let config = Config::default();
+        assert_eq!(
+            binding_triggers(&config.keybinds().zoom_full),
+            vec![BindingTrigger::Prefix((
+                KeyCode::Char('z'),
+                KeyModifiers::SHIFT
+            ))]
+        );
+        assert!(config.collect_diagnostics().is_empty());
+    }
+
+    #[test]
+    fn zoom_full_binds_beside_an_alt_zoom_on_shift_alt() {
+        let config: Config =
+            toml::from_str("[keys]\nzoom = \"alt+m\"\nzoom_full = \"shift+alt+m\"\n").unwrap();
+        assert!(config.collect_diagnostics().is_empty());
+        let keybinds = config.keybinds();
+        assert_eq!(
+            binding_triggers(&keybinds.zoom),
+            vec![BindingTrigger::Direct((
+                KeyCode::Char('m'),
+                KeyModifiers::ALT
+            ))]
+        );
+        assert_eq!(
+            binding_triggers(&keybinds.zoom_full),
+            vec![BindingTrigger::Direct((
+                KeyCode::Char('m'),
+                KeyModifiers::SHIFT | KeyModifiers::ALT
+            ))]
+        );
+        let alt_capital_m: Config = toml::from_str("[keys]\nzoom_full = \"alt+M\"\n").unwrap();
+        assert_eq!(
+            binding_triggers(&alt_capital_m.keybinds().zoom_full),
+            binding_triggers(&keybinds.zoom_full),
+            "alt+M is the same key"
+        );
     }
 
     #[test]

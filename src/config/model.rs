@@ -459,6 +459,10 @@ pub struct KeysConfig {
     /// Toggle zoom for the focused pane. Default: "prefix+z"
     #[serde(alias = "fullscreen")]
     pub zoom: BindingConfig,
+    /// Zoom the focused pane to the full tab width, ignoring the
+    /// ui.zoom_margin_* margins; switches a zoom with margins to full width.
+    /// Default: "prefix+shift+z"
+    pub zoom_full: BindingConfig,
     /// Enter resize mode. Default: "prefix+r"
     pub resize_mode: BindingConfig,
     /// Resize the focused pane toward the left. Unset by default.
@@ -608,6 +612,8 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(alias = "fullscreen", skip_serializing_if = "Option::is_none")]
     zoom: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    zoom_full: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     resize_mode: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     resize_pane_left: Option<BindingConfig>,
@@ -731,6 +737,7 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(split_horizontal);
         apply_field!(close_pane);
         apply_field!(zoom);
+        apply_field!(zoom_full);
         apply_field!(resize_mode);
         apply_field!(resize_pane_left);
         apply_field!(resize_pane_down);
@@ -842,6 +849,7 @@ impl KeysConfig {
         copy_effective_action_field!(split_horizontal, keybinds.split_horizontal);
         copy_effective_action_field!(close_pane, keybinds.close_pane);
         copy_effective_action_field!(zoom, keybinds.zoom);
+        copy_effective_action_field!(zoom_full, keybinds.zoom_full);
         copy_effective_action_field!(resize_mode, keybinds.resize_mode);
         copy_effective_action_field!(resize_pane_left, keybinds.resize_pane_left);
         copy_effective_action_field!(resize_pane_down, keybinds.resize_pane_down);
@@ -1018,6 +1026,13 @@ pub struct UiConfig {
     pub pane_scrollbars: bool,
     /// Keep split panes visually separated instead of sharing divider borders. Default: true.
     pub pane_gaps: bool,
+    /// Percent of the tab width left empty on each side of a pane zoomed with
+    /// keys.zoom, centring it, once the tab is zoom_margin_min_width columns
+    /// wide. 0 turns margins off; values above 40 are clamped to 40.
+    /// keys.zoom_full always zooms to the full width. Default: 20.
+    pub zoom_margin_percent: u16,
+    /// Narrowest tab, in columns, whose zoomed pane gets margins. Default: 400.
+    pub zoom_margin_min_width: u16,
     /// Show agent labels in split pane borders when no manual pane label is set. Default: false.
     pub show_agent_labels_on_pane_borders: bool,
     /// Glow the border of the pane a jump lands on: ring, quiet, static, or off. Default: ring.
@@ -1222,6 +1237,7 @@ impl Default for KeysConfig {
             split_horizontal: BindingConfig::one("prefix+minus"),
             close_pane: BindingConfig::one("prefix+x"),
             zoom: BindingConfig::one("prefix+z"),
+            zoom_full: BindingConfig::one("prefix+shift+z"),
             resize_mode: BindingConfig::one("prefix+r"),
             resize_pane_left: BindingConfig::empty(),
             resize_pane_down: BindingConfig::empty(),
@@ -1265,6 +1281,8 @@ impl Default for UiConfig {
             pane_outer_borders: true,
             pane_scrollbars: true,
             pane_gaps: true,
+            zoom_margin_percent: crate::layout::ZoomMargins::DEFAULT_PERCENT,
+            zoom_margin_min_width: crate::layout::ZoomMargins::DEFAULT_MIN_WIDTH,
             show_agent_labels_on_pane_borders: false,
             landing_glow: LandingGlowConfig::Ring,
             hide_tab_bar_when_single_tab: false,
@@ -1292,6 +1310,21 @@ impl UiConfig {
 
     pub fn right_click_passthrough_modifiers(&self) -> Option<KeyModifiers> {
         self.right_click_passthrough_modifier.modifiers()
+    }
+
+    /// The fitted-zoom margins, with the percent clamped.
+    pub(crate) fn zoom_margins(&self) -> crate::layout::ZoomMargins {
+        crate::layout::ZoomMargins::new(self.zoom_margin_percent, self.zoom_margin_min_width)
+    }
+
+    pub(crate) fn zoom_margin_diagnostic(&self) -> Option<String> {
+        let max = crate::layout::ZoomMargins::MAX_PERCENT;
+        (self.zoom_margin_percent > max).then(|| {
+            format!(
+                "ui.zoom_margin_percent = {} is above {max}; using {max}",
+                self.zoom_margin_percent
+            )
+        })
     }
 }
 
@@ -1564,6 +1597,30 @@ status_indicators = "symbols"
             .unwrap_err()
             .to_string();
         assert!(wrong_type.contains("\"auto\", \"always\", \"off\", or a legacy boolean"));
+    }
+
+    #[test]
+    fn zoom_margins_default_parse_and_clamp_with_a_diagnostic() {
+        use crate::layout::ZoomMargins;
+
+        let default_config = Config::default();
+        assert_eq!(default_config.ui.zoom_margins(), ZoomMargins::new(20, 400));
+        assert_eq!(default_config.ui.zoom_margin_diagnostic(), None);
+
+        let config: Config =
+            toml::from_str("[ui]\nzoom_margin_percent = 0\nzoom_margin_min_width = 250\n").unwrap();
+        assert_eq!(config.ui.zoom_margins(), ZoomMargins::new(0, 250));
+        assert!(config.collect_diagnostics().is_empty());
+
+        let config: Config = toml::from_str("[ui]\nzoom_margin_percent = 75\n").unwrap();
+        assert_eq!(config.ui.zoom_margins(), ZoomMargins::new(40, 400));
+        assert_eq!(
+            config.collect_diagnostics(),
+            vec!["ui.zoom_margin_percent = 75 is above 40; using 40".to_owned()]
+        );
+
+        let negative = toml::from_str::<Config>("[ui]\nzoom_margin_percent = -5\n");
+        assert!(negative.is_err(), "a negative percent is a type error");
     }
 
     #[test]

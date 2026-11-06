@@ -128,6 +128,7 @@ impl Config {
             .chain(tab_bar_right_diagnostics(&self.ui.tab_bar_right))
             .chain(window_title_diagnostics(&self.ui.window_title))
             .chain(self.invalid_sidebar_bounds_diagnostic())
+            .chain(self.ui.zoom_margin_diagnostic())
             .chain(self.invalid_headless_size_diagnostic())
             .collect()
     }

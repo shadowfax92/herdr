@@ -542,7 +542,7 @@ impl App {
             pane_outer_borders: config.ui.pane_outer_borders,
             pane_scrollbars: config.ui.pane_scrollbars,
             pane_gaps: config.ui.pane_gaps,
-            zoom_margins: crate::layout::ZoomMargins::default(),
+            zoom_margins: config.ui.zoom_margins(),
             show_agent_labels_on_pane_borders: config.ui.show_agent_labels_on_pane_borders,
             tab_bar_right: Vec::new(),
             tab_bar_right_separator: String::new(),
@@ -907,6 +907,8 @@ impl App {
                 self.state.pane_outer_borders = config.ui.pane_outer_borders;
                 self.state.pane_scrollbars = config.ui.pane_scrollbars;
                 self.state.pane_gaps = config.ui.pane_gaps;
+                diagnostics.extend(config.ui.zoom_margin_diagnostic());
+                self.state.zoom_margins = config.ui.zoom_margins();
                 self.state.show_agent_labels_on_pane_borders =
                     config.ui.show_agent_labels_on_pane_borders;
                 self.configure_tab_bar_status(
@@ -1862,6 +1864,34 @@ mod tests {
         let report = app.apply_live_config(&config, &[], &["session".into()], false);
         assert!(report.diagnostics.is_empty());
         assert_eq!(app.startup_per_agent_delay, Duration::from_millis(100));
+    }
+
+    #[test]
+    fn live_config_applies_zoom_margins_and_reports_a_clamped_percent() {
+        use crate::layout::ZoomMargins;
+        let mut app = test_app();
+        let mut config = Config::default();
+        config.ui.zoom_margin_percent = 30;
+        config.ui.zoom_margin_min_width = 300;
+        let report = app.apply_live_config(&config, &[], &[], false);
+        assert_eq!(report.status, crate::config::ConfigReloadStatus::Applied);
+        assert_eq!(app.state.zoom_margins, ZoomMargins::new(30, 300));
+
+        config.ui.zoom_margin_percent = 90;
+        let report = app.apply_live_config(&config, &[], &[], false);
+        assert_eq!(
+            report.diagnostics,
+            vec!["ui.zoom_margin_percent = 90 is above 40; using 40"]
+        );
+        assert_eq!(app.state.zoom_margins, ZoomMargins::new(40, 300));
+
+        config.ui.zoom_margin_percent = 10;
+        app.apply_live_config(&config, &[], &["ui".into()], false);
+        assert_eq!(
+            app.state.zoom_margins,
+            ZoomMargins::new(40, 300),
+            "an invalid [ui] section keeps the current margins"
+        );
     }
 
     #[test]

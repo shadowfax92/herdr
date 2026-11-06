@@ -65,6 +65,8 @@ pub(crate) enum KeybindAction {
     /// Freeze the focused pane and label its copy targets (copy hints).
     CopyHints,
     Zoom,
+    /// Zoom the focused pane to the full tab width, without margins.
+    ZoomFull,
     EnterResizeMode,
     ResizePaneLeft,
     ResizePaneDown,
@@ -160,6 +162,7 @@ pub(crate) fn resolve_non_indexed_action(
         (&keybinds.split_horizontal, KeybindAction::SplitHorizontal),
         (&keybinds.close_pane, KeybindAction::ClosePane),
         (&keybinds.zoom, KeybindAction::Zoom),
+        (&keybinds.zoom_full, KeybindAction::ZoomFull),
         (&keybinds.resize_mode, KeybindAction::EnterResizeMode),
         (&keybinds.resize_pane_left, KeybindAction::ResizePaneLeft),
         (&keybinds.resize_pane_down, KeybindAction::ResizePaneDown),

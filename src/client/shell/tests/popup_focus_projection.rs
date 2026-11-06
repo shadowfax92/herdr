@@ -972,6 +972,45 @@ fn clear_pane_binding_targets_the_focused_endpoint_pane() {
     ));
 }
 
+/// The endpoint methods a client bound with `keys` sends for `bytes` typed
+/// into its focused pane.
+fn endpoint_methods_for_keys(keys: &str, bytes: &[u8]) -> Vec<crate::api::schema::Method> {
+    let config: Config = toml::from_str(keys).unwrap();
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    let outcome = state.handle_input_bytes(bytes);
+    assert!(outcome.requests.is_empty(), "{bytes:?} reached the pane");
+    outcome
+        .actions
+        .into_iter()
+        .filter_map(|action| match action {
+            ClientShellAction::Endpoint { request, .. } => Some(request.method),
+            _ => None,
+        })
+        .collect()
+}
+
+const ALT_M_ZOOM_KEYS: &str = "[keys]\nzoom = \"alt+m\"\nzoom_full = \"shift+alt+m\"\n";
+
+#[test]
+fn shift_alt_m_bound_to_zoom_full_toggles_the_focused_pane_zoom() {
+    use crate::api::schema::{Method, PaneZoomMode, PaneZoomParams};
+    let toggle = Method::PaneZoom(PaneZoomParams {
+        pane_id: Some("pane_1".into()),
+        mode: PaneZoomMode::Toggle,
+    });
+    // A terminal sends ESC m for alt+m and ESC M for shift+alt+m.
+    assert_eq!(
+        endpoint_methods_for_keys(ALT_M_ZOOM_KEYS, b"\x1bm"),
+        vec![toggle.clone()]
+    );
+    assert_eq!(
+        endpoint_methods_for_keys(ALT_M_ZOOM_KEYS, b"\x1bM"),
+        vec![toggle]
+    );
+}
+
 #[test]
 fn edit_scrollback_binding_targets_the_focused_endpoint_pane() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));

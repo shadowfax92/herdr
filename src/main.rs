@@ -194,6 +194,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # split_horizontal = "prefix+minus"
 # close_pane = "prefix+x"
 # zoom = "prefix+z"       # legacy alias: fullscreen
+# zoom_full = "prefix+shift+z"  # zoom without the [ui] zoom_margin_* side margins
 # resize_mode = "prefix+r"
 # resize_pane_left = ""   # optional, e.g. "ctrl+shift+alt+left" resizes without entering resize mode
 # resize_pane_down = ""   # optional, e.g. "ctrl+shift+alt+down"
@@ -315,6 +316,12 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 
 # Keep split panes visually separated instead of sharing divider borders.
 # pane_gaps = true
+
+# On a tab at least zoom_margin_min_width columns wide, keys.zoom centres the
+# zoomed pane and leaves zoom_margin_percent of the width empty on each side
+# (0 turns this off, at most 40). keys.zoom_full always zooms full width.
+# zoom_margin_percent = 20
+# zoom_margin_min_width = 400
 
 # Show detected/reported agent labels in split pane borders when no manual pane name is set.
 # show_agent_labels_on_pane_borders = false

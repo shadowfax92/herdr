@@ -1182,10 +1182,14 @@ impl ClientShellState {
                     pane_id: pane_id.clone(),
                 }))
             }
-            KeybindAction::Zoom => Some(Method::PaneZoom(PaneZoomParams {
-                pane_id: focused_pane,
-                mode: PaneZoomMode::Toggle,
-            })),
+            // A server without margins zooms every pane to the full width, so
+            // its plain toggle is already what zoom_full asks for.
+            KeybindAction::Zoom | KeybindAction::ZoomFull => {
+                Some(Method::PaneZoom(PaneZoomParams {
+                    pane_id: focused_pane,
+                    mode: PaneZoomMode::Toggle,
+                }))
+            }
             KeybindAction::ClearPane => Some(Method::PaneClear(PaneTarget {
                 pane_id: focused_pane?,
             })),
