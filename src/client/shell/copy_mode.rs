@@ -1,3 +1,4 @@
+use super::fullscreen_paging::{AppMove, PagedPane};
 use super::*;
 use crate::copy_mode::{PageDirection, PageUnit};
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -101,7 +102,7 @@ impl ClientShellState {
             offset_from_bottom,
             max_offset_from_bottom,
             entry_offset_from_bottom: offset_from_bottom,
-            app_pages_up: 0,
+            fullscreen_paging: Default::default(),
             selection: None,
             search_prompt: None,
             search_query: String::new(),
@@ -584,7 +585,7 @@ impl ClientShellState {
         unit: PageUnit,
         outcome: &mut ClientShellInput,
     ) {
-        if self.page_fullscreen_app(direction, outcome) {
+        if self.page_fullscreen_app(direction, unit, outcome) {
             return;
         }
         let Some((_, height)) = self.copy_geometry() else {
@@ -625,15 +626,18 @@ impl ClientShellState {
     }
 
     /// Pages a fullscreen app instead of Herdr's scrollback. An app on the
-    /// alternate screen (Claude Code's fullscreen TUI, less, nvim) keeps its
-    /// history itself and Herdr keeps none for that screen, so copy mode's page
-    /// keys (ctrl+u/d, ctrl+b/f, PgUp/PgDn) reach it as PgUp/PgDn, the keys such
-    /// apps scroll on; the app decides how far a page goes. The app's content
-    /// moves under any selection, so the selection is dropped rather than
-    /// left covering other text. Returns false on the normal screen.
+    /// alternate screen (Claude Code's fullscreen TUI, Codex, less, nvim)
+    /// keeps its history itself and Herdr keeps none for that screen, so copy
+    /// mode's page keys (ctrl+u/d, ctrl+b/f, PgUp/PgDn) reach the app instead.
+    /// `FullscreenPaging` decides what each sends, PgUp/PgDn strokes or wheel
+    /// notches, from the pane's detected agent, whether it reports the mouse,
+    /// its size and the unit the key asks for. The app's content moves under
+    /// any selection, so the selection is dropped rather than left covering
+    /// other text. Returns false on the normal screen.
     fn page_fullscreen_app(
         &mut self,
         direction: PageDirection,
+        unit: PageUnit,
         outcome: &mut ClientShellInput,
     ) -> bool {
         let Some(copy_mode) = self
@@ -643,20 +647,60 @@ impl ClientShellState {
         else {
             return false;
         };
-        let code = match direction {
-            PageDirection::Up => {
-                copy_mode.app_pages_up = copy_mode.app_pages_up.saturating_add(1);
-                KeyCode::PageUp
-            }
-            PageDirection::Down => {
-                copy_mode.app_pages_up = copy_mode.app_pages_up.saturating_sub(1);
-                KeyCode::PageDown
-            }
+        // Read on every key, as `apply_agent_key_rule` does, so detection that
+        // lands or ends mid-session changes the next move. Mouse reporting
+        // comes from the retained surface, the frame the user is looking at,
+        // for the reason `enter_copy_mode` reads its pane there.
+        let agent = self
+            .snapshot
+            .as_deref()
+            .and_then(|snapshot| {
+                snapshot
+                    .agents
+                    .iter()
+                    .find(|agent| agent.pane_id == copy_mode.pane_id)
+            })
+            .and_then(|agent| agent.agent.as_deref())
+            .and_then(crate::detect::parse_agent_label);
+        let reports_mouse = self
+            .pane_surface
+            .as_ref()
+            .and_then(|surface| {
+                surface
+                    .panes
+                    .iter()
+                    .find(|pane| pane.pane_id == copy_mode.pane_id)
+            })
+            .is_some_and(|pane| pane.mouse_reporting);
+        let (columns, rows) = copy_mode.geometry;
+        let pane = PagedPane {
+            agent,
+            reports_mouse,
+            columns,
+            rows,
         };
         let pane_id = copy_mode.pane_id.clone();
-        self.clear_copy_mode_selection();
-        super::push_key_stroke(pane_id, (code, KeyModifiers::empty()), 1, outcome);
-        outcome.repaint = true;
+        let sent = match copy_mode.fullscreen_paging.page(direction, unit, pane) {
+            // At the stroke cap nothing goes out, so the app does not move
+            // and the selection still covers the text it was made on.
+            AppMove::Keys { strokes: 0, .. } => false,
+            AppMove::Keys { key, strokes } => {
+                super::push_key_stroke(pane_id, key, strokes, outcome);
+                true
+            }
+            AppMove::Wheel {
+                direction,
+                notches,
+                cell,
+            } => {
+                super::push_wheel_notches(pane_id, direction, notches, cell, outcome);
+                true
+            }
+        };
+        if sent {
+            self.clear_copy_mode_selection();
+            outcome.repaint = true;
+        }
         true
     }
 
@@ -930,14 +974,20 @@ impl ClientShellState {
         // Like the scroll restore below, for a fullscreen app paged up from
         // copy mode: an app such as Claude Code stops following its output while
         // scrolled up. Only while the pane is still on the alternate screen; once
-        // the app has quit, these keys would reach the shell instead.
-        if copy_mode.alternate_screen_active && copy_mode.app_pages_up > 0 {
-            super::push_key_stroke(
-                copy_mode.pane_id.clone(),
-                (KeyCode::PageDown, KeyModifiers::empty()),
-                copy_mode.app_pages_up,
-                outcome,
-            );
+        // the app has quit, these keys would reach the shell instead. The gate
+        // is read here, at exit, rather than when the screen switches, so a
+        // one-frame flip during the session keeps the debt. A stray PgDn or
+        // ctrl+End reaching an app that took over the screen is a smaller
+        // failure than leaving the paged app scrolled up, which this restore
+        // prevents. Codex gets one ctrl+End, its own jump to its latest
+        // output, rather than a replay of what copy mode sent. That is exact
+        // for a session entered at the live bottom and stays exact when
+        // output arrived meanwhile.
+        if copy_mode.alternate_screen_active {
+            let (key, strokes) = copy_mode.fullscreen_paging.page_back();
+            if strokes > 0 {
+                super::push_key_stroke(copy_mode.pane_id.clone(), key, strokes, outcome);
+            }
         }
         self.push_pane_scroll_offset(
             copy_mode.pane_id,

@@ -40,7 +40,9 @@ pub(crate) enum PageDirection {
 /// How far a copy-mode page key asks to move. ctrl+u and ctrl+d ask for half
 /// the visible pane. ctrl+b, ctrl+f, PgUp and PgDn ask for all of it, less a
 /// small overlap so the lines at the edge stay on screen. Herdr's own
-/// scrollback turns the unit into rows with `copy_mode_page_lines`.
+/// scrollback turns the unit into rows with `copy_mode_page_lines`. A
+/// fullscreen app on the alternate screen gets PgUp/PgDn strokes or wheel
+/// notches instead, as `client::shell::fullscreen_paging` decides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PageUnit {
     Half,

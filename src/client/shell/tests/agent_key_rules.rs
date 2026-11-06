@@ -22,32 +22,6 @@ fn config(toml: &str) -> Config {
     toml::from_str(toml).expect("config parses")
 }
 
-fn agent_entry(pane_id: &str, label: Option<&str>) -> ClientShellAgent {
-    ClientShellAgent {
-        pane_id: pane_id.into(),
-        workspace_id: "ws_1".into(),
-        tab_id: "tab_1".into(),
-        name: None,
-        display_agent: None,
-        agent: label.map(Into::into),
-        title: None,
-        terminal_title: None,
-        terminal_title_stripped: None,
-        agent_status: AgentStatus::Idle,
-        state_change_seq: 1,
-        state_labels: Vec::new(),
-        tokens: Vec::new(),
-        focused: true,
-    }
-}
-
-fn snapshot_with(revision: u64, agents: Vec<ClientShellAgent>) -> Box<ClientShellSnapshot> {
-    let mut snapshot = snapshot();
-    snapshot.revision = revision;
-    snapshot.agents = agents;
-    Box::new(snapshot)
-}
-
 /// A client on `shell_config` whose focused pane_1 runs `label`, or a plain
 /// shell when `label` is `None`.
 fn client_on(shell_config: ClientShellConfig, label: Option<&str>) -> ClientShellState {
@@ -62,41 +36,6 @@ fn client_on(shell_config: ClientShellConfig, label: Option<&str>) -> ClientShel
 
 fn client(toml: &str, label: Option<&str>) -> ClientShellState {
     client_on(ClientShellConfig::from_config(&config(toml)), label)
-}
-
-/// Every key event `outcome` sends to `pane_id`, in order.
-fn key_events(outcome: &ClientShellInput, pane_id: &str) -> Vec<ClientPaneInputEvent> {
-    outcome
-        .requests
-        .iter()
-        .flat_map(|request| match request {
-            ClientMessage::ClientShellPaneInput {
-                pane_id: target,
-                events,
-            } if target == pane_id => events
-                .iter()
-                .filter(|event| matches!(event, ClientPaneInputEvent::Key { .. }))
-                .cloned()
-                .collect(),
-            _ => Vec::new(),
-        })
-        .collect()
-}
-
-/// (code, modifiers, kind) of every key `outcome` sends to `pane_id`.
-fn keys_to(outcome: &ClientShellInput, pane_id: &str) -> Vec<(ClientKeyCode, u8, ClientKeyKind)> {
-    key_events(outcome, pane_id)
-        .into_iter()
-        .filter_map(|event| match event {
-            ClientPaneInputEvent::Key {
-                code,
-                modifiers,
-                kind,
-                ..
-            } => Some((code, modifiers, kind)),
-            _ => None,
-        })
-        .collect()
 }
 
 fn keys_to_pane(outcome: &ClientShellInput) -> Vec<(ClientKeyCode, u8, ClientKeyKind)> {
