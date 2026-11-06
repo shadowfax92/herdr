@@ -878,6 +878,10 @@ impl HeadlessServer {
         self.server_config_diagnostic_without_keybindings =
             server_config_diagnostic_without_keybindings;
         self.sync_foreground_client_state();
+        // [ui] pane chrome and zoom margins change pane geometry without any
+        // client resizing, so re-lay out the shown tabs now, at the size their
+        // current geometry controller already chose.
+        self.reapply_controlled_shell_tab_geometry(false);
         report
     }
 

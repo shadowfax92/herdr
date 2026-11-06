@@ -2405,6 +2405,60 @@ async fn public_close_reapplies_controller_geometry() {
 }
 
 #[tokio::test]
+async fn config_reload_re_lays_out_an_open_zoom_with_the_new_margins() {
+    let _guard = crate::config::test_config_env_lock().lock().unwrap();
+    struct RestoreConfigPath(Option<std::ffi::OsString>);
+    impl Drop for RestoreConfigPath {
+        fn drop(&mut self) {
+            match &self.0 {
+                Some(path) => std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, path),
+                None => std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR),
+            }
+        }
+    }
+    let _restore = RestoreConfigPath(std::env::var_os(crate::config::CONFIG_PATH_ENV_VAR));
+    let dir = std::env::temp_dir().join(format!("herdr-zoom-reload-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let config_path = dir.join("config.toml");
+    std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &config_path);
+
+    let mut server = test_headless_server();
+    let mut workspace = crate::workspace::Workspace::test_new("zoom-reload");
+    let zoomed_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
+    workspace.insert_test_runtime(
+        zoomed_pane,
+        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b""),
+    );
+    workspace.zoomed = true;
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+    server.app.state.mode = crate::app::Mode::Terminal;
+    let (control, _) = connect_test_shell(&mut server, 67, 500, 30);
+    let _ = control.recv().expect("snapshot");
+    server.reapply_controlled_shell_tab_geometry(false);
+    let pane_cols = |server: &HeadlessServer| {
+        server.app.state.workspaces[0].test_runtimes[&zoomed_pane]
+            .current_size()
+            .1
+    };
+    // 500 columns less two 100-column margins, two borders and the gutter.
+    assert_eq!(pane_cols(&server), 297);
+
+    std::fs::write(&config_path, "[ui]\nzoom_margin_percent = 30\n").unwrap();
+    let report = server.reload_server_config(false);
+    assert_eq!(report.status, crate::config::ConfigReloadStatus::Applied);
+    assert_eq!(
+        pane_cols(&server),
+        197,
+        "the open zoom takes the new margins"
+    );
+
+    shutdown_test_runtimes(&mut server);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn geometry_reapply_replaces_a_controller_that_left_the_tab() {
     let mut server = test_headless_server();
     let mut workspace = crate::workspace::Workspace::test_new("geometry-controller-viewer");
