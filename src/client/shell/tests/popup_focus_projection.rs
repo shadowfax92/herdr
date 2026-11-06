@@ -111,7 +111,7 @@ fn modal_paste_target_requires_a_focused_editable_client_field() {
         offset_from_bottom: 0,
         max_offset_from_bottom: 0,
         entry_offset_from_bottom: 0,
-        fullscreen_paging: Default::default(),
+        app_pages_up: 0,
         selection: None,
         search_prompt: Some(ClientCopySearchPrompt {
             direction: crate::api::schema::PaneCopySearchDirection::Forward,

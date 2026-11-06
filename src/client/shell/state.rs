@@ -863,10 +863,6 @@ pub(super) struct ClientCopyModeState {
     pub(super) pane_id: String,
     pub(super) content_revision: u64,
     pub(super) geometry: (u16, u16),
-    /// Whether the pane shows its alternate screen, refreshed from every
-    /// surface `install_pane_surface` takes. While it is set, page keys page
-    /// the app instead of herdr's scrollback, and the exit pages the app back
-    /// only if it is still set.
     pub(super) alternate_screen_active: bool,
     pub(super) cursor: crate::api::schema::PaneTextPoint,
     pub(super) offset_from_bottom: usize,
@@ -874,13 +870,10 @@ pub(super) struct ClientCopyModeState {
     /// The scroll offset `exit_copy_mode` restores: where the pane was when
     /// copy mode began, or 0 (the live bottom) once a hint label copied.
     pub(super) entry_offset_from_bottom: usize,
-    /// What copy mode owes a fullscreen app it paged (see
-    /// `super::fullscreen_paging`), PgDns that undo its PgUps or one stroke
-    /// of the app's own jump to its latest output, paid back on exit so the
-    /// app follows its output again. A switch between the pane's screens
-    /// keeps it, so an app that leaves and re-enters its fullscreen view is
-    /// still paid back.
-    pub(super) fullscreen_paging: super::fullscreen_paging::FullscreenPaging,
+    /// Net pages copy mode scrolled a fullscreen app up (see
+    /// `page_fullscreen_app`), paged back down on exit so the app follows
+    /// its output again.
+    pub(super) app_pages_up: u32,
     pub(super) selection: Option<ClientCopySelection>,
     pub(super) search_prompt: Option<ClientCopySearchPrompt>,
     pub(super) search_query: String,

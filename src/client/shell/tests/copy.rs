@@ -327,7 +327,7 @@ fn pasted_help_and_copy_queries_normalize_single_line_text() {
         offset_from_bottom: 0,
         max_offset_from_bottom: 0,
         entry_offset_from_bottom: 0,
-        fullscreen_paging: Default::default(),
+        app_pages_up: 0,
         selection: None,
         search_prompt: Some(ClientCopySearchPrompt {
             direction: crate::api::schema::PaneCopySearchDirection::Forward,
@@ -950,65 +950,15 @@ fn keyboard_selection_does_not_return_after_resize_or_screen_switch() {
     }
 }
 
-/// pane_1 on the alternate screen with copy mode open under `config`, the
-/// snapshot naming `agent` as its detected agent. Stroke counts do not depend
-/// on the pane's height, so the 4x2 fixture is enough.
-fn fullscreen_app_in_copy_mode(
-    config: &Config,
-    agent: Option<&str>,
-) -> (ClientShellState, PaneSurfaceFrame) {
-    fullscreen_surface_in_copy_mode(config, agent, surface())
-}
-
-/// Like `fullscreen_app_in_copy_mode`, on a blank pane `columns` wide and
-/// `rows` tall that reports the mouse when `reports_mouse`. A Codex half page
-/// depends on all three.
-fn sized_app_in_copy_mode(
-    config: &Config,
-    agent: Option<&str>,
-    (columns, rows): (u16, u16),
-    reports_mouse: bool,
-) -> (ClientShellState, PaneSurfaceFrame) {
+fn fullscreen_app_in_copy_mode() -> (ClientShellState, PaneSurfaceFrame) {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
-    let blank = (0..rows).map(|_| " ".repeat(usize::from(columns)));
-    pane_surface.frame =
-        FrameData::from_ratatui_buffer_with_hyperlinks(&Buffer::with_lines(blank), None, &[]);
-    let rect = SurfaceRect {
-        x: 0,
-        y: 0,
-        width: columns,
-        height: rows,
-    };
-    pane_surface.panes[0].rect = rect;
-    pane_surface.panes[0].inner_rect = rect;
-    pane_surface.panes[0].mouse_reporting = reports_mouse;
-    fullscreen_surface_in_copy_mode(config, agent, pane_surface)
-}
-
-/// The owner's Codex, in a 49-row pane that reports the mouse. Codex draws a
-/// 42-row view there, so a half page is 21 notches aimed at (40, 21).
-fn codex_in_copy_mode() -> (ClientShellState, PaneSurfaceFrame) {
-    sized_app_in_copy_mode(&Config::default(), Some("codex"), (80, 49), true)
-}
-
-/// `pane_surface` with pane_1 put on its alternate screen and copy mode open
-/// on it under `config`, the snapshot naming `agent` as its detected agent.
-fn fullscreen_surface_in_copy_mode(
-    config: &Config,
-    agent: Option<&str>,
-    mut pane_surface: PaneSurfaceFrame,
-) -> (ClientShellState, PaneSurfaceFrame) {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(config));
-    let agents = agent
-        .map(|label| agent_entry("pane_1", Some(label)))
-        .into_iter()
-        .collect();
-    state.set_snapshot(snapshot_with(1, agents));
     pane_surface.panes[0].alternate_screen_active = true;
     pane_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
         offset_from_bottom: 0,
         max_offset_from_bottom: 0,
-        viewport_rows: u64::from(pane_surface.panes[0].inner_rect.height),
+        viewport_rows: 2,
     });
     state.set_pane_surface(pane_surface.clone());
     state.compose(106, 20).expect("composed frame");
@@ -1045,58 +995,6 @@ fn keys_sent_to_pane(
         .collect()
 }
 
-/// The event count of each input message `outcome` sends to pane_1, in order.
-fn pane_message_sizes(outcome: &ClientShellInput) -> Vec<usize> {
-    outcome
-        .requests
-        .iter()
-        .filter_map(|request| match request {
-            ClientMessage::ClientShellPaneInput { pane_id, events } if pane_id == "pane_1" => {
-                Some(events.len())
-            }
-            _ => None,
-        })
-        .collect()
-}
-
-/// `count` whole keystrokes of `code` as `keys_sent_to_pane` reports them, a
-/// press then a release each.
-fn strokes(
-    code: crate::protocol::ClientKeyCode,
-    count: usize,
-) -> Vec<(
-    crate::protocol::ClientKeyCode,
-    crate::protocol::ClientKeyKind,
-)> {
-    let stroke = [
-        (code.clone(), crate::protocol::ClientKeyKind::Press),
-        (code, crate::protocol::ClientKeyKind::Release),
-    ];
-    (0..count).flat_map(|_| stroke.clone()).collect()
-}
-
-/// The owner's prefix. Under the default ctrl+b, ctrl+b enters prefix mode
-/// and never reaches copy mode's page-up.
-fn ctrl_a_prefix() -> Config {
-    toml::from_str("[keys]\nprefix = \"ctrl+a\"\n").expect("config parses")
-}
-
-const CTRL_U: (KeyCode, KeyModifiers) = (KeyCode::Char('u'), KeyModifiers::CONTROL);
-const CTRL_D: (KeyCode, KeyModifiers) = (KeyCode::Char('d'), KeyModifiers::CONTROL);
-const CTRL_B: (KeyCode, KeyModifiers) = (KeyCode::Char('b'), KeyModifiers::CONTROL);
-const CTRL_F: (KeyCode, KeyModifiers) = (KeyCode::Char('f'), KeyModifiers::CONTROL);
-const PAGE_UP: (KeyCode, KeyModifiers) = (KeyCode::PageUp, KeyModifiers::NONE);
-const PAGE_DOWN: (KeyCode, KeyModifiers) = (KeyCode::PageDown, KeyModifiers::NONE);
-const QUIT: (KeyCode, KeyModifiers) = (KeyCode::Char('q'), KeyModifiers::NONE);
-/// Every key that leaves copy mode from its main view, q and Esc without
-/// copying and y and Enter copying.
-const EXIT_KEYS: [(KeyCode, KeyModifiers); 4] = [
-    QUIT,
-    (KeyCode::Esc, KeyModifiers::NONE),
-    (KeyCode::Char('y'), KeyModifiers::NONE),
-    (KeyCode::Enter, KeyModifiers::NONE),
-];
-
 fn press_key(
     state: &mut ClientShellState,
     code: KeyCode,
@@ -1107,28 +1005,22 @@ fn press_key(
     ))])
 }
 
-/// The keys pane_1 receives when the user presses `key`.
-fn keys_for(
-    state: &mut ClientShellState,
-    (code, modifiers): (KeyCode, KeyModifiers),
-) -> Vec<(
-    crate::protocol::ClientKeyCode,
-    crate::protocol::ClientKeyKind,
-)> {
-    keys_sent_to_pane(&press_key(state, code, modifiers))
-}
-
 #[test]
 fn copy_mode_pages_a_fullscreen_app_and_pages_it_back_on_exit() {
-    use crate::protocol::ClientKeyCode;
+    use crate::protocol::{ClientKeyCode, ClientKeyKind};
+    let stroke = |code: ClientKeyCode| {
+        vec![
+            (code.clone(), ClientKeyKind::Press),
+            (code, ClientKeyKind::Release),
+        ]
+    };
 
-    let (mut state, _) = fullscreen_app_in_copy_mode(&Config::default(), None);
+    let (mut state, _) = fullscreen_app_in_copy_mode();
     state.handle_input_bytes(b"v");
     assert!(state.copy_mode.as_ref().unwrap().selection.is_some());
 
-    // Without a detected agent every page key reaches the app as one
-    // PgUp/PgDn keystroke, and Herdr scrolls nothing itself: the alternate
-    // screen has no Herdr scrollback.
+    // Every page key reaches the app as one PgUp/PgDn keystroke, and Herdr
+    // scrolls nothing itself: the alternate screen has no Herdr scrollback.
     for (code, modifiers, sent) in [
         (
             KeyCode::Char('u'),
@@ -1152,25 +1044,33 @@ fn copy_mode_pages_a_fullscreen_app_and_pages_it_back_on_exit() {
         ),
     ] {
         let page = press_key(&mut state, code, modifiers);
-        assert_eq!(keys_sent_to_pane(&page), strokes(sent, 1));
+        assert_eq!(keys_sent_to_pane(&page), stroke(sent));
         assert!(page.actions.is_empty(), "no Herdr scroll for {code:?}");
         assert_eq!(state.mode, ClientShellMode::Copy);
     }
     let copy_mode = state.copy_mode.as_ref().unwrap();
+    assert_eq!(copy_mode.app_pages_up, 2);
     assert!(
         copy_mode.selection.is_none() && state.selection.is_none(),
         "the app's content moved under the selection"
     );
 
     // Leaving copy mode pages the app back down to where it follows output.
-    let exit = keys_for(&mut state, QUIT);
+    let exit = press_key(&mut state, KeyCode::Char('q'), KeyModifiers::empty());
     assert_eq!(state.mode, ClientShellMode::Terminal);
-    assert_eq!(exit, strokes(ClientKeyCode::PageDown, 2));
+    assert_eq!(
+        keys_sent_to_pane(&exit),
+        [
+            stroke(ClientKeyCode::PageDown),
+            stroke(ClientKeyCode::PageDown)
+        ]
+        .concat()
+    );
 
     // Paging down past where copy mode started sends nothing extra on exit.
-    let (mut state, _) = fullscreen_app_in_copy_mode(&Config::default(), None);
-    let page = keys_for(&mut state, CTRL_F);
-    assert_eq!(page, strokes(ClientKeyCode::PageDown, 1));
+    let (mut state, _) = fullscreen_app_in_copy_mode();
+    let page = press_key(&mut state, KeyCode::Char('f'), KeyModifiers::CONTROL);
+    assert_eq!(keys_sent_to_pane(&page), stroke(ClientKeyCode::PageDown));
     let exit = press_key(&mut state, KeyCode::Esc, KeyModifiers::empty());
     assert_eq!(state.mode, ClientShellMode::Terminal);
     assert!(keys_sent_to_pane(&exit).is_empty());
@@ -1178,419 +1078,21 @@ fn copy_mode_pages_a_fullscreen_app_and_pages_it_back_on_exit() {
 
 #[test]
 fn copy_mode_sends_no_page_back_after_the_fullscreen_app_quits() {
-    // An app paged by key owes PgDns and Codex paged by wheel owes its
-    // ctrl+End, but nothing is owed once the app has quit.
-    for (agent, up) in [
-        (None, PAGE_UP),
-        (Some("claude"), PAGE_UP),
-        (Some("codex"), CTRL_U),
-    ] {
-        let (mut state, mut pane_surface) =
-            sized_app_in_copy_mode(&Config::default(), agent, (80, 49), true);
-        let page = press_key(&mut state, up.0, up.1);
-        assert_eq!(pane_message_sizes(&page).len(), 1, "{agent:?} paged up");
+    let (mut state, mut pane_surface) = fullscreen_app_in_copy_mode();
+    press_key(&mut state, KeyCode::Char('u'), KeyModifiers::CONTROL);
+    assert_eq!(state.copy_mode.as_ref().unwrap().app_pages_up, 1);
 
-        // The app quit and the shell is back on the normal screen: a PgDn or
-        // a ctrl+End now would reach the shell.
-        pane_surface.surface_revision += 1;
-        pane_surface.panes[0].content_revision += 2;
-        pane_surface.panes[0].alternate_screen_active = false;
-        state.set_pane_surface(pane_surface);
-        state.compose(106, 20).expect("changed frame");
+    // The app quit and the shell is back on the normal screen: a PgDn now
+    // would reach the shell.
+    pane_surface.surface_revision += 1;
+    pane_surface.panes[0].content_revision += 2;
+    pane_surface.panes[0].alternate_screen_active = false;
+    state.set_pane_surface(pane_surface);
+    state.compose(106, 20).expect("changed frame");
 
-        let exit = press_key(&mut state, QUIT.0, QUIT.1);
-        assert_eq!(state.mode, ClientShellMode::Terminal);
-        assert!(pane_message_sizes(&exit).is_empty(), "{agent:?}");
-    }
-}
-
-#[test]
-fn claude_and_unprofiled_apps_get_one_page_key_per_page_key() {
-    use crate::protocol::ClientKeyCode;
-
-    // Claude Code scrolls half its view per PgUp, and an app herdr has not
-    // measured decides its own page, so every page key sends one stroke and
-    // no wheel, even to an app that reports the mouse. The ctrl+a prefix lets
-    // ctrl+b reach copy mode.
-    for agent in [None, Some("claude"), Some("opencode")] {
-        let (mut state, _) = sized_app_in_copy_mode(&ctrl_a_prefix(), agent, (80, 49), true);
-        for (key, sent) in [
-            (CTRL_U, ClientKeyCode::PageUp),
-            (CTRL_B, ClientKeyCode::PageUp),
-            (PAGE_UP, ClientKeyCode::PageUp),
-            (CTRL_D, ClientKeyCode::PageDown),
-            (CTRL_F, ClientKeyCode::PageDown),
-            (PAGE_DOWN, ClientKeyCode::PageDown),
-            (PAGE_UP, ClientKeyCode::PageUp),
-            (CTRL_U, ClientKeyCode::PageUp),
-        ] {
-            let page = press_key(&mut state, key.0, key.1);
-            assert_eq!(
-                keys_sent_to_pane(&page),
-                strokes(sent, 1),
-                "{agent:?} {key:?}"
-            );
-            assert!(
-                mouse_events_sent_to_pane(&page).is_empty(),
-                "{agent:?} {key:?}"
-            );
-            assert!(page.actions.is_empty(), "no Herdr scroll for {key:?}");
-            assert_eq!(state.mode, ClientShellMode::Copy);
-        }
-        let exit = keys_for(&mut state, QUIT);
-        assert_eq!(exit, strokes(ClientKeyCode::PageDown, 2), "{agent:?}");
-    }
-}
-
-#[test]
-fn claude_mixed_moves_page_back_exactly_on_every_exit() {
-    use crate::protocol::ClientKeyCode;
-
-    for exit_key in EXIT_KEYS {
-        let (mut state, _) = fullscreen_app_in_copy_mode(&Config::default(), Some("claude"));
-        // Half up, a page up, half down, a page up and half up send four
-        // PgUps and one PgDn, so three are owed.
-        for key in [CTRL_U, PAGE_UP, CTRL_D, PAGE_UP, CTRL_U] {
-            keys_for(&mut state, key);
-        }
-        let exit = keys_for(&mut state, exit_key);
-        assert_eq!(state.mode, ClientShellMode::Terminal, "{exit_key:?}");
-        assert_eq!(exit, strokes(ClientKeyCode::PageDown, 3), "{exit_key:?}");
-    }
-}
-
-#[test]
-fn paging_down_past_the_entry_owes_nothing() {
-    use crate::protocol::ClientKeyCode;
-
-    // The app may have been scrolled up before copy mode began, so down moves
-    // still reach it, but the exit pays back only the PgUps sent after them.
-    let (mut state, _) = fullscreen_app_in_copy_mode(&Config::default(), Some("claude"));
-    let half = keys_for(&mut state, CTRL_D);
-    assert_eq!(half, strokes(ClientKeyCode::PageDown, 1));
-    let page = keys_for(&mut state, PAGE_DOWN);
-    assert_eq!(page, strokes(ClientKeyCode::PageDown, 1));
-    let up = keys_for(&mut state, PAGE_UP);
-    assert_eq!(up, strokes(ClientKeyCode::PageUp, 1));
-
-    let exit = keys_for(&mut state, QUIT);
-    assert_eq!(exit, strokes(ClientKeyCode::PageDown, 1));
-}
-
-#[test]
-fn the_page_back_always_fits_one_input_batch() {
-    use crate::protocol::ClientKeyCode;
-    use crate::server::client_transport::MAX_INPUT_EVENT_BATCH;
-
-    // 2100 PgUps over Claude Code, uncapped, would owe a page-back of 4200
-    // events, past what the server accepts in one message.
-    let (mut state, _) = fullscreen_app_in_copy_mode(&Config::default(), Some("claude"));
-    let mut sent_up = 0;
-    let mut last = Vec::new();
-    for _ in 0..2100 {
-        last = keys_for(&mut state, PAGE_UP);
-        let count = last.len() / 2;
-        assert_eq!(last, strokes(ClientKeyCode::PageUp, count));
-        sent_up += count;
-    }
-    assert!(last.is_empty(), "a held PgUp stops at the cap");
-    assert!(sent_up < 2100);
-    assert_eq!(state.mode, ClientShellMode::Copy);
-
-    // A PgDn at the cap still moves the app.
-    let down = keys_for(&mut state, PAGE_DOWN);
-    assert_eq!(down, strokes(ClientKeyCode::PageDown, 1));
-
-    let exit = press_key(&mut state, QUIT.0, QUIT.1);
-    let messages = pane_message_sizes(&exit);
-    assert_eq!(messages, [2 * (sent_up - 1)], "one message");
-    assert!(messages[0] <= MAX_INPUT_EVENT_BATCH);
-    let paged_back = keys_sent_to_pane(&exit);
-    assert_eq!(paged_back, strokes(ClientKeyCode::PageDown, sent_up - 1));
-}
-
-#[test]
-fn the_normal_screen_still_pages_herdrs_scrollback_by_half_and_whole_pages() {
-    // A 10-row pane over 40 rows of Herdr scrollback, where a half page is 5
-    // rows and a full page 8. No app's keys or Codex's wheel apply here, even
-    // on a pane that reports the mouse.
-    for agent in ["claude", "codex"] {
-        let mut state = ClientShellState::new(ClientShellConfig::from_config(&ctrl_a_prefix()));
-        state.set_snapshot(snapshot_with(1, vec![agent_entry("pane_1", Some(agent))]));
-        let rows = (0..10).map(|row| format!("row{row}")).collect::<Vec<_>>();
-        let mut pane_surface = surface();
-        pane_surface.frame =
-            FrameData::from_ratatui_buffer_with_hyperlinks(&Buffer::with_lines(rows), None, &[]);
-        pane_surface.panes[0].rect.height = 10;
-        pane_surface.panes[0].inner_rect.height = 10;
-        pane_surface.panes[0].mouse_reporting = true;
-        pane_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
-            offset_from_bottom: 0,
-            max_offset_from_bottom: 40,
-            viewport_rows: 10,
-        });
-        state.set_pane_surface(pane_surface);
-        state.compose(106, 20).expect("composed frame");
-        state.record_binding(
-            crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
-            &mut ClientShellInput::default(),
-        );
-        assert_eq!(state.mode, ClientShellMode::Copy);
-
-        for ((code, modifiers), offset) in [
-            (CTRL_U, 5),
-            (CTRL_B, 13),
-            (PAGE_UP, 21),
-            (CTRL_D, 16),
-            (CTRL_F, 8),
-            (PAGE_DOWN, 0),
-        ] {
-            let page = press_key(&mut state, code, modifiers);
-            let key = (code, modifiers);
-            assert!(
-                pane_message_sizes(&page).is_empty(),
-                "{agent} {key:?} reached the pane"
-            );
-            let [ClientShellAction::Endpoint { request, .. }] = &page.actions[..] else {
-                panic!("{agent} {key:?}: one pane.scroll request");
-            };
-            assert!(
-                matches!(
-                    &request.method,
-                    crate::api::schema::Method::PaneScroll(params)
-                        if params.offset_from_bottom == offset
-                ),
-                "{agent} {key:?} scrolls to {offset}"
-            );
-            // Settle it, so the next page's request goes out at once.
-            state.handle_endpoint_result(
-                "boot-1",
-                &request.id,
-                Ok(pane_scroll_result(offset, 40, 10)),
-            );
-        }
-    }
-}
-
-#[test]
-fn codex_half_pages_by_wheel_notches_at_the_middle_of_its_view() {
-    use crate::protocol::ClientMouseKind;
-
-    // Codex's header, composer and footer take 7 rows, so a 49-row pane
-    // shows a 42-row view, half of which is 21 rows at one row per notch, and
-    // a 16-row split shows 9 rows, half of which is 4. The notches aim at the
-    // middle of the view, where the wheel scrolls Codex's transcript.
-    for ((columns, rows), sent, cell) in [((80, 49), 21, (40, 21)), ((60, 16), 4, (30, 4))] {
-        let (mut state, _) =
-            sized_app_in_copy_mode(&Config::default(), Some("codex"), (columns, rows), true);
-        for (key, kind) in [
-            (CTRL_U, ClientMouseKind::ScrollUp),
-            (CTRL_D, ClientMouseKind::ScrollDown),
-        ] {
-            let page = press_key(&mut state, key.0, key.1);
-            assert_eq!(
-                mouse_events_sent_to_pane(&page),
-                notches(kind, sent, cell),
-                "{rows} rows {key:?}"
-            );
-            assert_eq!(
-                pane_message_sizes(&page),
-                [sent],
-                "{rows} rows {key:?}: the notches alone, in one message"
-            );
-            assert!(page.actions.is_empty(), "no Herdr scroll for {key:?}");
-            assert_eq!(state.mode, ClientShellMode::Copy);
-        }
-    }
-}
-
-#[test]
-fn codex_full_page_keys_still_send_one_page_key() {
-    use crate::protocol::ClientKeyCode;
-
-    // Codex's own page is its view less one row, so ctrl+b, ctrl+f, PgUp and
-    // PgDn keep sending one PgUp or PgDn. The ctrl+a prefix lets ctrl+b reach
-    // copy mode.
-    let (mut state, _) = sized_app_in_copy_mode(&ctrl_a_prefix(), Some("codex"), (80, 49), true);
-    for (key, sent) in [
-        (CTRL_B, ClientKeyCode::PageUp),
-        (CTRL_F, ClientKeyCode::PageDown),
-        (PAGE_UP, ClientKeyCode::PageUp),
-        (PAGE_DOWN, ClientKeyCode::PageDown),
-    ] {
-        let page = press_key(&mut state, key.0, key.1);
-        assert_eq!(keys_sent_to_pane(&page), strokes(sent, 1), "{key:?}");
-        assert!(mouse_events_sent_to_pane(&page).is_empty(), "{key:?}");
-        assert!(page.actions.is_empty(), "no Herdr scroll for {key:?}");
-    }
-}
-
-#[test]
-fn leaving_copy_mode_sends_codex_its_jump_to_latest_on_every_exit() {
-    // A half page up by wheel or a page up by key leaves Codex owing one
-    // ctrl+End. Moving back down does not pay it off, because herdr cannot
-    // see how far either move went, and the jump lands on the latest output
-    // from anywhere.
-    for up in [CTRL_U, PAGE_UP] {
-        for exit_key in EXIT_KEYS {
-            let (mut state, _) = codex_in_copy_mode();
-            for key in [up, CTRL_D, PAGE_DOWN] {
-                press_key(&mut state, key.0, key.1);
-            }
-            let exit = press_key(&mut state, exit_key.0, exit_key.1);
-            assert_eq!(state.mode, ClientShellMode::Terminal, "{up:?} {exit_key:?}");
-            assert_eq!(
-                keys_to(&exit, "pane_1"),
-                ctrl_end_stroke(),
-                "{up:?} {exit_key:?}"
-            );
-            assert!(
-                mouse_events_sent_to_pane(&exit).is_empty(),
-                "{up:?} {exit_key:?}"
-            );
-        }
-    }
-}
-
-#[test]
-fn codex_paged_only_down_owes_nothing() {
-    use crate::protocol::{ClientKeyCode, ClientMouseKind};
-
-    // Codex may have been scrolled up before copy mode began, so down moves
-    // still reach it, and with nothing sent up the exit sends nothing.
-    let (mut state, _) = codex_in_copy_mode();
-    let half = press_key(&mut state, CTRL_D.0, CTRL_D.1);
-    assert_eq!(
-        mouse_events_sent_to_pane(&half),
-        notches(ClientMouseKind::ScrollDown, 21, (40, 21))
-    );
-    let page = keys_for(&mut state, PAGE_DOWN);
-    assert_eq!(page, strokes(ClientKeyCode::PageDown, 1));
-
-    let exit = press_key(&mut state, QUIT.0, QUIT.1);
+    let exit = press_key(&mut state, KeyCode::Char('q'), KeyModifiers::empty());
     assert_eq!(state.mode, ClientShellMode::Terminal);
-    assert!(pane_message_sizes(&exit).is_empty());
-}
-
-#[test]
-fn paging_codex_far_up_is_never_capped() {
-    use crate::protocol::{ClientKeyCode, ClientMouseKind};
-
-    // Past the stroke cap that stops a held PgUp over other apps, Codex keeps
-    // moving both ways it pages, because its exit is one ctrl+End whatever
-    // was sent.
-    let (mut state, _) = codex_in_copy_mode();
-    for _ in 0..2100 {
-        let page = keys_for(&mut state, PAGE_UP);
-        assert_eq!(page, strokes(ClientKeyCode::PageUp, 1));
-    }
-    let half = notches(ClientMouseKind::ScrollUp, 21, (40, 21));
-    for _ in 0..200 {
-        let page = press_key(&mut state, CTRL_U.0, CTRL_U.1);
-        assert_eq!(mouse_events_sent_to_pane(&page), half);
-    }
-
-    let exit = press_key(&mut state, QUIT.0, QUIT.1);
-    assert_eq!(keys_to(&exit, "pane_1"), ctrl_end_stroke());
-    assert!(mouse_events_sent_to_pane(&exit).is_empty());
-}
-
-#[test]
-fn a_burst_of_codex_half_pages_stays_one_message_per_half_page() {
-    use crate::server::client_transport::MAX_INPUT_EVENT_BATCH;
-
-    // One read of the terminal can carry many keys, as a held ctrl+u does. A
-    // PgUp then 300 half pages in one read are 6300 notches, past what the
-    // server accepts in one message, so each half page goes out in its own
-    // message rather than joining the pending one.
-    let (mut state, _) = codex_in_copy_mode();
-    let key = |(code, modifiers): (KeyCode, KeyModifiers)| {
-        RawInputEvent::Key(crate::input::TerminalKey::new(code, modifiers))
-    };
-    let read = std::iter::once(key(PAGE_UP))
-        .chain((0..300).map(|_| key(CTRL_U)))
-        .collect();
-    let burst = state.handle_raw_events(read);
-    let sizes = pane_message_sizes(&burst);
-    assert_eq!(sizes, [vec![2], vec![21; 300]].concat());
-    assert!(sizes.iter().all(|size| *size <= MAX_INPUT_EVENT_BATCH));
-}
-
-#[test]
-fn codex_without_mouse_reporting_pages_by_key_and_still_jumps_back() {
-    use crate::protocol::ClientKeyCode;
-
-    // A notch to a pane that does not report the mouse would arrive as an
-    // arrow key, and arrows walk Codex's prompt history, so its half page
-    // falls back to one PgUp or PgDn.
-    let (mut state, _) = sized_app_in_copy_mode(&Config::default(), Some("codex"), (80, 49), false);
-    for (key, sent) in [
-        (CTRL_U, ClientKeyCode::PageUp),
-        (CTRL_D, ClientKeyCode::PageDown),
-    ] {
-        let page = press_key(&mut state, key.0, key.1);
-        assert_eq!(keys_sent_to_pane(&page), strokes(sent, 1), "{key:?}");
-        assert!(mouse_events_sent_to_pane(&page).is_empty(), "{key:?}");
-    }
-
-    let exit = press_key(&mut state, QUIT.0, QUIT.1);
-    assert_eq!(keys_to(&exit, "pane_1"), ctrl_end_stroke());
-}
-
-#[test]
-fn detection_landing_or_ending_mid_session_still_jumps_codex_back() {
-    use crate::protocol::{ClientKeyCode, ClientMouseKind};
-    let half = notches(ClientMouseKind::ScrollUp, 21, (40, 21));
-
-    // Detection names Codex after copy mode began. The PgUp before it went
-    // out as for any app, and the half page after it owes the jump, which
-    // covers that PgUp too.
-    let (mut state, _) = sized_app_in_copy_mode(&Config::default(), None, (80, 49), true);
-    let before = keys_for(&mut state, PAGE_UP);
-    assert_eq!(before, strokes(ClientKeyCode::PageUp, 1));
-    let codex = vec![agent_entry("pane_1", Some("codex"))];
-    state.set_snapshot(snapshot_with(2, codex));
-    assert_eq!(state.mode, ClientShellMode::Copy);
-    let after = press_key(&mut state, CTRL_U.0, CTRL_U.1);
-    assert_eq!(mouse_events_sent_to_pane(&after), half);
-    let exit = press_key(&mut state, QUIT.0, QUIT.1);
-    assert_eq!(keys_to(&exit, "pane_1"), ctrl_end_stroke());
-
-    // Codex's label goes away after a half page. The next keys go out as for
-    // any app, and the exit still sends the jump already owed.
-    let (mut state, _) = codex_in_copy_mode();
-    let before = press_key(&mut state, CTRL_U.0, CTRL_U.1);
-    assert_eq!(mouse_events_sent_to_pane(&before), half);
-    state.set_snapshot(snapshot_with(2, Vec::new()));
-    assert_eq!(state.mode, ClientShellMode::Copy);
-    for key in [PAGE_UP, CTRL_U] {
-        let after = press_key(&mut state, key.0, key.1);
-        let sent = keys_sent_to_pane(&after);
-        assert_eq!(sent, strokes(ClientKeyCode::PageUp, 1), "{key:?}");
-        assert!(mouse_events_sent_to_pane(&after).is_empty(), "{key:?}");
-    }
-    let exit = press_key(&mut state, QUIT.0, QUIT.1);
-    assert_eq!(keys_to(&exit, "pane_1"), ctrl_end_stroke());
-}
-
-#[test]
-fn terminal_mode_ctrl_u_still_reaches_codex_as_a_key() {
-    use crate::protocol::{ClientKeyCode, ClientKeyKind};
-
-    // Outside copy mode ctrl+u is Codex's own key, so it reaches Codex as
-    // typed, never as a wheel.
-    let (mut state, _) = codex_in_copy_mode();
-    let exit = press_key(&mut state, QUIT.0, QUIT.1);
-    assert_eq!(state.mode, ClientShellMode::Terminal);
-    assert!(pane_message_sizes(&exit).is_empty(), "nothing was owed");
-
-    let typed = state.handle_input_bytes(b"\x15");
-    let ctrl = KeyModifiers::CONTROL.bits();
-    assert_eq!(
-        keys_to(&typed, "pane_1"),
-        [(ClientKeyCode::Char('u'), ctrl, ClientKeyKind::Press)]
-    );
-    assert!(mouse_events_sent_to_pane(&typed).is_empty());
+    assert!(keys_sent_to_pane(&exit).is_empty());
 }
 
 #[test]

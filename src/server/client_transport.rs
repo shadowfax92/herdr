@@ -115,7 +115,7 @@ fn decode_endpoint_request(request: &str) -> serde_json::Result<DecodedEndpointR
     )
 }
 /// Maximum structured input events accepted in one client message.
-pub(crate) const MAX_INPUT_EVENT_BATCH: usize = 4096;
+const MAX_INPUT_EVENT_BATCH: usize = 4096;
 
 /// Channels owned by the server side of a client writer thread.
 #[derive(Clone, Debug)]

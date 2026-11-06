@@ -18,7 +18,6 @@ mod endpoint_navigation;
 mod endpoint_notices;
 mod endpoint_sidebar;
 mod endpoints;
-mod fullscreen_paging;
 mod fuzzy;
 mod landing_glow;
 pub(super) use endpoints::*;
@@ -154,47 +153,6 @@ fn push_key_stroke(
             }
         }
     }
-}
-
-/// Sends `notches` wheel notches toward `direction` to a pane, pointed at the
-/// pane-relative `(column, row)` with no modifiers, the way a real wheel's
-/// notches arrive. Copy mode uses it to move an app half its view where the
-/// app's page key moves a whole one.
-///
-/// Each notch carries `lines: 1`. The server writes one wheel report per
-/// notch to a pane that reports the mouse, whatever `lines` says, and counts
-/// `lines` toward its per-message event limit, so more would only spend the
-/// limit. A pane that does not report the mouse would get arrow keys or
-/// herdr's own scroll instead, so callers send notches only while it does.
-///
-/// The notches go out as a message of their own rather than merged into the
-/// pane's pending message, as `push_target_event` would merge them. One
-/// terminal read, or one flush of queued copy-mode keys, can carry many half
-/// pages, and merged into one message they would pass the server's
-/// `MAX_INPUT_EVENT_BATCH`, which disconnects the client. Keys pushed after
-/// the notches may still join their message.
-fn push_wheel_notches(
-    pane_id: String,
-    direction: crate::copy_mode::PageDirection,
-    notches: u16,
-    (column, row): (u16, u16),
-    outcome: &mut ClientShellInput,
-) {
-    let kind = match direction {
-        crate::copy_mode::PageDirection::Up => crate::protocol::ClientMouseKind::ScrollUp,
-        crate::copy_mode::PageDirection::Down => crate::protocol::ClientMouseKind::ScrollDown,
-    };
-    let notch = ClientPaneInputEvent::Mouse {
-        kind,
-        position: ClientMousePosition::Cell { column, row },
-        geometry: None,
-        modifiers: 0,
-        lines: 1,
-    };
-    outcome.requests.push(ClientMessage::ClientShellPaneInput {
-        pane_id,
-        events: vec![notch; usize::from(notches)],
-    });
 }
 
 fn contains(rect: Rect, point: (u16, u16)) -> bool {
