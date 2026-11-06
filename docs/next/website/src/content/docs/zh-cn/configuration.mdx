@@ -46,7 +46,9 @@ onboarding = false
 herdr server reload-config
 ```
 
-你也可以打开 Herdr 的全局菜单并选择 `reload config`。
+你也可以打开 Herdr 的全局菜单并选择 `reload config`，或用 `keys.reload_config` 把它绑定到按键。
+
+从 UI 重载，以及在设置中保存更改后，Herdr 会显示一条简短通知：`config reloaded`，或配置问题的数量和第一个问题，或重载失败的原因。只有服务器或只有客户端报告的问题会标注 `(server)` 或 `(client)`，例如旧版服务器不认识新的配置段时。通知使用剪贴板反馈提示，因此 `ui.toast.clipboard.enabled = false` 会连同复制提示一起关闭它。
 
 重载会在不重启窗格的情况下应用大多数 UI 设置。仅启动时生效的设置仍需重启。
 

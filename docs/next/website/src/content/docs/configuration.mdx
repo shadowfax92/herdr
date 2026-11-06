@@ -46,7 +46,9 @@ Reload a running server after editing `config.toml`:
 herdr server reload-config
 ```
 
-You can also open the global menu in Herdr and choose `reload config`.
+You can also open the global menu in Herdr and choose `reload config`, or bind it to a key with `keys.reload_config`.
+
+The UI's reload, and a change saved from settings, ends with a short notice: `config reloaded`, or the number of config issues with the first one, or why the reload failed. An issue reported only by the server or only by the client is marked `(server)` or `(client)`, as when an older server does not know a newer config section. The notice uses the clipboard feedback toast, so `ui.toast.clipboard.enabled = false` turns it off along with the copy toast.
 
 Reload applies most UI settings without restarting panes. Startup-only settings still need a restart.
 
