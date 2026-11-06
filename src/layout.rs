@@ -1,11 +1,15 @@
 //! BSP tree layout for tiling panes within a workspace.
 
+mod zoom;
+
 use std::cmp::Reverse;
 
 use ratatui::{
     layout::{Direction, Rect},
     widgets::Borders,
 };
+
+pub(crate) use zoom::{zoomed_rect, ZoomMargins, ZoomWidth};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct PaneId(u32);
