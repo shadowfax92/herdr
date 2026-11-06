@@ -1,4 +1,5 @@
 use super::*;
+use crate::copy_mode::{PageDirection, PageUnit};
 use crossterm::event::{KeyCode, KeyModifiers};
 
 impl ClientShellState {
@@ -195,11 +196,11 @@ impl ClientShellState {
                 return;
             }
             KeyCode::PageUp => {
-                self.move_copy_page(-1, false, outcome);
+                self.move_copy_page(PageDirection::Up, PageUnit::Full, outcome);
                 return;
             }
             KeyCode::PageDown => {
-                self.move_copy_page(1, false, outcome);
+                self.move_copy_page(PageDirection::Down, PageUnit::Full, outcome);
                 return;
             }
             KeyCode::Home => {
@@ -217,19 +218,19 @@ impl ClientShellState {
 
         match (key.code, key.modifiers) {
             (KeyCode::Char('b'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.move_copy_page(-1, false, outcome);
+                self.move_copy_page(PageDirection::Up, PageUnit::Full, outcome);
                 return;
             }
             (KeyCode::Char('f'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.move_copy_page(1, false, outcome);
+                self.move_copy_page(PageDirection::Down, PageUnit::Full, outcome);
                 return;
             }
             (KeyCode::Char('u'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.move_copy_page(-1, true, outcome);
+                self.move_copy_page(PageDirection::Up, PageUnit::Half, outcome);
                 return;
             }
             (KeyCode::Char('d'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.move_copy_page(1, true, outcome);
+                self.move_copy_page(PageDirection::Down, PageUnit::Half, outcome);
                 return;
             }
             _ => {}
@@ -577,33 +578,42 @@ impl ClientShellState {
         outcome.repaint = true;
     }
 
-    fn move_copy_page(&mut self, direction: i8, half_page: bool, outcome: &mut ClientShellInput) {
+    fn move_copy_page(
+        &mut self,
+        direction: PageDirection,
+        unit: PageUnit,
+        outcome: &mut ClientShellInput,
+    ) {
         if self.page_fullscreen_app(direction, outcome) {
             return;
         }
         let Some((_, height)) = self.copy_geometry() else {
             return;
         };
-        let lines = crate::copy_mode::copy_mode_page_lines(height, half_page);
+        let lines = crate::copy_mode::copy_mode_page_lines(height, unit);
         let Some((pane_id, next_offset)) = self.copy_mode.as_mut().map(|copy_mode| {
-            if direction < 0 {
-                copy_mode.cursor.row = copy_mode.cursor.row.saturating_sub(lines as u32);
-                copy_mode.offset_from_bottom = copy_mode
-                    .offset_from_bottom
-                    .saturating_add(lines)
-                    .min(copy_mode.max_offset_from_bottom);
-            } else {
-                let last_row = copy_mode
-                    .max_offset_from_bottom
-                    .saturating_add(height as usize)
-                    .saturating_sub(1)
-                    .min(u32::MAX as usize) as u32;
-                copy_mode.cursor.row = copy_mode
-                    .cursor
-                    .row
-                    .saturating_add(lines as u32)
-                    .min(last_row);
-                copy_mode.offset_from_bottom = copy_mode.offset_from_bottom.saturating_sub(lines);
+            match direction {
+                PageDirection::Up => {
+                    copy_mode.cursor.row = copy_mode.cursor.row.saturating_sub(lines as u32);
+                    copy_mode.offset_from_bottom = copy_mode
+                        .offset_from_bottom
+                        .saturating_add(lines)
+                        .min(copy_mode.max_offset_from_bottom);
+                }
+                PageDirection::Down => {
+                    let last_row = copy_mode
+                        .max_offset_from_bottom
+                        .saturating_add(height as usize)
+                        .saturating_sub(1)
+                        .min(u32::MAX as usize) as u32;
+                    copy_mode.cursor.row = copy_mode
+                        .cursor
+                        .row
+                        .saturating_add(lines as u32)
+                        .min(last_row);
+                    copy_mode.offset_from_bottom =
+                        copy_mode.offset_from_bottom.saturating_sub(lines);
+                }
             }
             (copy_mode.pane_id.clone(), copy_mode.offset_from_bottom)
         }) else {
@@ -621,7 +631,11 @@ impl ClientShellState {
     /// apps scroll on; the app decides how far a page goes. The app's content
     /// moves under any selection, so the selection is dropped rather than
     /// left covering other text. Returns false on the normal screen.
-    fn page_fullscreen_app(&mut self, direction: i8, outcome: &mut ClientShellInput) -> bool {
+    fn page_fullscreen_app(
+        &mut self,
+        direction: PageDirection,
+        outcome: &mut ClientShellInput,
+    ) -> bool {
         let Some(copy_mode) = self
             .copy_mode
             .as_mut()
@@ -629,18 +643,18 @@ impl ClientShellState {
         else {
             return false;
         };
-        copy_mode.app_pages_up = if direction < 0 {
-            copy_mode.app_pages_up.saturating_add(1)
-        } else {
-            copy_mode.app_pages_up.saturating_sub(1)
+        let code = match direction {
+            PageDirection::Up => {
+                copy_mode.app_pages_up = copy_mode.app_pages_up.saturating_add(1);
+                KeyCode::PageUp
+            }
+            PageDirection::Down => {
+                copy_mode.app_pages_up = copy_mode.app_pages_up.saturating_sub(1);
+                KeyCode::PageDown
+            }
         };
         let pane_id = copy_mode.pane_id.clone();
         self.clear_copy_mode_selection();
-        let code = if direction < 0 {
-            KeyCode::PageUp
-        } else {
-            KeyCode::PageDown
-        };
         super::push_key_stroke(pane_id, (code, KeyModifiers::empty()), 1, outcome);
         outcome.repaint = true;
         true

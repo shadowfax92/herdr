@@ -30,13 +30,33 @@ fn char_cell_width(ch: char) -> u16 {
     u16::from(crate::ghostty::unicode_codepoint_width(ch as u32)).max(1)
 }
 
-pub(crate) fn copy_mode_page_lines(height: u16, half_page: bool) -> usize {
+/// Which way a copy-mode page key moves. `Up` shows older output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PageDirection {
+    Up,
+    Down,
+}
+
+/// How far a copy-mode page key asks to move. ctrl+u and ctrl+d ask for half
+/// the visible pane. ctrl+b, ctrl+f, PgUp and PgDn ask for all of it, less a
+/// small overlap so the lines at the edge stay on screen. Herdr's own
+/// scrollback turns the unit into rows with `copy_mode_page_lines`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PageUnit {
+    Half,
+    Full,
+}
+
+/// Rows one page key scrolls herdr's own scrollback in a pane `height` rows
+/// tall. Half is `height / 2`. Full is `height - 2`, the two-row overlap that
+/// vim's ctrl+f keeps. A pane of two rows or fewer moves one row either way.
+pub(crate) fn copy_mode_page_lines(height: u16, unit: PageUnit) -> usize {
     if height <= 2 {
-        1
-    } else if half_page {
-        usize::from(height / 2)
-    } else {
-        usize::from(height - 2)
+        return 1;
+    }
+    match unit {
+        PageUnit::Half => usize::from(height / 2),
+        PageUnit::Full => usize::from(height - 2),
     }
 }
 
