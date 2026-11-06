@@ -1,14 +1,13 @@
 # herdr-tools
 
 One Herdr plugin, `shadowfax.tools`, run by one program, `herdr-tools`. It
-replaces seven separate plugins with unchanged behavior, one config file, and
+replaces six separate plugins with unchanged behavior, one config file, and
 configurable popup sizes.
 
 | Old plugin | Mode | Crate | Popup key(s) |
 |---|---|---|---|
 | `herdr-jump` | `find` | `tools-find` | `find` |
 | `herdr-ferry` | `move` | `tools-move` | `move` |
-| `herdr-talon` | `history` | `tools-history` | `history` |
 | `herdr-menu` | `menu` | `tools-menu` | `menu` |
 | `herdr-comments` | `comment` | `tools-comment` | `comment-capture`, `comment-review` |
 | `herdr-layouts` | `layout` | `tools-layout` | `layout-grid` |
@@ -65,8 +64,8 @@ herdr-tools never stores or judges scope. It only does two things with it:
   pane the verdict follows the attached client's scope once that server
   supports `scope.mirror`; an older one judges by its own config hides.
 
-The rest has no list to filter. Layout, comment, history, scratch and the
-menu's fork rows act on the pane or tab they were invoked from, an explicit
+The rest has no list to filter. Layout, comment, scratch and the menu's fork
+rows act on the pane or tab they were invoked from, an explicit
 action like a jump; scratch's cleanup reaps by Herdr's full pane list, so a
 hidden pane's scratch session is never reaped. On a Herdr without `scope.get`
 nothing is filtered and nothing is said; the menu's scope rows read
@@ -82,8 +81,8 @@ herdr-tools/
   justfile                    ci, install, real, bin, fmt
   nvim/                       runtime Neovim assets, nvim/<mode>/…
   crates/core                 tools-core (+ examples/open_popup.rs)
-  crates/<mode>               tools-find, tools-move, tools-history, tools-menu,
-                              tools-comment, tools-layout, tools-scratch
+  crates/<mode>               tools-find, tools-move, tools-menu, tools-comment,
+                              tools-layout, tools-scratch
   tests/support/isolated_herdr.py   reusable isolated-Herdr harness
   tests/real_scaffold.py      real-herdr check of install, actions, popup sizing
 ```
@@ -155,8 +154,8 @@ pub struct HostError { pub method: String, pub code: String, pub message: String
   to 220 characters. Comments' `--sound none` is a plain `cli` call.
 - `reload_config`: `herdr server reload-config`.
 - `pane_area`: the `pane.layout` area of the pane's client.
-- `client_width`: `area.x + area.width`, the same number talon, comments and
-  scratch matched profiles on. On Herdr 0.9.5 it excludes the sidebar: a
+- `client_width`: `area.x + area.width`, the same number comments and scratch
+  matched profiles on. On Herdr 0.9.5 it excludes the sidebar: a
   200-column terminal reports 174.
 - `open_popup`: opens plugin pane `entrypoint` as a focused popup. The size for
   `popup_key` comes from `Config::current()` and the invocation's source-pane
@@ -260,7 +259,7 @@ old plugin.
 ### `Config`: the one config file (`config.rs`)
 
 ```rust
-pub const SECTIONS: &[&str] = &["popup", "find", "move", "history", "menu", "comment", "layout", "scratch"];
+pub const SECTIONS: &[&str] = &["popup", "find", "move", "menu", "comment", "layout", "scratch"];
 impl Config {
     pub fn current() -> Result<&'static Config>;
     pub fn load(path: &Path) -> Result<Self>;
@@ -277,7 +276,9 @@ impl Config {
   error on every call, never silently replaced by defaults.
 - `load`: a missing file is the all-defaults config.
 - `parse`: text with no file behind it. An unknown top-level table is an error
-  naming the valid ones, and `[popup]` is validated.
+  naming the valid ones, and `[popup]` is validated. A removed mode's table
+  (`[history]`) is ignored, so a config synced from another machine still
+  loads.
 - `path`: the file the config came from.
 - `section`: deserializes `[name]`, or `T::default()` when absent. Errors name
   the table and file. Strictness is the mode's choice
@@ -427,31 +428,31 @@ pub fn migrate_legacy(legacy_config_root: &Path) -> anyhow::Result<toml::Table>;
   - Its own `[<mode>]` table, plus any `[popup.size]` / `[[popup.profile]]`
     entries for its keys.
   - Where the old plugin had **built-in** default sizes or profiles that applied
-    with no config, emit them explicitly. Talon applied its laptop / ultrawide
-    profiles when its file set none, which is the owner's case today. Comments
-    and scratch wrote a default YAML on first run, and that no longer happens:
-    without config, a fresh install gets the manifest defaults.
+    with no config, emit them explicitly. Comments and scratch wrote a default
+    YAML on first run, and that no longer happens: without config, a fresh
+    install gets the manifest defaults.
   - `migrate-config` merges fragments. Profiles with the same name and width
     range combine their `size` maps, and any other key two modes set
     differently is an error. It also rewrites old action ids inside `[menu]`
     strings.
 - **Manifest.** Edit only your `# --- <mode> ---` block in `herdr-plugin.toml`.
   Commands are `./bin/herdr-tools <mode> …`. Pane ids are the popup keys
-  (`find`, `move`, `history`, `menu`, `comment-capture`, `comment-review`,
-  `layout-grid`, `scratch`). Scratch's one `scratch` pane is sized per scratch
-  with key `scratch-<name>`. `manifest_ids_match_the_design` pins the action
-  and pane ids.
+  (`find`, `move`, `menu`, `comment-capture`, `comment-review`, `layout-grid`,
+  `scratch`). Scratch's one `scratch` pane is sized per scratch with key
+  `scratch-<name>`. `manifest_ids_match_the_design` pins the action and pane
+  ids.
 - **Dependencies.** Each stub already depends on its old plugin's crates, so
   `Cargo.lock` is complete and a port should not need a lockfile change. Drop
   what you end up not using.
 - **Strings.** Titles that named an old plugin are renamed in the manifest:
-  Jump → Find, Ferry → Move / "Move or kill panes", Talon → History /
-  "Browse pane history". Rename user-facing strings only where they name an old
-  plugin or old action id.
+  Jump → Find, Ferry → Move / "Move or kill panes". Rename user-facing strings
+  only where they name an old plugin or old action id.
 
 ## Dependencies
 
-`[workspace.dependencies]` is the union of the seven old `Cargo.toml`s.
+`[workspace.dependencies]` started as the union of the seven old `Cargo.toml`s.
+The seventh, herdr-talon, no longer has a mode because Herdr's native copy
+hints replaced it, but the table still records the versions it asked for.
 `Cargo.lock` was seeded from herdr-jump's lock and pinned to the old locks'
 versions. Where requirements disagreed, the newest compatible one won:
 
@@ -467,7 +468,7 @@ versions. Where requirements disagreed, the newest compatible one won:
 
 The rest are as the old plugins had them: anyhow 1.0, ansi-to-tui 8.0.1,
 chrono 0.4 (std only), crossterm 0.29, fs4 1, libc 0.2, noyalib 0.0.18,
-nucleo-matcher 0.3.1, regex 1.12, serde 1.0, serde_json 1.0, sha2 0.10,
+nucleo-matcher 0.3.1, serde 1.0, serde_json 1.0, sha2 0.10,
 static_assertions 1.1, thiserror 2.0, toml 1.1 (locked 1.1.4, as talon and menu
 had), unicode-normalization 0.1, unicode-width 0.2. Scratch moves from
 toml_edit 0.22 to 0.24, and it only used `DocumentMut` in one test.
@@ -591,7 +592,7 @@ A headless server sizes popups against its 120×40 default. Attach a client
 PASS install + link: /private/tmp/herdr-tools-real-…/data/herdr/plugins/shadowfax.tools (herdr-tools 0.1.0); a second install keeps the link
 PASS stub action: status=failed exit=1 stderr='herdr-tools move: move is not ported yet'
 PASS popup move: config {'width': 60, 'height': 20, 'profile': None} -> outer 60x20 -> Herdr PTY 57x18
-PASS popup history: config {'width': '50%', 'height': '40%', 'profile': 'test-narrow'} -> outer 50%x40% -> Herdr PTY 84x17
+PASS popup comment-capture: config {'width': '50%', 'height': '40%', 'profile': 'test-narrow'} -> outer 50%x40% -> Herdr PTY 84x17
 PASS popup layout-grid: config None -> outer 80x24 -> Herdr PTY 77x22
 ```
 

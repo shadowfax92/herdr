@@ -1,5 +1,5 @@
 //! Popup sizes from `[popup.size]` and `[[popup.profile]]`, generalized from the
-//! old comments, scratch and talon width profiles.
+//! old comments and scratch width profiles.
 //!
 //! A *popup key* names one popup's size slot (`find`, `comment-capture`,
 //! `scratch-nvim`, …). It is not always the manifest pane id: every scratch shares
@@ -322,16 +322,16 @@ max_client_width = 310
 size.scratch-nvim = { width = "95%", height = "95%" }
 
 [[profile]]
-name = "history-laptop"
+name = "comment-laptop"
 max_client_width = 310
-size.history = { width = "95%", height = "90%" }
+size.comment-capture = { width = "95%", height = "90%" }
 "#,
         )
         .unwrap();
 
-        let history = config.resolve("history", Some(300)).unwrap();
-        assert_eq!(history.dims, dims("95%", "90%"));
-        assert_eq!(history.profile.as_deref(), Some("history-laptop"));
+        let capture = config.resolve("comment-capture", Some(300)).unwrap();
+        assert_eq!(capture.dims, dims("95%", "90%"));
+        assert_eq!(capture.profile.as_deref(), Some("comment-laptop"));
     }
 
     #[test]

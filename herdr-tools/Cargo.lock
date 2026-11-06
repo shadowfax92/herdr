@@ -607,7 +607,6 @@ dependencies = [
  "tools-comment",
  "tools-core",
  "tools-find",
- "tools-history",
  "tools-layout",
  "tools-menu",
  "tools-move",
@@ -1814,24 +1813,6 @@ dependencies = [
  "unicode-normalization",
  "unicode-segmentation",
  "unicode-width",
-]
-
-[[package]]
-name = "tools-history"
-version = "0.1.0"
-dependencies = [
- "ansi-to-tui",
- "anyhow",
- "clap",
- "ratatui",
- "regex",
- "serde",
- "serde_json",
- "tempfile",
- "toml",
- "tools-core",
- "unicode-segmentation",
- "uuid",
 ]
 
 [[package]]

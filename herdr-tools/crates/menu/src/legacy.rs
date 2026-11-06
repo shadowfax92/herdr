@@ -46,7 +46,6 @@ const MENU_FIELDS: &[&str] = &["title", "max_height", "items"];
 const OLD_BINARIES: &[(&str, &str)] = &[
     ("herdr-jump", "find"),
     ("herdr-ferry", "move"),
-    ("herdr-talon", "history"),
     ("herdr-menu", "menu"),
     ("herdr-comments", "comment"),
     ("herdr-layouts", "layout"),
@@ -298,8 +297,8 @@ mod tests {
                 r#""$HERDR_PLUGIN_ROOT/bin/herdr-tools" scratch reap|cat"#,
             ),
             (
-                "a/herdr-talon/target/release/herdr-talon x; b/herdr-comments/target/release/herdr-comments y; c/herdr-menu/target/release/herdr-menu z",
-                r#""$HERDR_PLUGIN_ROOT/bin/herdr-tools" history x; "$HERDR_PLUGIN_ROOT/bin/herdr-tools" comment y; "$HERDR_PLUGIN_ROOT/bin/herdr-tools" menu z"#,
+                "b/herdr-comments/target/release/herdr-comments y; c/herdr-menu/target/release/herdr-menu z",
+                r#""$HERDR_PLUGIN_ROOT/bin/herdr-tools" comment y; "$HERDR_PLUGIN_ROOT/bin/herdr-tools" menu z"#,
             ),
         ] {
             assert_eq!(rewrite_old_binaries(old), new);

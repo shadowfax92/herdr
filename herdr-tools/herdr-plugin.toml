@@ -2,7 +2,7 @@ id = "shadowfax.tools"
 name = "Herdr Tools"
 version = "0.1.0"
 min_herdr_version = "0.9.0"
-description = "Find panes, move them, browse history, run a command menu, comment on output, lay out panes, and keep scratch popups."
+description = "Find panes, move them, run a command menu, comment on output, lay out panes, and keep scratch popups."
 platforms = ["macos", "linux"]
 
 # Releases and `just install` lay this directory out prebuilt, and
@@ -59,25 +59,6 @@ placement = "popup"
 width = 76
 height = 24
 command = ["./bin/herdr-tools", "move", "picker"]
-
-# --- history ---
-# Formerly herdr-talon. `open` snapshots the focused pane and opens the `history`
-# popup, sized by config key `history` (default: this pane's 90% x 90%).
-
-[[actions]]
-id = "history"
-title = "Browse pane history"
-description = "Browse recent focused-pane output and copy a target or selection."
-contexts = ["pane"]
-command = ["./bin/herdr-tools", "history", "open"]
-
-[[panes]]
-id = "history"
-title = "History"
-placement = "popup"
-width = "90%"
-height = "90%"
-command = ["./bin/herdr-tools", "history", "picker"]
 
 # --- menu ---
 

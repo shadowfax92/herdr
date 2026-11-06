@@ -10,7 +10,6 @@ pub const ACTION_IDS: &[(&str, &str)] = &[
     ("shadowfax.jump.open", "shadowfax.tools.find"),
     ("shadowfax.jump.paths", "shadowfax.tools.find-paths"),
     ("shadowfax.ferry.open", "shadowfax.tools.move"),
-    ("shadowfax.talon.launch", "shadowfax.tools.history"),
     ("shadowfax.menu.open", "shadowfax.tools.menu"),
     (
         "shadowfax.comments.capture",
@@ -50,7 +49,6 @@ pub const ACTION_IDS: &[(&str, &str)] = &[
 pub const DROPPED_ACTION_IDS: &[&str] = &[
     "shadowfax.jump.install-keybindings",
     "shadowfax.ferry.install-keybindings",
-    "shadowfax.talon.install-keybindings",
     "shadowfax.menu.install",
     "shadowfax.menu.add-redistribute",
     "shadowfax.menu.add-handoff",

@@ -1,9 +1,9 @@
-//! `herdr-tools migrate-config`: builds the one `config.toml` from the seven old
+//! `herdr-tools migrate-config`: builds the one `config.toml` from the six old
 //! plugins' configs.
 //!
 //! ```text
 //!  ~/.config/herdr/plugins/config/            (legacy root)
-//!    shadowfax.talon/config.toml   ─ tools_history::migrate_legacy ─┐
+//!    shadowfax.menu/config.toml     ─ tools_menu::migrate_legacy ────┐
 //!    shadowfax.comments/config.yaml ─ tools_comment::migrate_legacy ─┼─ merge ─ rewrite old
 //!    …one fragment per mode…                                         │         action ids
 //!                                                                    ┘         in [menu]
@@ -31,7 +31,6 @@ type Migrator = fn(&Path) -> Result<Table>;
 const MIGRATORS: &[(&str, Migrator)] = &[
     (tools_find::MODE, tools_find::migrate_legacy),
     (tools_move::MODE, tools_move::migrate_legacy),
-    (tools_history::MODE, tools_history::migrate_legacy),
     (tools_menu::MODE, tools_menu::migrate_legacy),
     (tools_comment::MODE, tools_comment::migrate_legacy),
     (tools_layout::MODE, tools_layout::migrate_legacy),

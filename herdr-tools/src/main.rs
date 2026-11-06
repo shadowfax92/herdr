@@ -16,7 +16,7 @@ use clap::{Parser, Subcommand};
 #[command(
     name = "herdr-tools",
     version,
-    about = "Find, move, history, menu, comment, layout and scratch tools for Herdr"
+    about = "Find, move, menu, comment, layout and scratch tools for Herdr"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -31,9 +31,6 @@ enum Top {
     /// Move, merge, or kill panes, tabs and workspaces (formerly herdr-ferry).
     #[command(subcommand)]
     Move(tools_move::Command),
-    /// Browse pane history and copy values with hints (formerly herdr-talon).
-    #[command(subcommand)]
-    History(tools_history::Command),
     /// The configurable command and agent-fork menu (formerly herdr-menu).
     #[command(subcommand)]
     Menu(tools_menu::Command),
@@ -67,7 +64,6 @@ impl Top {
         match self {
             Self::Find(_) => tools_find::MODE,
             Self::Move(_) => tools_move::MODE,
-            Self::History(_) => tools_history::MODE,
             Self::Menu(_) => tools_menu::MODE,
             Self::Comment(_) => tools_comment::MODE,
             Self::Layout(_) => tools_layout::MODE,
@@ -80,7 +76,6 @@ impl Top {
         match self {
             Self::Find(command) => tools_find::run(command),
             Self::Move(command) => tools_move::run(command),
-            Self::History(command) => tools_history::run(command),
             Self::Menu(command) => tools_menu::run(command),
             Self::Comment(command) => tools_comment::run(command),
             Self::Layout(command) => tools_layout::run(command),
@@ -126,7 +121,7 @@ mod tests {
                 commands.push(entry["command"].as_array().unwrap().clone());
             }
         }
-        assert!(commands.len() >= 25, "{commands:?}");
+        assert!(commands.len() >= 23, "{commands:?}");
         for command in commands {
             let argv = command
                 .iter()
@@ -165,7 +160,6 @@ mod tests {
             [
                 "find",
                 "move",
-                "history",
                 "menu",
                 "comment-capture",
                 "comment-review",

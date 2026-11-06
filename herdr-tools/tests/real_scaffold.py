@@ -81,7 +81,7 @@ def main():
             "[[popup.profile]]\n"
             'name = "test-narrow"\n'
             f"max_client_width = {client_width}\n"
-            'size.history = { width = "50%", height = "40%" }\n'
+            'size.comment-capture = { width = "50%", height = "40%" }\n'
         )
         plugin_env = {
             "HERDR_PLUGIN_CONFIG_DIR": str(herdr.plugin_config_dir),
@@ -90,8 +90,8 @@ def main():
         cases = [
             # entrypoint, popup key, expected resolution, outer (w, h) Herdr should use
             ("move", "move", {"width": 60, "height": 20, "profile": None}, (60, 20)),
-            ("history", "history", {"width": "50%", "height": "40%", "profile": "test-narrow"},
-             ("50%", "40%")),
+            ("comment-capture", "comment-capture",
+             {"width": "50%", "height": "40%", "profile": "test-narrow"}, ("50%", "40%")),
             ("layout-grid", "layout-grid", None, (80, 24)),  # manifest default
         ]
         for entrypoint, key, resolved, (width, height) in cases:

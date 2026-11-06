@@ -4,6 +4,7 @@
 //! file's shape and `[popup]`; each mode owns its table's schema and reads it with
 //! [`Config::section`]. A missing file means every default. An unknown top-level
 //! table is an error naming the valid ones, so a typo cannot silently fall back.
+//! A removed mode's table (`RETIRED_SECTIONS`) is ignored instead.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -16,8 +17,14 @@ use crate::popup::{PopupConfig, ResolvedPopup};
 
 /// Every top-level table `config.toml` may contain: `popup`, then one per mode.
 pub const SECTIONS: &[&str] = &[
-    "popup", "find", "move", "history", "menu", "comment", "layout", "scratch",
+    "popup", "find", "move", "menu", "comment", "layout", "scratch",
 ];
+
+/// Tables of removed modes, accepted and ignored. Every mode loads this file,
+/// so rejecting one would break them all, and a config synced from another
+/// machine can still hold one. `[history]` belonged to the History popup,
+/// which Herdr's native copy hints (`[copy_hints]` in Herdr's config) replaced.
+const RETIRED_SECTIONS: &[&str] = &["history"];
 
 /// A loaded and shape-checked `config.toml`.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -64,6 +71,9 @@ impl Config {
     pub fn parse(source: &str) -> Result<Self> {
         let tables: toml::Table = toml::from_str(source)?;
         for (key, value) in &tables {
+            if RETIRED_SECTIONS.contains(&key.as_str()) {
+                continue;
+            }
             if !SECTIONS.contains(&key.as_str()) {
                 bail!(
                     "unknown table [{key}]; valid tables are {}",
@@ -138,7 +148,7 @@ mod tests {
 
     #[derive(Debug, Default, Deserialize, PartialEq)]
     #[serde(default, deny_unknown_fields)]
-    struct History {
+    struct Find {
         patterns: Vec<String>,
     }
 
@@ -148,10 +158,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         let config = Config::load(&path).unwrap();
         assert_eq!(config.path(), Some(path.as_path()));
-        assert_eq!(
-            config.section::<History>("history").unwrap(),
-            History::default()
-        );
+        assert_eq!(config.section::<Find>("find").unwrap(), Find::default());
         assert_eq!(config.popup("find", Some(300)), None);
     }
 
@@ -159,7 +166,7 @@ mod tests {
     fn sections_deserialize_their_own_table() {
         let config = Config::parse(
             r#"
-[history]
+[find]
 patterns = ["a", "b"]
 
 [popup.size]
@@ -167,16 +174,13 @@ find = { width = 110, height = "90%" }
 "#,
         )
         .unwrap();
-        assert_eq!(
-            config.section::<History>("history").unwrap().patterns,
-            ["a", "b"]
-        );
+        assert_eq!(config.section::<Find>("find").unwrap().patterns, ["a", "b"]);
         assert_eq!(
             config.popup("find", None).unwrap().dims.width,
             PopupSize::Cells(110)
         );
         assert!(config.section_table("menu").unwrap().is_none());
-        assert!(config.section::<History>("histroy").is_err());
+        assert!(config.section::<Find>("fnid").is_err());
     }
 
     #[test]
@@ -191,14 +195,33 @@ find = { width = 110, height = "90%" }
     }
 
     #[test]
+    fn a_retired_history_table_is_ignored() {
+        let config = Config::parse(
+            r#"
+[history]
+alphabet = "asdf"
+
+[[history.patterns]]
+name = "git-ssh"
+regex = 'git@[a-zA-Z0-9.-]+:[a-zA-Z0-9/.-]+\.git'
+
+[find]
+"#,
+        )
+        .unwrap();
+        assert!(config.section_table("find").unwrap().is_some());
+        assert!(config.section_table("history").is_err());
+    }
+
+    #[test]
     fn invalid_sections_and_popups_name_the_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        std::fs::write(&path, "[history]\npatterns = 3\n").unwrap();
+        std::fs::write(&path, "[find]\npatterns = 3\n").unwrap();
         let config = Config::load(&path).unwrap();
-        let error = format!("{:#}", config.section::<History>("history").unwrap_err());
+        let error = format!("{:#}", config.section::<Find>("find").unwrap_err());
         assert!(
-            error.contains("[history]") && error.contains("config.toml"),
+            error.contains("[find]") && error.contains("config.toml"),
             "{error}"
         );
 
@@ -230,7 +253,6 @@ size.scratch-nvim = { width = "95%", height = "95%" }
 
 [find]
 [move]
-[history]
 [menu]
 [comment]
 [scratch]
