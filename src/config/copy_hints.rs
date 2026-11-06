@@ -134,9 +134,8 @@ mod tests {
     }
 
     #[test]
-    fn the_owners_history_patterns_parse_unchanged_under_copy_hints() {
-        // The five [[history.patterns]] tables from the herdr-tools plugin
-        // config, renamed to [[copy_hints.patterns]].
+    fn the_owners_patterns_parse_unchanged_under_copy_hints() {
+        // The owner's five custom patterns, byte for byte.
         let (parsed, diagnostics) = sources(
             r#"
 [[copy_hints.patterns]]

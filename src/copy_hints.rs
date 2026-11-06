@@ -8,8 +8,7 @@
 //! client's copy-mode hint sub-state builds the lines from a pane's cells and
 //! maps the byte ranges back to cells.
 //!
-//! The rules port herdr-tools `history` (`matcher.rs`, `hints.rs`,
-//! `config.rs`), a separate workspace herdr cannot depend on:
+//! The rules:
 //! - custom patterns come first, then the enabled built-ins, in that order;
 //! - a named `match` group is the copied text and the label anchor, while the
 //!   whole match is what gets underlined; empty captures are skipped;
@@ -18,11 +17,9 @@
 //!   pattern;
 //! - equal texts collapse into one target, drawn at every occurrence;
 //! - labels are prefix-free and as short as possible (k-ary Huffman over the
-//!   alphabet), sorted by length and then alphabet order.
-//!
-//! One rule differs from History: the bottom-most target gets the shortest,
-//! earliest label, because new output, an agent's above all, arrives at the
-//! bottom of a pane.
+//!   alphabet), sorted by length and then alphabet order;
+//! - the bottom-most target gets the shortest, earliest label, because new
+//!   output, an agent's above all, arrives at the bottom of a pane.
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
@@ -30,12 +27,11 @@ use std::ops::Range;
 
 use crate::config::CopyHintsConfig;
 
-/// History's default alphabet: 17 keys, home row first.
+/// The default alphabet: 17 keys, home row first.
 pub(crate) const DEFAULT_HINT_ALPHABET: &str = "asdfwerzxcuioptbm";
 
 /// tmux-fingers' built-in patterns in their default priority order, copied
-/// verbatim from herdr-tools `history/src/config.rs`, noise included (see the
-/// tests), so hints find what the History popup found.
+/// verbatim, noise included (see the tests).
 pub(crate) const BUILTIN_HINT_PATTERNS: &[(&str, &str)] = &[
     ("ip", r"\d{1,3}(?:\.\d{1,3}){3}"),
     (
@@ -81,8 +77,7 @@ pub(crate) struct HintRules {
 /// comfortable first.
 ///
 /// Only `parse` and `default` build one, so `labels` never meets an alphabet
-/// that cannot form a prefix-free code. History's `generate_hints` returned a
-/// `Result` for that case; `labels` cannot fail.
+/// that cannot form a prefix-free code and cannot fail.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct HintAlphabet(Vec<char>);
 
@@ -276,9 +271,9 @@ fn regex_error_reason(err: &regex::Error) -> String {
 }
 
 /// Non-overlapping `(full, capture)` byte ranges of one line, leftmost first.
-/// The inner loop of History's `find_targets`: gather every pattern's matches,
-/// sort them by (start, priority, longest first), then keep each one that
-/// starts at or after the end of the last one kept.
+/// Gathers every pattern's matches, sorts them by (start, priority, longest
+/// first), then keeps each one that starts at or after the end of the last one
+/// kept.
 fn sweep_line(line: &str, patterns: &[regex::Regex]) -> Vec<(Range<usize>, Range<usize>)> {
     let mut candidates = Vec::new();
     for (priority, pattern) in patterns.iter().enumerate() {
@@ -310,7 +305,7 @@ fn sweep_line(line: &str, patterns: &[regex::Regex]) -> Vec<(Range<usize>, Range
 /// alphabet order. Up to one label per key, each label is a single key in
 /// alphabet order. Beyond that, a k-ary Huffman tree over equal weights,
 /// padded with zero-weight leaves so every branch has a child per key, gives
-/// the shortest prefix-free code. A port of History's `generate_hints`.
+/// the shortest prefix-free code.
 fn labels(alphabet: &HintAlphabet, count: usize) -> Vec<String> {
     enum Node {
         Padding,
@@ -382,8 +377,7 @@ mod tests {
 
     use super::*;
 
-    /// The owner's custom patterns, from the History popup's plugin config,
-    /// byte for byte.
+    /// The owner's custom patterns, byte for byte.
     const OWNER_PATTERNS: [&str; 5] = [
         r"git@[a-zA-Z0-9.-]+:[a-zA-Z0-9/.-]+\.git",
         "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",

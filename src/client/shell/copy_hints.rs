@@ -498,16 +498,15 @@ impl ClientCopyHints {
         }
     }
 
-    /// The typed-label state machine: History's `handle_hint`, plus Esc,
-    /// Backspace and Ctrl+C. Pure, so it is unit-tested directly.
+    /// The typed-label state machine. Pure, so it is unit-tested directly.
     ///
     /// - Esc clears a partial label; with nothing typed, it cancels.
     /// - Ctrl+C cancels.
     /// - Backspace takes back the last typed key.
     /// - A character, decoded by `copy_mode_command_char` so layouts and
-    ///   Shift resolve as in copy mode, is lowercased (Shift+a types `a`, as
-    ///   in History) and appended. An exact label is `Chosen`, a prefix of
-    ///   some label narrows, and anything else resets what was typed.
+    ///   Shift resolve as in copy mode, is lowercased (Shift+a types `a`) and
+    ///   appended. An exact label is `Chosen`, a prefix of some label narrows,
+    ///   and anything else resets what was typed.
     /// - Every other key is consumed and changes nothing.
     /// - While `Waiting`, Esc and Ctrl+C cancel and every other key is
     ///   consumed.
@@ -879,8 +878,8 @@ mod tests {
 
     #[test]
     fn wide_cells_map_to_their_columns_and_spacers_become_blank() {
-        // History's unicode_byte_offsets_become_terminal_cell_offsets: the
-        // path starts at column 9, after one narrow and three wide graphemes.
+        // The path starts at column 9, after one narrow and three wide
+        // graphemes.
         let frozen = capture(&["λ 日本語 /tmp/a"], 20);
 
         let place = only_place(&frozen, "/tmp/a");
@@ -900,8 +899,7 @@ mod tests {
 
     #[test]
     fn halfwidth_sound_marks_count_as_two_columns() {
-        // History's coordinates_match_ratatui_halfwidth_sound_mark_cells, in
-        // the layout the server sends: the terminal draws the voiced mark
+        // In the layout the server sends, the terminal draws the voiced mark
         // two columns wide, so the head is followed by an empty spacer cell.
         let (pane, mut frame) = pane_frame(&["xx /tmp/a"], 12);
         frame.cells[0].symbol = "ｶﾞ".into();
@@ -969,8 +967,6 @@ mod tests {
 
     #[test]
     fn labels_at_the_right_edge_shift_left_onto_a_head_cell() {
-        // History's multi_key_hints_shift_left_at_the_right_edge and
-        // right_clamped_hints_replace_wide_graphemes_from_their_leading_cell.
         // With keys "ab", z gets "a" and x and y get two-key labels. A target
         // in the last column fills its row, so a blank row follows each one.
         let hint_rules = rules(
