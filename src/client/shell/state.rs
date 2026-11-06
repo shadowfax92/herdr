@@ -644,7 +644,12 @@ pub(super) enum PendingEndpointKind {
     },
     ReleaseNotesDismiss,
     PopupCommand,
-    ReloadConfig,
+    /// A `server.reload_config` request. It carries the client's own reload,
+    /// done when the request was sent, so the reply can show one notice for
+    /// both sides.
+    ReloadConfig {
+        client: super::config::ConfigReloadSide,
+    },
     IntegrationList,
     IntegrationInstall,
     PrepareWorktreeCreate {
@@ -1961,13 +1966,32 @@ impl ClientShellState {
     /// A short notice in the clipboard toast, such as copy hints' "no copy
     /// targets". It follows `ui.toast.clipboard.enabled`, like the copy toast.
     pub(super) fn show_clipboard_notice(&mut self, message: &str, now: std::time::Instant) -> bool {
+        self.show_feedback_notice(
+            message,
+            crate::app::state::FeedbackTone::Success,
+            std::time::Duration::from_secs(2),
+            now,
+        )
+    }
+
+    /// The clipboard toast with a tone and lifetime of its own, for notices
+    /// that may need longer to read than "copied to clipboard". It replaces
+    /// whatever the toast showed and follows `ui.toast.clipboard.enabled`.
+    pub(super) fn show_feedback_notice(
+        &mut self,
+        message: &str,
+        tone: crate::app::state::FeedbackTone,
+        lifetime: std::time::Duration,
+        now: std::time::Instant,
+    ) -> bool {
         if !self.config.clipboard_toast_enabled {
             return false;
         }
         self.copy_feedback = Some(crate::app::state::CopyFeedback {
             message: message.to_owned(),
+            tone,
         });
-        self.copy_feedback_deadline = Some(now + std::time::Duration::from_secs(2));
+        self.copy_feedback_deadline = Some(now + lifetime);
         true
     }
 

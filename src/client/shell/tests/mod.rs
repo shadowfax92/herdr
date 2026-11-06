@@ -252,6 +252,7 @@ mod attention_agents;
 mod chrome_context;
 mod close_pane;
 mod close_tab;
+mod config_reload;
 mod copy;
 mod copy_hints;
 mod endpoint_requests;

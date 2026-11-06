@@ -1,5 +1,98 @@
 use super::*;
 
+/// One side of a config reload, as the reload notice sees it: the client's own
+/// reload of its local `config.toml`, or the server's `server.reload_config`
+/// reply. The server can be an older build, or another machine's config, so
+/// the two sides may report different issues for the same reload.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ConfigReloadSide {
+    /// The config could not be read or parsed, so this side kept its old config.
+    pub(crate) failed: bool,
+    pub(crate) diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReloadIssueSource {
+    Client,
+    Server,
+    Both,
+}
+
+/// Long enough to read a diagnostic; a plain success clears like copy feedback.
+const RELOAD_ISSUE_NOTICE_LIFETIME: std::time::Duration = std::time::Duration::from_secs(6);
+const RELOAD_SUCCESS_NOTICE_LIFETIME: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The one-line notice for a finished reload: plain success, or the issue
+/// count and the first issue, with an issue both sides report counted once.
+/// When every issue comes from one side the count names it, so a stale
+/// server's complaint about a section this client knows reads as the
+/// server's, not as a problem with the config.
+pub(super) fn config_reload_notice(
+    client: &ConfigReloadSide,
+    server: &ConfigReloadSide,
+) -> (String, crate::app::state::FeedbackTone) {
+    use crate::app::state::FeedbackTone;
+
+    let mut issues: Vec<(&str, ReloadIssueSource)> = Vec::new();
+    for diagnostic in &client.diagnostics {
+        if !issues.iter().any(|(issue, _)| *issue == diagnostic) {
+            issues.push((diagnostic, ReloadIssueSource::Client));
+        }
+    }
+    for diagnostic in &server.diagnostics {
+        match issues.iter_mut().find(|(issue, _)| *issue == diagnostic) {
+            Some((_, source)) if *source == ReloadIssueSource::Client => {
+                *source = ReloadIssueSource::Both;
+            }
+            Some(_) => {}
+            None => issues.push((diagnostic, ReloadIssueSource::Server)),
+        }
+    }
+
+    let failed = client.failed || server.failed;
+    let head = if failed {
+        "config reload failed"
+    } else {
+        "config reloaded"
+    };
+    let tone = if failed {
+        FeedbackTone::Error
+    } else if issues.is_empty() {
+        FeedbackTone::Success
+    } else {
+        FeedbackTone::Warning
+    };
+    let Some((first, _)) = issues.first() else {
+        return (head.to_owned(), tone);
+    };
+    let count = match issues.len() {
+        1 => "1 issue".to_owned(),
+        count => format!("{count} issues"),
+    };
+    let only = |wanted| issues.iter().all(|(_, source)| *source == wanted);
+    let side = if only(ReloadIssueSource::Server) {
+        " (server)"
+    } else if only(ReloadIssueSource::Client) {
+        " (client)"
+    } else {
+        ""
+    };
+    (
+        format!("{head}, {count}{side}: {}", notice_line(first)),
+        tone,
+    )
+}
+
+/// A diagnostic as one toast line. TOML parse errors span several lines with a
+/// source excerpt; their first line already names the file position.
+fn notice_line(diagnostic: &str) -> &str {
+    diagnostic
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default()
+}
+
 pub(super) fn merged_config_diagnostic(
     local: Option<&str>,
     endpoint: Option<&str>,
@@ -68,8 +161,60 @@ impl ClientShellState {
         }
     }
 
-    pub(crate) fn reload_client_config(&mut self) {
-        match crate::config::load_live_config() {
+    /// Reloads the client's own config and asks the active server to reload
+    /// its config, the "reload config" action from a key, the global menu or a
+    /// settings change. The server's reply shows the reload notice, which
+    /// merges both sides (see `PendingEndpointKind::ReloadConfig`). With no
+    /// server to ask, the notice reports that failure at once.
+    pub(super) fn reload_config_everywhere(&mut self, outcome: &mut ClientShellInput) {
+        let client = self.reload_client_config();
+        let sent = self.push_endpoint_method_with_kind(
+            crate::api::schema::Method::ServerReloadConfig(
+                crate::api::schema::EmptyParams::default(),
+            ),
+            PendingEndpointKind::ReloadConfig { client },
+            outcome,
+        );
+        if !sent {
+            let reason = if self.endpoint_is_online(&self.active_endpoint_id) {
+                "server cannot reload config".to_owned()
+            } else {
+                format!("{} is not ready", self.active_endpoint_label())
+            };
+            outcome.repaint |= self.show_config_reload_failure(&reason);
+        }
+    }
+
+    /// Shows the notice for a reload both sides answered.
+    pub(super) fn show_config_reload_notice(
+        &mut self,
+        client: &ConfigReloadSide,
+        server: &ConfigReloadSide,
+    ) -> bool {
+        let (message, tone) = config_reload_notice(client, server);
+        let lifetime = if tone == crate::app::state::FeedbackTone::Success {
+            RELOAD_SUCCESS_NOTICE_LIFETIME
+        } else {
+            RELOAD_ISSUE_NOTICE_LIFETIME
+        };
+        self.show_feedback_notice(&message, tone, lifetime, std::time::Instant::now())
+    }
+
+    /// Shows the notice for a reload request that got no reload report back.
+    pub(super) fn show_config_reload_failure(&mut self, reason: &str) -> bool {
+        self.show_feedback_notice(
+            &format!("config reload failed: {}", notice_line(reason)),
+            crate::app::state::FeedbackTone::Error,
+            RELOAD_ISSUE_NOTICE_LIFETIME,
+            std::time::Instant::now(),
+        )
+    }
+
+    /// Reloads the client's local config and returns what the reload notice
+    /// needs from it. The server-driven reload (`ReloadSoundConfig`) calls this
+    /// too and drops the result: that reload shows no notice of its own.
+    pub(crate) fn reload_client_config(&mut self) -> ConfigReloadSide {
+        let side = match crate::config::load_live_config() {
             Ok(loaded) => {
                 let agent_panel_sort = self.config.agent_panel_sort;
                 let diagnostics = self.config.apply_live_config(
@@ -100,12 +245,21 @@ impl ClientShellState {
                         self.set_endpoint_error(err);
                     }
                 }
+                ConfigReloadSide {
+                    failed: false,
+                    diagnostics: self.config.local_reload_diagnostics(diagnostics),
+                }
             }
             Err(diagnostics) => {
                 self.set_local_config_diagnostic(self.config.local_config_diagnostic(&diagnostics));
+                ConfigReloadSide {
+                    failed: true,
+                    diagnostics,
+                }
             }
-        }
+        };
         self.reconcile_input_source();
+        side
     }
 }
 
@@ -185,6 +339,17 @@ impl ClientShellConfig {
 
     pub(crate) fn uses_endpoint_keybindings(&self) -> bool {
         self.keybinding_source == ClientShellKeybindingSource::Endpoint
+    }
+
+    /// The client's reload issues for the notice: the same set the client's
+    /// config banner counts, so a client on the server's keybindings does not
+    /// claim keybinding issues the server reports for itself.
+    fn local_reload_diagnostics(&self, mut diagnostics: Vec<String>) -> Vec<String> {
+        if self.uses_endpoint_keybindings() {
+            diagnostics
+                .retain(|diagnostic| !crate::config::is_keybinding_config_diagnostic(diagnostic));
+        }
+        diagnostics
     }
 
     pub(super) fn local_config_diagnostic(&self, diagnostics: &[String]) -> Option<String> {

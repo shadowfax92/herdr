@@ -752,6 +752,18 @@ pub struct AgentNotificationDelivery {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CopyFeedback {
     pub message: String,
+    pub tone: FeedbackTone,
+}
+
+/// The accent of a short feedback toast. Copy feedback is always `Success`;
+/// a config reload uses the other tones so a warning or a failure never wears
+/// the green of a success.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FeedbackTone {
+    #[default]
+    Success,
+    Warning,
+    Error,
 }
 
 #[derive(Debug)]

@@ -67,14 +67,7 @@ impl ClientShellState {
                     return;
                 }
                 if action == crate::input::KeybindAction::ReloadConfig {
-                    self.push_endpoint_method_with_kind(
-                        crate::api::schema::Method::ServerReloadConfig(
-                            crate::api::schema::EmptyParams::default(),
-                        ),
-                        PendingEndpointKind::ReloadConfig,
-                        outcome,
-                    );
-                    self.reload_client_config();
+                    self.reload_config_everywhere(outcome);
                     self.invalidate_pane_surface();
                     outcome.repaint = true;
                     outcome.resize = true;
@@ -866,16 +859,32 @@ impl ClientShellState {
                 self.complete_copy_operation(session_generation, continue_queue, &mut outcome);
                 return (repaint || outcome.repaint, outcome.actions);
             }
-            PendingEndpointKind::ReloadConfig => {
+            PendingEndpointKind::ReloadConfig { client } => {
+                // Every reload ends in a notice, so a reload that worked is
+                // never silent. The report's diagnostics feed only this
+                // notice: the config banner keeps following the snapshot.
                 let repaint = match result {
-                    Ok(crate::api::schema::ResponseResult::ConfigReload { .. }) => false,
+                    Ok(crate::api::schema::ResponseResult::ConfigReload {
+                        status,
+                        diagnostics,
+                    }) => {
+                        let server = super::config::ConfigReloadSide {
+                            failed: status == crate::config::ConfigReloadStatus::Failed,
+                            diagnostics,
+                        };
+                        self.show_config_reload_notice(&client, &server)
+                    }
                     Ok(_) => {
                         self.set_endpoint_error(
                             "endpoint returned an unexpected config reload result",
                         );
+                        self.show_config_reload_failure("unexpected server reply");
                         true
                     }
-                    Err(_) => true,
+                    Err(error) => {
+                        self.show_config_reload_failure(&error.message);
+                        true
+                    }
                 };
                 return (repaint, Vec::new());
             }

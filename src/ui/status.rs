@@ -8,7 +8,7 @@ use ratatui::{
 
 use super::widgets::panel_contrast_fg;
 use crate::{
-    app::state::{CopyFeedback, Palette},
+    app::state::{CopyFeedback, FeedbackTone, Palette},
     config::ToastClipboardPosition,
 };
 
@@ -61,9 +61,14 @@ pub(crate) fn render_copy_feedback_buffer(
     }
 
     Clear.render(feedback_area, buffer);
+    let accent = match feedback.tone {
+        FeedbackTone::Success => palette.green,
+        FeedbackTone::Warning => palette.yellow,
+        FeedbackTone::Error => palette.red,
+    };
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(palette.green))
+        .border_style(Style::default().fg(accent))
         .style(Style::default().bg(palette.panel_bg));
     let inner = block.inner(feedback_area);
     block.render(feedback_area, buffer);
@@ -73,7 +78,7 @@ pub(crate) fn render_copy_feedback_buffer(
     }
 
     let text = Line::from(vec![
-        Span::styled("●", Style::default().fg(palette.green).bg(palette.panel_bg)),
+        Span::styled("●", Style::default().fg(accent).bg(palette.panel_bg)),
         Span::raw(" "),
         Span::styled(
             &feedback.message,
@@ -133,6 +138,7 @@ mod tests {
         let area = Rect::new(10, 20, 100, 40);
         let feedback = CopyFeedback {
             message: "copied to clipboard".to_owned(),
+            tone: FeedbackTone::Success,
         };
 
         let top = copy_feedback_rect(area, &feedback, 0, ToastClipboardPosition::TopCenter);

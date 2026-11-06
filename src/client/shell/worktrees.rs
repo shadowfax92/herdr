@@ -530,7 +530,7 @@ impl ClientShellState {
                 | PendingEndpointKind::ProductAnnouncementDismiss { .. }
                 | PendingEndpointKind::ReleaseNotesDismiss
                 | PendingEndpointKind::PopupCommand
-                | PendingEndpointKind::ReloadConfig
+                | PendingEndpointKind::ReloadConfig { .. }
                 | PendingEndpointKind::IntegrationList
                 | PendingEndpointKind::IntegrationInstall
                 | PendingEndpointKind::SelectionCopy

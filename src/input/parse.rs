@@ -685,6 +685,36 @@ mod tests {
         assert_eq!(crate::pane::test_encode_key_for_app(b"", key), b"\x1b\x06");
     }
 
+    /// Ghostty (with `macos-option-as-alt`) sends ctrl+alt+r as ESC plus the C0
+    /// byte without the kitty protocol, and as CSI 114;7u under the flags
+    /// Herdr pushes (7, or 31 while a pane wants every key): no alternates or
+    /// text for an unshifted ctrl chord, the press type omitted, release `:3`.
+    #[test]
+    fn parse_ghostty_ctrl_alt_letter_in_both_encodings() {
+        use crossterm::event::KeyEventKind;
+
+        let reload = crate::config::ActionKeybinds::direct("ctrl+alt+r");
+        let resize = crate::config::ActionKeybinds::direct("alt+r");
+        for (sequence, kind) in [
+            ("\x1b\x12", KeyEventKind::Press),
+            ("\x1b[114;7u", KeyEventKind::Press),
+            ("\x1b[114;7:1u", KeyEventKind::Press),
+            ("\x1b[114;7:3u", KeyEventKind::Release),
+        ] {
+            let key = parse_terminal_key_sequence(sequence)
+                .unwrap_or_else(|| panic!("{sequence:?} should parse"));
+            assert_terminal_key_eq(
+                key.clone(),
+                KeyCode::Char('r'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+                kind,
+                None,
+            );
+            assert!(reload.matches_direct_key(&key), "{sequence:?}");
+            assert!(!resize.matches_direct_key(&key), "{sequence:?}");
+        }
+    }
+
     #[test]
     fn unknown_legacy_ss3_sequence_remains_unsupported() {
         assert!(parse_terminal_key_sequence("\x1bOz").is_none());

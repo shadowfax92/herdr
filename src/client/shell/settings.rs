@@ -169,14 +169,7 @@ impl ClientShellState {
             outcome.repaint = true;
             return false;
         }
-        self.reload_client_config();
-        self.push_endpoint_method_with_kind(
-            crate::api::schema::Method::ServerReloadConfig(
-                crate::api::schema::EmptyParams::default(),
-            ),
-            PendingEndpointKind::ReloadConfig,
-            outcome,
-        );
+        self.reload_config_everywhere(outcome);
         outcome.repaint = true;
         true
     }
