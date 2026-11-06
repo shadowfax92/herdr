@@ -1326,18 +1326,24 @@ fn render_scope_picker_overlay(
             base.fg(p.overlay0),
         );
     }
+    // `^o <the other list>` is the hint every picker gives its list key, and
+    // it sits early so a narrow box clips the mark keys first. The mark keys
+    // say `mark` so `^x hide mark` does not read as a second way to `^o hide`.
     put_text(
         b,
         i.x,
         i.bottom() - 2,
         i.width,
-        " ↑↓ move · tab mark · ^f focus · ^x hide · ^t mode",
+        match v.mode {
+            ScopePickMode::Focus => " ↑↓ move · ^o hide · tab mark · ^f focus mark · ^x hide mark",
+            ScopePickMode::Hide => " ↑↓ move · ^o focus · tab mark · ^f focus mark · ^x hide mark",
+        },
         base.fg(p.overlay0),
     );
     let toggle_label = if v.staged.focus.active {
-        " ^o focus off "
+        " ^t focus off "
     } else {
-        " ^o focus on "
+        " ^t focus on "
     };
     let labels = [
         (toggle_label, ScopePickerControl::ToggleActive),

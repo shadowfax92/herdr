@@ -8,7 +8,7 @@
 //!  rows: every endpoint's unfiltered snapshot, machine → workspace → tab
 //!  typing edits the query; refresh_scope_picker keeps `view` (rows + what
 //!  the query shows) current before every key, click and frame
-//!  tab / ^f / ^x / ^o / ^r edit only `staged`; esc drops it
+//!  tab / ^f / ^x / ^o / ^t / ^r edit only `staged`; esc drops it
 //!  enter ─► one ScopeSetParams (changed fields only) ─► request_scope_set (Local)
 //!     └─► focus on and the displayed workspace now out of scope:
 //!         focus_or_activate the first admitted workspace in panel order
@@ -724,14 +724,17 @@ impl ClientShellState {
             KeyCode::Char('x') if control => {
                 self.toggle_scope_picker_row(None, ScopePickMode::Hide)
             }
-            KeyCode::Char('t') if control => {
-                let next = match mode {
+            // ctrl+o switches the list, the key every Herdr picker uses for
+            // that (Find's reach, the paths picker's Dirs/Files); here the
+            // two lists are the marks Tab sets. ctrl+t switches focus on/off.
+            KeyCode::Char('o') if control => {
+                let other = match mode {
                     ScopePickMode::Focus => ScopePickMode::Hide,
                     ScopePickMode::Hide => ScopePickMode::Focus,
                 };
-                self.activate_scope_picker_control(ScopePickerControl::Mode(next), outcome);
+                self.activate_scope_picker_control(ScopePickerControl::Mode(other), outcome);
             }
-            KeyCode::Char('o') if control => {
+            KeyCode::Char('t') if control => {
                 self.activate_scope_picker_control(ScopePickerControl::ToggleActive, outcome)
             }
             KeyCode::Char('r') if control => {

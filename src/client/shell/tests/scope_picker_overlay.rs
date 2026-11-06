@@ -450,7 +450,7 @@ fn escape_and_an_unchanged_enter_send_nothing() {
 }
 
 #[test]
-fn ctrl_o_flips_focus_and_ctrl_r_clears_back_to_the_config_hides() {
+fn ctrl_t_flips_focus_and_ctrl_r_clears_back_to_the_config_hides() {
     let (mut state, _) = state_with(&["ft"]);
     let scope = ScopeState {
         focus: ScopeFocus {
@@ -462,7 +462,7 @@ fn ctrl_o_flips_focus_and_ctrl_r_clears_back_to_the_config_hides() {
     state.set_scope_projection(Some(scope.clone()));
 
     record(&mut state, KeybindAction::FocusPicker);
-    ctrl(&mut state, 'o');
+    ctrl(&mut state, 't');
     assert!(!picker(&state).staged.focus.active);
     press(&mut state, KeyCode::Enter);
     assert_eq!(
@@ -488,6 +488,90 @@ fn ctrl_o_flips_focus_and_ctrl_r_clears_back_to_the_config_hides() {
             focus_active: Some(false),
             hidden: Some(vec![config_hide("ft")]),
         }]
+    );
+}
+
+/// The list key is ctrl+o, as in every picker: it switches the mark Tab sets
+/// and leaves the staged scope alone. ctrl+t switches focus on or off and
+/// leaves the mode alone. The footer names the list ctrl+o goes to and the
+/// focus button carries ctrl+t, and a header click still switches the mode.
+#[test]
+fn ctrl_o_switches_the_mode_and_ctrl_t_switches_focus() {
+    let (mut state, _) = state_with(&[]);
+    let scope = ScopeState {
+        focus: ScopeFocus {
+            active: true,
+            targets: vec![local("ws_1", "setup")],
+        },
+        hidden: Vec::new(),
+    };
+    state.set_scope_projection(Some(scope.clone()));
+    record(&mut state, KeybindAction::FocusPicker);
+    let footer = |state: &mut ClientShellState| {
+        let frame = state.compose(100, 32).expect("picker frame");
+        picker_text(state, &frame)
+    };
+    let text = footer(&mut state);
+    assert!(text.contains("^o hide · tab mark"), "{text}");
+    assert!(text.contains("^t focus off"), "{text}");
+    assert!(!text.contains("^t mode"), "{text}");
+
+    ctrl(&mut state, 'o');
+    assert_eq!(picker(&state).mode, ScopePickMode::Hide);
+    assert_eq!(
+        picker(&state).staged,
+        scope,
+        "ctrl+o only switches the list"
+    );
+    let text = footer(&mut state);
+    assert!(text.contains("^o focus · tab mark"), "{text}");
+
+    // Tab now marks with the list ctrl+o chose.
+    select(&mut state, "Local", 1, "admin");
+    press(&mut state, KeyCode::Tab);
+    assert_eq!(picker(&state).staged.hidden, [local("ws_3", "admin")]);
+
+    ctrl(&mut state, 't');
+    assert_eq!(
+        picker(&state).mode,
+        ScopePickMode::Hide,
+        "ctrl+t keeps the list"
+    );
+    assert!(!picker(&state).staged.focus.active);
+    assert!(footer(&mut state).contains("^t focus on"));
+    ctrl(&mut state, 't');
+    assert!(picker(&state).staged.focus.active);
+
+    ctrl(&mut state, 'o');
+    assert_eq!(picker(&state).mode, ScopePickMode::Focus);
+    footer(&mut state);
+    let hide_pill = state
+        .hits
+        .scope_picker_controls
+        .iter()
+        .find(|(_, control)| *control == ScopePickerControl::Mode(ScopePickMode::Hide))
+        .map(|(rect, _)| *rect)
+        .expect("hide pill in the header");
+    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: hide_pill.x + 1,
+        row: hide_pill.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert_eq!(
+        picker(&state).mode,
+        ScopePickMode::Hide,
+        "a header click switches too"
+    );
+
+    press(&mut state, KeyCode::Enter);
+    assert_eq!(
+        state.scope_set_requests,
+        [ScopeSetParams {
+            hidden: Some(vec![local("ws_3", "admin")]),
+            ..ScopeSetParams::default()
+        }],
+        "switching lists sends nothing of its own"
     );
 }
 
@@ -994,7 +1078,7 @@ fn tab_and_shift_tab_mark_with_the_mode_then_move() {
     );
 
     // In hide mode Tab hides instead, and focus marks stay.
-    ctrl(&mut state, 't');
+    ctrl(&mut state, 'o');
     assert_eq!(picker(&state).mode, ScopePickMode::Hide);
     press(&mut state, KeyCode::Tab);
     assert_eq!(selected_label(&state), "Local/herdr");
@@ -1053,11 +1137,11 @@ fn every_picker_chord_reaches_it_with_a_ctrl_a_prefix() {
     );
     send(&mut state, b"\x18"); // ctrl+x
     assert_eq!(picker(&state).staged.hidden, [config_hide("ft")]);
-    send(&mut state, b"\x14"); // ctrl+t
-    assert_eq!(picker(&state).mode, ScopePickMode::Hide);
-    send(&mut state, b"\x14");
-    assert_eq!(picker(&state).mode, ScopePickMode::Focus);
     send(&mut state, b"\x0f"); // ctrl+o
+    assert_eq!(picker(&state).mode, ScopePickMode::Hide);
+    send(&mut state, b"\x0f");
+    assert_eq!(picker(&state).mode, ScopePickMode::Focus);
+    send(&mut state, b"\x14"); // ctrl+t
     assert!(!picker(&state).staged.focus.active);
     send(&mut state, b"\x09"); // Tab
     send(&mut state, b"\x1b[Z"); // Shift+Tab
