@@ -58,6 +58,22 @@ fn zoomed_pane_borders(app: &AppState, multi_pane: bool) -> Borders {
     }
 }
 
+/// The rect and chrome of a zoomed pane in `area`. A pane that sits between a
+/// fitted zoom's margins is framed like a pane with neighbours, even when it
+/// is the tab's only pane. Without a frame its edges would vanish into the
+/// empty margins. A zoom that fills the whole area keeps the chrome its pane
+/// count gives it. Every zoomed path calls this, so the PTY size, the drawn
+/// cells and hit testing agree on one frame.
+fn zoomed_pane_frame(
+    app: &AppState,
+    area: Rect,
+    width: crate::layout::ZoomWidth,
+    multi_pane: bool,
+) -> (Rect, Borders) {
+    let rect = zoomed_rect(area, width, app.zoom_margins);
+    (rect, zoomed_pane_borders(app, multi_pane || rect != area))
+}
+
 /// Where a pane that is about to be created will sit in its tab.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum NewPanePlacement {
@@ -100,10 +116,8 @@ pub(crate) fn new_pane_terminal_size(
         ws.tabs.get(ws.find_tab_index_for_pane(pane)?)
     };
     let zoomed = |width, multi_pane| {
-        pane_inner_rect(
-            zoomed_rect(area, width, app.zoom_margins),
-            zoomed_pane_borders(app, multi_pane),
-        )
+        let (rect, borders) = zoomed_pane_frame(app, area, width, multi_pane);
+        pane_inner_rect(rect, borders)
     };
     let pane_inner = match placement {
         NewPanePlacement::Alone => alone(),
@@ -335,10 +349,8 @@ pub(super) fn resize_tab_panes(
         if let Some((terminal_id, rt)) =
             runtime_for_tab_pane(app, terminal_runtimes, workspace_index, tab, focused_id)
         {
-            let pane_inner = pane_inner_rect(
-                zoomed_rect(area, tab.zoom_width, app.zoom_margins),
-                zoomed_pane_borders(app, multi_pane),
-            );
+            let (rect, borders) = zoomed_pane_frame(app, area, tab.zoom_width, multi_pane);
+            let pane_inner = pane_inner_rect(rect, borders);
             let inner_rect = terminal_inner_rect(rt, pane_inner, app.pane_scrollbars);
             if !app.direct_attach_resize_locks.contains(terminal_id) {
                 rt.resize(
@@ -400,8 +412,7 @@ pub(super) fn compute_pane_infos_for_tab(
         let focused_id = tab.layout.focused();
         // The client hit-tests this rect, so a click in a fitted zoom's
         // margin lands on no pane.
-        let rect = zoomed_rect(area, tab.zoom_width, app.zoom_margins);
-        let borders = zoomed_pane_borders(app, multi_pane);
+        let (rect, borders) = zoomed_pane_frame(app, area, tab.zoom_width, multi_pane);
         let pane_inner = pane_inner_rect(rect, borders);
         let mut inner_rect = pane_inner;
         let mut scrollbar_rect = None;
@@ -1497,6 +1508,63 @@ mod tests {
             app.workspaces[0].tabs[0].runtimes[&focused_pane].current_size(),
             (38, 272)
         );
+    }
+
+    /// A one-pane tab zoomed at `width`, its pane given a runtime.
+    fn zoomed_lone_pane_app(width: crate::layout::ZoomWidth) -> (AppState, PaneId) {
+        let mut app = AppState::test_new();
+        let mut workspace = Workspace::test_new("test");
+        let pane = workspace.tabs[0].root_pane;
+        workspace.zoomed = true;
+        workspace.zoom_width = width;
+        workspace.tabs[0].runtimes.insert(
+            pane,
+            TerminalRuntime::test_with_scrollback_bytes(40, 8, 1024, b"ready\n"),
+        );
+        app.workspaces = vec![workspace];
+        app.active = Some(0);
+        (app, pane)
+    }
+
+    #[tokio::test]
+    async fn a_lone_pane_between_fitted_margins_is_framed() {
+        let (app, _) = zoomed_lone_pane_app(crate::layout::ZoomWidth::Fitted);
+        let infos = compute_pane_infos(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            ULTRAWIDE_AREA,
+            true,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        let [info] = &infos[..] else {
+            panic!("one zoomed pane, got {}", infos.len());
+        };
+        assert_eq!(info.rect, Rect::new(26 + 91, 1, 275, 40));
+        assert_eq!(
+            info.borders,
+            Borders::ALL,
+            "its edges show against the margins"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_lone_pane_filling_the_area_stays_unframed() {
+        let laptop = Rect::new(26, 1, 293 - 26, 40);
+        for (width, area) in [
+            (crate::layout::ZoomWidth::Full, ULTRAWIDE_AREA),
+            (crate::layout::ZoomWidth::Fitted, laptop),
+        ] {
+            let (app, _) = zoomed_lone_pane_app(width);
+            let infos = compute_pane_infos(
+                &app,
+                &TerminalRuntimeRegistry::new(),
+                area,
+                true,
+                crate::kitty_graphics::HostCellSize::default(),
+            );
+            assert_eq!(infos[0].rect, area);
+            assert_eq!(infos[0].borders, Borders::NONE, "{width:?} over {area:?}");
+        }
     }
 
     #[tokio::test]
