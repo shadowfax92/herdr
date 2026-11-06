@@ -187,10 +187,11 @@ pub(crate) fn run_lines(
         source: spec,
     };
     let loader = {
-        let (host, pane, command, kind) = (
+        let (host, pane, command, origin, kind) = (
             host.clone(),
             source_pane.clone(),
             spec.command.clone(),
+            spec.origin.clone(),
             spec.kind,
         );
         Worker::new(move |()| -> Result<Batch, String> {
@@ -201,7 +202,7 @@ pub(crate) fn run_lines(
                 .flatten()
                 .or_else(|| home.as_deref().map(PathBuf::from).filter(|p| p.is_dir()))
                 .unwrap_or_else(|| PathBuf::from("/"));
-            let output = command::run(&command, &cwd, command::DEADLINE)?;
+            let output = command::run(&command, &origin, &cwd, command::DEADLINE)?;
             Ok(Batch {
                 items: output
                     .lines

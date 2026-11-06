@@ -25,6 +25,9 @@
 #   source   "panes": the built-in pane navigator (only the panes picker uses it).
 #   command  argv, run without a shell in the directory of the pane you came from.
 #            Each output line is one item, in output order (ties keep that order).
+#   origin   Optional name of the list's source, shown in the heading and in
+#            errors (default: the command's program name, e.g. `zoxide`). Set
+#            it when `command` is a wrapper such as `sh -c`.
 #   kind     "text" (default) or "path": paths show ~ for $HOME, match the last
 #            directory first, become absolute, and are typed shell-quoted if needed.
 #   enter    What Enter does with the selected item, in order:
@@ -56,3 +59,4 @@ kind = "path"
 enter = ["paste", "copy"]
 multi = true
 empty = "zoxide has no directories yet. cd around and they appear here."
+

@@ -235,7 +235,9 @@ empty = "No branches here."
    directory of the pane you opened the popup from, with a 5 s deadline.
    `kind = "path"` adds `~` display, last-directory-first matching, absolute
    paths and shell quoting. `multi = true` lets Tab and Shift-Tab mark several
-   items; Enter then delivers them space-separated, in the order marked.
+   items; Enter then delivers them space-separated, in the order marked. A
+   command that needs a shell can be `["sh", "-c", '''…''']`; set
+   `origin = "<tool>"` so the heading and errors name the tool, not `sh`.
 2. Add its action to the `# --- find ---` block of herdr-tools'
    `herdr-plugin.toml` (Herdr binds keys only to manifest actions; it rereads
    manifests on every invoke, so no relink is needed):

@@ -44,6 +44,10 @@ pub(crate) enum Source {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LineSource {
     pub command: Vec<String>,
+    /// Where the list comes from, as the heading, the loading line and command
+    /// errors name it: the spec's `origin`, else the program's file name. A
+    /// wrapper such as `sh -c` sets it so the popup names the real tool.
+    pub origin: String,
     pub kind: Kind,
     pub enter: Vec<Deliver>,
     pub empty: Option<String>,
@@ -87,6 +91,7 @@ struct Raw {
     title: String,
     source: Option<String>,
     command: Option<Vec<String>>,
+    origin: Option<String>,
     kind: Option<Kind>,
     enter: Option<Vec<Deliver>>,
     empty: Option<String>,
@@ -139,26 +144,39 @@ fn validate(raw: Raw) -> Result<Picker> {
     }
     let source = match (raw.source.as_deref(), raw.command) {
         (Some("panes"), None) => {
-            if raw.kind.is_some()
+            if raw.origin.is_some()
+                || raw.kind.is_some()
                 || raw.enter.is_some()
                 || raw.empty.is_some()
                 || raw.multi.is_some()
             {
-                bail!("picker {id:?}: the panes source takes no kind, enter, empty or multi");
+                bail!(
+                    "picker {id:?}: the panes source takes no origin, kind, enter, empty or multi"
+                );
             }
             Source::Panes
         }
         (Some(other), None) => bail!("picker {id:?}: unknown source {other:?}"),
         (None, Some(command)) => {
-            if command.first().is_none_or(|program| program.is_empty()) {
+            let Some(program) = command.first().filter(|program| !program.is_empty()) else {
                 bail!("picker {id:?}: command needs a program");
-            }
+            };
+            let origin = match raw.origin {
+                Some(origin) if origin.trim().is_empty() => {
+                    bail!("picker {id:?}: origin must name the list's source")
+                }
+                Some(origin) => origin,
+                None => std::path::Path::new(program)
+                    .file_name()
+                    .map_or_else(|| program.clone(), |n| n.to_string_lossy().into_owned()),
+            };
             let enter = raw.enter.unwrap_or_default();
             if enter.is_empty() {
                 bail!("picker {id:?}: enter needs \"paste\", \"copy\" or both");
             }
             Source::Lines(LineSource {
                 command,
+                origin,
                 kind: raw.kind.unwrap_or_default(),
                 enter,
                 empty: raw.empty,
@@ -201,6 +219,7 @@ mod tests {
             paths.source,
             Source::Lines(LineSource {
                 command: vec!["zoxide".into(), "query".into(), "--list".into()],
+                origin: "zoxide".into(),
                 kind: Kind::Path,
                 enter: vec![Deliver::Paste, Deliver::Copy],
                 empty: Some(
@@ -283,6 +302,14 @@ mod tests {
             (
                 "id = \"x\"\ntitle = \"X\"\nsource = \"panes\"\nmulti = true",
                 "takes no",
+            ),
+            (
+                "id = \"x\"\ntitle = \"X\"\nsource = \"panes\"\norigin = \"y\"",
+                "takes no",
+            ),
+            (
+                "id = \"x\"\ntitle = \"X\"\ncommand = [\"ls\"]\nenter = [\"copy\"]\norigin = \" \"",
+                "origin must",
             ),
             (
                 "id = \"x\"\ntitle = \"X\"\ncommand = [\"ls\"]\nenter = [\"copy\"]\nmulti = \"yes\"",

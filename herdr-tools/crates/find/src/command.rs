@@ -24,12 +24,16 @@ pub(crate) struct Output {
     pub truncated: bool,
 }
 
-/// Errors are user-facing sentences: the popup shows them as they are.
-pub(crate) fn run(argv: &[String], cwd: &Path, deadline: Duration) -> Result<Output, String> {
+/// Errors are user-facing sentences: the popup shows them as they are. They
+/// name the list by `origin` (the picker's source label), except a failed
+/// spawn, which is about the program itself.
+pub(crate) fn run(
+    argv: &[String],
+    origin: &str,
+    cwd: &Path,
+    deadline: Duration,
+) -> Result<Output, String> {
     let program = argv.first().map(String::as_str).unwrap_or_default();
-    let name = Path::new(program)
-        .file_name()
-        .map_or(program.into(), |n| n.to_string_lossy());
     let mut child = Command::new(program)
         .args(&argv[1..])
         .current_dir(cwd)
@@ -37,11 +41,16 @@ pub(crate) fn run(argv: &[String], cwd: &Path, deadline: Duration) -> Result<Out
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| match error.kind() {
-            std::io::ErrorKind::NotFound => {
-                format!("{name} isn't installed or isn't on Herdr's PATH")
+        .map_err(|error| {
+            let program = Path::new(program)
+                .file_name()
+                .map_or(program.into(), |n| n.to_string_lossy());
+            match error.kind() {
+                std::io::ErrorKind::NotFound => {
+                    format!("{program} isn't installed or isn't on Herdr's PATH")
+                }
+                _ => format!("Couldn't run {program}: {error}"),
             }
-            _ => format!("Couldn't run {name}: {error}"),
         })?;
     // Readers own the pipes so a full pipe never blocks the child, and the
     // caps bound memory. Dropping a capped pipe ends a chatty child (EPIPE).
@@ -72,11 +81,11 @@ pub(crate) fn run(argv: &[String], cwd: &Path, deadline: Duration) -> Result<Out
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(format!(
-                    "{name} took longer than {}s",
+                    "{origin} took longer than {}s",
                     deadline.as_secs_f32()
                 ));
             }
-            Err(error) => return Err(format!("Couldn't wait for {name}: {error}")),
+            Err(error) => return Err(format!("Couldn't wait for {origin}: {error}")),
         }
     };
     // A grandchild that inherited a pipe could keep it open after the child
@@ -108,9 +117,9 @@ pub(crate) fn run(argv: &[String], cwd: &Path, deadline: Duration) -> Result<Out
             .code()
             .map_or_else(|| "a signal".to_owned(), |code| format!("exit {code}"));
         return Err(if detail.is_empty() {
-            format!("{name} failed ({code})")
+            format!("{origin} failed ({code})")
         } else {
-            format!("{name} failed ({code}): {detail}")
+            format!("{origin} failed ({code}): {detail}")
         });
     }
     Ok(output)
@@ -151,7 +160,7 @@ mod tests {
 
     fn sh(script: &str) -> Result<Output, String> {
         let argv = ["sh", "-c", script].map(String::from);
-        run(&argv, Path::new("/"), Duration::from_secs(2))
+        run(&argv, "sh", Path::new("/"), Duration::from_secs(2))
     }
 
     #[test]
@@ -174,15 +183,17 @@ mod tests {
     fn command_runs_in_the_given_directory_with_stdin_closed() {
         let dir = tempfile::tempdir().unwrap();
         let argv = ["sh", "-c", "pwd -P; cat"].map(String::from);
-        let output = run(&argv, dir.path(), Duration::from_secs(2)).unwrap();
+        let output = run(&argv, "sh", dir.path(), Duration::from_secs(2)).unwrap();
         let expected = std::fs::canonicalize(dir.path()).unwrap();
         assert_eq!(output.lines, [expected.display().to_string()]);
     }
 
     #[test]
     fn missing_programs_failures_and_timeouts_explain_themselves() {
+        // A failed spawn names the program, whatever the list is called.
         let missing = run(
             &["definitely-not-zoxide-xyz".to_owned()],
+            "zoxide",
             Path::new("/"),
             Duration::from_secs(1),
         )
@@ -196,12 +207,24 @@ mod tests {
             "sh failed (exit 3): database is locked"
         );
         assert_eq!(sh("exit 4").unwrap_err(), "sh failed (exit 4)");
+        // A wrapper's failures name the list's origin, not the wrapper.
+        let wrapped = ["sh", "-c", "echo 'log unreadable' >&2; exit 1"].map(String::from);
+        assert_eq!(
+            run(
+                &wrapped,
+                "recent-files",
+                Path::new("/"),
+                Duration::from_secs(2)
+            )
+            .unwrap_err(),
+            "recent-files failed (exit 1): log unreadable"
+        );
         // Output wins over a non-zero exit: show what the program listed.
         assert_eq!(sh("echo /x; exit 1").unwrap().lines, ["/x"]);
         let started = Instant::now();
         let argv = ["sh", "-c", "sleep 5"].map(String::from);
-        let slow = run(&argv, Path::new("/"), Duration::from_millis(200)).unwrap_err();
-        assert!(slow.contains("took longer"), "{slow}");
+        let slow = run(&argv, "zoxide", Path::new("/"), Duration::from_millis(200)).unwrap_err();
+        assert!(slow.starts_with("zoxide took longer"), "{slow}");
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 

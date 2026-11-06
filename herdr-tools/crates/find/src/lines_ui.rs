@@ -29,12 +29,9 @@ pub(crate) struct Chrome<'a> {
 }
 
 impl Chrome<'_> {
-    /// The source program's name (`zoxide`), shown so the list's origin is clear.
+    /// The list's source (`zoxide`), shown so where the items come from is clear.
     fn origin(&self) -> String {
-        let program = self.source.command.first().map_or("", String::as_str);
-        std::path::Path::new(program)
-            .file_name()
-            .map_or(program.into(), |name| name.to_string_lossy().into_owned())
+        self.source.origin.clone()
     }
 
     fn noun(&self) -> &'static str {
