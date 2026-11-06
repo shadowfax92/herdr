@@ -17,9 +17,13 @@ pub(super) struct AgentRow {
     pub(super) rows: Vec<Vec<crate::ui::ResolvedToken>>,
 }
 
+/// One machine's agents in panel order. The priority sort ranks a just-read
+/// agent by `settle` (`super::read_settle`), so its row holds its place for a
+/// few seconds after it turns read.
 pub(super) fn ordered_agent_pane_ids(
     snapshot: &ClientShellSnapshot,
     sort: crate::config::AgentPanelSortConfig,
+    settle: &super::read_settle::ReadSettle,
 ) -> Vec<String> {
     if snapshot.agent_view_label.is_some() {
         return snapshot
@@ -38,7 +42,7 @@ pub(super) fn ordered_agent_pane_ids(
     if sort == crate::config::AgentPanelSortConfig::Priority {
         agents.sort_by_key(|agent| {
             (
-                std::cmp::Reverse(status_priority(agent.agent_status)),
+                std::cmp::Reverse(settle.panel_priority(agent)),
                 std::cmp::Reverse(agent.state_change_seq),
             )
         });
@@ -56,8 +60,9 @@ pub(super) fn listed_agent_pane_ids(
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
     scope: &super::scope::EndpointScope<'_>,
+    settle: &super::read_settle::ReadSettle,
 ) -> Vec<String> {
-    let mut pane_ids = ordered_agent_pane_ids(snapshot, config.agent_panel_sort);
+    let mut pane_ids = ordered_agent_pane_ids(snapshot, config.agent_panel_sort, settle);
     if !scope.admits_everything() {
         pane_ids.retain(|pane_id| {
             snapshot
@@ -76,6 +81,7 @@ pub(super) fn render_agent_panel(
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
     scope: &super::scope::EndpointScope<'_>,
+    settle: &super::read_settle::ReadSettle,
     agent_scroll: &mut usize,
     hits: &mut ShellHitMap,
 ) {
@@ -89,7 +95,7 @@ pub(super) fn render_agent_panel(
         return;
     }
 
-    let rows = agent_rows(snapshot, config, None, scope);
+    let rows = agent_rows(snapshot, config, None, scope, settle);
     render_agent_list(
         buffer,
         area,
@@ -261,8 +267,9 @@ pub(super) fn agent_rows(
     config: &ClientShellConfig,
     machine: Option<&str>,
     scope: &super::scope::EndpointScope<'_>,
+    settle: &super::read_settle::ReadSettle,
 ) -> Vec<AgentRow> {
-    listed_agent_pane_ids(snapshot, config, scope)
+    listed_agent_pane_ids(snapshot, config, scope, settle)
         .into_iter()
         .filter_map(|pane_id| agent_row(snapshot, &pane_id, config, machine))
         .collect()

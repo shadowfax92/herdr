@@ -141,31 +141,38 @@ pub(super) fn aggregate_agent_rows<'a>(
 
     let mut rows = cached_endpoint_snapshots(endpoints)
         .flat_map(|endpoint| {
-            super::agent_sidebar::ordered_agent_pane_ids(endpoint.snapshot, sort)
-                .into_iter()
-                .filter_map(move |pane_id| {
-                    let agent = endpoint
-                        .snapshot
-                        .agents
-                        .iter()
-                        .find(|agent| agent.pane_id == pane_id)
-                        .filter(|agent| in_scope(endpoint, agent))?;
-                    Some(AggregateAgentRow {
-                        recency: endpoint
-                            .agent_recency
-                            .get(&pane_id)
-                            .copied()
-                            .unwrap_or_default(),
-                        endpoint,
-                        agent,
-                    })
+            super::agent_sidebar::ordered_agent_pane_ids(
+                endpoint.snapshot,
+                sort,
+                endpoint.agent_presentation.read_settle(),
+            )
+            .into_iter()
+            .filter_map(move |pane_id| {
+                let agent = endpoint
+                    .snapshot
+                    .agents
+                    .iter()
+                    .find(|agent| agent.pane_id == pane_id)
+                    .filter(|agent| in_scope(endpoint, agent))?;
+                Some(AggregateAgentRow {
+                    recency: endpoint
+                        .agent_recency
+                        .get(&pane_id)
+                        .copied()
+                        .unwrap_or_default(),
+                    endpoint,
+                    agent,
                 })
+            })
         })
         .collect::<Vec<_>>();
     sort_aggregate_rows(&mut rows, sort);
     rows
 }
 
+/// The aggregate priority sort. Ranks come from each machine's read settle
+/// (`super::read_settle`), so a just-read agent holds its row for a few
+/// seconds, as in the single-machine panel.
 fn sort_aggregate_rows(
     rows: &mut [AggregateAgentRow<'_>],
     sort: crate::config::AgentPanelSortConfig,
@@ -174,7 +181,12 @@ fn sort_aggregate_rows(
         rows.sort_by_key(|row| {
             (
                 row.endpoint.stale(),
-                std::cmp::Reverse(status_priority(row.agent.agent_status)),
+                std::cmp::Reverse(
+                    row.endpoint
+                        .agent_presentation
+                        .read_settle()
+                        .panel_priority(row.agent),
+                ),
                 std::cmp::Reverse(row.recency),
             )
         });
@@ -186,15 +198,20 @@ struct ClientAgentViewEntry<'a> {
     snapshot: &'a ClientShellSnapshot,
     agent: &'a ClientShellAgent,
     seen: bool,
+    /// The `attention` sort key: the panel's priority rank, held for a
+    /// just-read agent like the built-in priority sort.
+    attention: u8,
 }
 
 impl<'a> ClientAgentViewEntry<'a> {
     fn new(row: &AggregateAgentRow<'a>) -> Self {
+        let presentation = row.endpoint.agent_presentation;
         Self {
             endpoint_index: row.endpoint.endpoint_index,
             snapshot: row.endpoint.snapshot,
             agent: row.agent,
-            seen: row.endpoint.agent_presentation.seen(row.agent),
+            seen: presentation.seen(row.agent),
+            attention: presentation.read_settle().panel_priority(row.agent),
         }
     }
 }
@@ -266,7 +283,7 @@ impl crate::agent_view_eval::AgentViewEntry for ClientAgentViewEntry<'_> {
     }
 
     fn attention(&self) -> u64 {
-        u64::from(status_priority(self.agent.agent_status))
+        u64::from(self.attention)
     }
 }
 

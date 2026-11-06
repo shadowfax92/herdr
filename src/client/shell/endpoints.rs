@@ -615,6 +615,13 @@ impl ClientShellState {
             self.endpoints[index]
                 .agent_presentation
                 .acknowledge_surface(&mut snapshot, surface, self.outer_focused);
+        } else {
+            // No surface pairs with this snapshot: it is drawn as cached, in
+            // the aggregate panel of another machine, so record what it shows
+            // unread for the read settle.
+            self.endpoints[index]
+                .agent_presentation
+                .note_drawn(&snapshot);
         }
         let previous = self.endpoints[index].snapshot.as_deref();
         let mut next_recency = self

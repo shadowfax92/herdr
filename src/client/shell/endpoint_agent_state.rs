@@ -13,6 +13,10 @@ pub(super) struct EndpointAgentPresentation {
         Option<u64>,
         crate::protocol::endpoint::EndpointAgentCompletions,
     )>,
+    /// Agents read in the last few seconds, whose panel rank is held at
+    /// unread, and the agents last drawn unread (`super::read_settle`). Fed by
+    /// projection and by the reads in `acknowledge_surface`.
+    read_settle: super::read_settle::ReadSettle,
 }
 
 impl EndpointAgentPresentation {
@@ -50,6 +54,7 @@ impl EndpointAgentPresentation {
             self.acknowledged.clear();
             self.completed.clear();
             self.working.clear();
+            self.read_settle.clear();
             // A fresh client or server starts every agent read, except those the
             // server still reports done: those stay unread across a client
             // restart or live handoff. They still need a matching completion
@@ -117,23 +122,37 @@ impl EndpointAgentPresentation {
             }
             agent.agent_status = self.projected_status(agent);
         }
+        self.read_settle.projected(&snapshot.agents);
         project_aggregate_status(snapshot);
     }
 
+    /// Reads the agents in `surface`'s focused panes when `snapshot` and
+    /// `surface` form a coherent pair, which is also when `snapshot` becomes
+    /// what the client draws (compose refuses a mismatched pair). True when an
+    /// agent turned read.
     pub(super) fn acknowledge_surface(
         &mut self,
         snapshot: &mut ClientShellSnapshot,
         surface: &PaneSurfaceFrame,
         outer_focused: Option<bool>,
     ) -> bool {
-        if outer_focused == Some(false)
-            || self.boot_id.as_deref() != Some(surface.boot_id.as_str())
+        if self.boot_id.as_deref() != Some(surface.boot_id.as_str())
             || snapshot.boot_id != surface.boot_id
             || snapshot.revision != surface.projection_revision
         {
             return false;
         }
+        // An unfocused window draws the pair but reads nothing.
+        let changed = outer_focused != Some(false) && self.read_focused_agents(snapshot, surface);
+        self.read_settle.note_drawn(snapshot, changed);
+        changed
+    }
 
+    fn read_focused_agents(
+        &mut self,
+        snapshot: &mut ClientShellSnapshot,
+        surface: &PaneSurfaceFrame,
+    ) -> bool {
         let mut changed = false;
         // Reading is per agent: only the focused pane counts, so agents sharing
         // a tab with it, or hidden behind it while zoomed, stay unread until
@@ -150,6 +169,14 @@ impl EndpointAgentPresentation {
             if *acknowledged < agent.state_change_seq {
                 *acknowledged = agent.state_change_seq;
                 changed = true;
+                // `agent` still carries its unread projection. Its row holds
+                // its place only if the last drawn state showed it unread: one
+                // the user watched finish never left the working group.
+                if agent.agent_status == AgentStatus::Done
+                    && self.read_settle.drew_unread(&agent.pane_id)
+                {
+                    self.read_settle.hold(agent, std::time::Instant::now());
+                }
             }
         }
         if changed {
@@ -159,6 +186,20 @@ impl EndpointAgentPresentation {
             project_aggregate_status(snapshot);
         }
         changed
+    }
+
+    /// Records that `snapshot` is drawn as cached, without a surface pair of
+    /// its own, as another machine's agents are in the aggregate panel.
+    pub(super) fn note_drawn(&mut self, snapshot: &ClientShellSnapshot) {
+        self.read_settle.note_drawn(snapshot, true);
+    }
+
+    pub(super) fn read_settle(&self) -> &super::read_settle::ReadSettle {
+        &self.read_settle
+    }
+
+    pub(super) fn expire_read_settle(&mut self, now: std::time::Instant) -> bool {
+        self.read_settle.expire(now)
     }
 
     pub(super) fn seen(&self, agent: &ClientShellAgent) -> bool {

@@ -1159,7 +1159,7 @@
           "key": "ui.agent_panel_sort",
           "type": "enum",
           "default": "\"spaces\"",
-          "description": "Agent sidebar ordering. Saved values are \"spaces\" or \"priority\"; \"workspaces\" is accepted as an alias for \"spaces\".",
+          "description": "Agent sidebar ordering. Saved values are \"spaces\" or \"priority\"; \"workspaces\" is accepted as an alias for \"spaces\". \"priority\" lists blocked, then unread, then working, then idle agents, newest first; an agent you just read keeps its row for 5 seconds before moving down, so the list does not jump under you.",
           "values": [
             "spaces",
             "priority"

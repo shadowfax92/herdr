@@ -269,6 +269,7 @@ mod link_hover;
 mod mobile;
 mod mouse_selection;
 mod popup_focus_projection;
+mod read_settle_panel;
 mod scope_filter;
 mod scope_mirror;
 mod scope_picker_overlay;

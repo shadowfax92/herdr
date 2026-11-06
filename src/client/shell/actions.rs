@@ -952,6 +952,7 @@ impl ClientShellState {
                     snapshot,
                     &self.config,
                     &self.active_endpoint_scope(snapshot),
+                    self.active_read_settle(),
                 );
                 Some(Method::PaneFocus(PaneTarget {
                     pane_id: agents.get(index)?.clone(),
@@ -962,6 +963,7 @@ impl ClientShellState {
                     snapshot,
                     &self.config,
                     &self.active_endpoint_scope(snapshot),
+                    self.active_read_settle(),
                 );
                 if agents.is_empty() {
                     return None;

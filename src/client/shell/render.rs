@@ -314,6 +314,7 @@ pub(super) fn render_shell(
                     .selected_workspace_id
                     .map(|target| target.workspace_id.as_str()),
                 state.scope.endpoint(state.active_endpoint_id),
+                super::read_settle::endpoint_read_settle(state.endpoints, state.active_endpoint_id),
                 &mut hits,
             );
         } else {

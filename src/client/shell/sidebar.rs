@@ -51,6 +51,7 @@ pub(crate) fn render_collapsed_sidebar(
     config: &ClientShellConfig,
     selected_workspace_id: Option<&str>,
     scope: &super::scope::EndpointScope<'_>,
+    settle: &super::read_settle::ReadSettle,
     hits: &mut ShellHitMap,
 ) {
     let palette = &config.palette;
@@ -130,10 +131,11 @@ pub(crate) fn render_collapsed_sidebar(
         detail_area.height.saturating_sub(1),
     );
     // The panel's own list, so the numbers match `focus_agent` keys.
-    for (index, pane_id) in super::agent_sidebar::listed_agent_pane_ids(snapshot, config, scope)
-        .into_iter()
-        .take(detail_content.height as usize)
-        .enumerate()
+    for (index, pane_id) in
+        super::agent_sidebar::listed_agent_pane_ids(snapshot, config, scope, settle)
+            .into_iter()
+            .take(detail_content.height as usize)
+            .enumerate()
     {
         let Some(agent) = snapshot
             .agents
@@ -446,6 +448,7 @@ pub(crate) fn render_sidebar(
         snapshot,
         config,
         scope,
+        super::read_settle::endpoint_read_settle(state.endpoints, state.active_endpoint_id),
         state.agent_scroll,
         hits,
     );

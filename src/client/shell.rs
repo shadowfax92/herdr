@@ -32,6 +32,7 @@ mod notification_policy;
 mod notifications;
 mod overlay_input;
 mod preferences;
+mod read_settle;
 mod render;
 mod scope;
 mod scope_mirror;

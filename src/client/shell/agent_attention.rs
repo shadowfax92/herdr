@@ -10,7 +10,9 @@
 //!
 //! Within one status the focused agent is the cursor: the walk starts on the
 //! row below it and wraps, so repeated presses move through every agent of
-//! that status instead of bouncing between the first two.
+//! that status instead of bouncing between the first two. A just-read agent
+//! keeps its unread row for a few seconds (`super::read_settle`), so pressing
+//! again from it carries on to the unread agent below it.
 
 use super::aggregate_navigation::{aggregate_agent_rows, AggregateAgentRow, AggregateAgentTarget};
 use super::*;
@@ -88,6 +90,7 @@ impl ClientShellState {
                     snapshot,
                     &self.config,
                     &self.active_endpoint_scope(snapshot),
+                    self.active_read_settle(),
                 )
                 .iter()
                 .position(|pane_id| pane_id == &target.pane_id)
