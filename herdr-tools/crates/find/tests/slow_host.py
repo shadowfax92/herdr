@@ -66,6 +66,14 @@ def exercise(mode):
                         stalled.set()
                         release.wait(5)
                         result = {"read":{"pane_id":params["pane_id"], "text":"late preview"}}
+                    elif method == "scope.get":
+                        # The catalog read asks for focus/hide after the
+                        # snapshot. Refuse it as stable Herdr 0.9.5 does, so
+                        # Find fails open and lists every pane.
+                        connection.sendall(json.dumps({"id": request["id"], "error": {
+                            "code": "invalid_request",
+                            "message": "invalid request: unknown variant `scope.get`, expected one of `ping`"}}).encode() + b"\n")
+                        return
                     else:
                         raise AssertionError(method)
                     connection.sendall(json.dumps({"id":request["id"],"result":result}).encode() + b"\n")
