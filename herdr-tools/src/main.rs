@@ -134,7 +134,8 @@ mod tests {
         }
     }
 
-    /// The manifest carries exactly DESIGN.md's actions and popup panes.
+    /// The manifest carries exactly DESIGN.md's actions and popup panes, plus
+    /// the actions added since the merge.
     #[test]
     fn manifest_ids_match_the_design() {
         let manifest: toml::Table = include_str!("../herdr-plugin.toml").parse().unwrap();
@@ -147,9 +148,13 @@ mod tests {
                 .map(|entry| entry["id"].as_str().unwrap().to_owned())
                 .collect::<Vec<_>>()
         };
+        // Post-merge actions have no old plugin id for `legacy` to rewrite, so
+        // they are named here; the manifest still can't gain or lose one silently.
+        const SINCE_MERGE: &[&str] = &["find-recent-files"];
         let mut expected = tools_core::legacy::ACTION_IDS
             .iter()
             .map(|(_, new)| new.strip_prefix("shadowfax.tools.").unwrap().to_owned())
+            .chain(SINCE_MERGE.iter().map(|id| (*id).to_owned()))
             .collect::<Vec<_>>();
         let mut actions = ids("actions");
         expected.sort();

@@ -9,9 +9,11 @@ one Enter.
 | --- | --- | --- |
 | **Alt-p** | **Panes**: visible open panes (Ctrl-o: every pane), with agent states, views, kill mode and preview | Jump to the pane |
 | **Alt-n** | **Paths**: every directory zoxide knows, in zoxide's order; Tab marks several | Type the full paths into the pane you came from, and copy them |
+| **Alt-Shift-n** | **Recent files**: every file the recent-files CLI recorded that still exists, newest first; Tab marks several | Same as Alt-n |
 
 The keys are the owner's `[[keys.command]]` bindings in Herdr's `config.toml`
-(`shadowfax.tools.find` and `shadowfax.tools.find-paths`); see
+(`shadowfax.tools.find`, `shadowfax.tools.find-paths` and
+`shadowfax.tools.find-recent-files`); see
 [Install](#build-and-install-locally). Pickers are declared in
 [`pickers.toml`](pickers.toml); adding one is configuration, not code (see
 [Add a picker](#add-a-picker)).
@@ -193,10 +195,30 @@ in between is fine), then press **Enter** once.
 | Ctrl-r | Run zoxide again |
 | Escape / Ctrl-c | Close without typing or copying |
 
+## Recent files (Alt-Shift-n)
+
+The twin of Alt-n for files. The owner's recent-files CLI
+(`~/code/side-projects/clis/recent-files`) records every file nvim opens and
+every file `m_path` copies; Alt-Shift-n lists them, and Enter types
+and copies them exactly as Alt-n does, Tab and Shift-Tab marks included.
+
+- The list is `recent-files list --days 90` (the window nvim's picker uses),
+  newest first. Files deleted since are left out, as zoxide leaves out deleted
+  directories; the CLI's log still holds them.
+- Search matches the file name first (`main` prefers `…/main.rs` over
+  `…/main/lib.rs`), then its parent directories.
+- Herdr runs the command in its server's environment, whose `PATH` may lack
+  `~/go/bin` (where `go install` puts the CLI). The picker looks on `PATH`,
+  then in `~/go/bin`, `~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin`,
+  the same places nvim's integration checks.
+- No CLI and an empty log both show one empty-state line; a failing CLI shows
+  its own error. **Ctrl-r** runs it again.
+
 ## Popup size
 
 Each picker's popup key is its manifest action id: `find` for the pane
-navigator and `find-paths` for paths. Size them in shadowfax.tools'
+navigator, `find-paths` for paths and `find-recent-files` for recent files.
+Size them in shadowfax.tools'
 `~/.config/herdr/plugins/config/shadowfax.tools/config.toml`; cells are a
 number, percentages a string:
 
@@ -237,7 +259,8 @@ empty = "No branches here."
    paths and shell quoting. `multi = true` lets Tab and Shift-Tab mark several
    items; Enter then delivers them space-separated, in the order marked. A
    command that needs a shell can be `["sh", "-c", '''…''']`; set
-   `origin = "<tool>"` so the heading and errors name the tool, not `sh`.
+   `origin = "<tool>"` so the heading and errors name the tool, not `sh`
+   (the `recent-files` picker does both).
 2. Add its action to the `# --- find ---` block of herdr-tools'
    `herdr-plugin.toml` (Herdr binds keys only to manifest actions; it rereads
    manifests on every invoke, so no relink is needed):
@@ -470,6 +493,20 @@ quoted (`cd` + `pwd` round-trip), multi-select (Tab, a new search, Tab and
 Shift-Tab, then one Enter: `printf` receives the three marked paths in mark
 order and the clipboard holds the same text), fish in vi normal mode receiving
 the path as text, and the missing-zoxide and empty-database messages. Both harnesses run their private Herdr with sound off.
+
+The recent-files picker has one too, with a private HOME holding a fixture
+recent-files log (the CLI keeps its log under `$HOME` and has no data-dir flag):
+
+```sh
+uv run --with pyte==0.8.2 python crates/find/tests/real_recent_files.py
+```
+
+It binds Alt-Shift-n to `shadowfax.tools.find-recent-files`, strips every
+directory holding a recent-files from the server's `PATH`, and links the real
+CLI (or a stub with its `list` contract) into the private `~/go/bin`. It checks
+the rows (newest first, `~`, the deleted file left out), a file-name search
+whose Enter types and copies the path, two marks typed quoted in mark order,
+and the empty-state line for an empty log and for no CLI.
 
 The `slow_host.py` check holds host reads open while the real picker runs: Escape
 must still exit during catalog loading, and Enter must jump during a stalled

@@ -37,6 +37,7 @@ real: bin
     python3 crates/find/tests/real_find.py
     python3 crates/find/tests/slow_host.py
     uv run --quiet --with pyte==0.8.2 python crates/find/tests/real_paths.py
+    uv run --quiet --with pyte==0.8.2 python crates/find/tests/real_recent_files.py
     python3 crates/move/tests/real_move.py
     python3 crates/menu/tests/real_menu.py
     # Focus and hide need a Herdr with `herdr scope`; on one without, a SKIP line.

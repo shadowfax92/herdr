@@ -60,3 +60,34 @@ enter = ["paste", "copy"]
 multi = true
 empty = "zoxide has no directories yet. cd around and they appear here."
 
+# The twin of `paths` for files: everything the recent-files CLI recorded (nvim
+# opens, m_path copies), most recent first. The command runs without a shell in
+# the Herdr server's environment, where ~/go/bin (`go install`'s default) may
+# be missing from PATH, so sh also looks in the dirs nvim's integration checks.
+# Deleted files are dropped, as zoxide drops deleted directories; the log keeps
+# them. With no CLI the list is empty, so `empty` covers both cases.
+[[picker]]
+id = "recent-files"
+title = "Recent files"
+origin = "recent-files"
+command = ["sh", "-c", '''
+rf=$(command -v recent-files) || rf=
+for dir in "$HOME/go/bin" "$HOME/.local/bin" /opt/homebrew/bin /usr/local/bin; do
+  if [ -z "$rf" ] && [ -x "$dir/recent-files" ]; then rf=$dir/recent-files; fi
+done
+[ -n "$rf" ] || exit 0
+# 90 days, as nvim's picker lists. A failure exits with the CLI's own status
+# and stderr, which the popup shows.
+out=$("$rf" list --days 90) || exit
+# Split on newlines only, and never glob, so every path survives as written.
+set -f
+IFS='
+'
+for file in $out; do
+  if [ -e "$file" ]; then printf '%s\n' "$file"; fi
+done
+''']
+kind = "path"
+enter = ["paste", "copy"]
+multi = true
+empty = "No recent files yet. nvim and m_path add them when the recent-files CLI is installed."

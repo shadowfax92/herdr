@@ -231,6 +231,115 @@ mod tests {
         assert!(find("missing").is_err());
     }
 
+    /// The recent-files picker is a paths twin over an `sh -c` wrapper. Its
+    /// script runs here through the real runner under `env -i`, with a stub
+    /// CLI, so the owner's PATH and recent-files log never take part.
+    #[test]
+    fn recent_files_resolves_the_cli_and_lists_existing_files_newest_first() {
+        use std::os::unix::fs::PermissionsExt;
+        let picker = find("recent-files").unwrap();
+        assert_eq!(picker.action, "find-recent-files");
+        assert_eq!(picker.width, DEFAULT_WIDTH, "sized like paths");
+        let Source::Lines(spec) = picker.source else {
+            panic!("recent-files is a line picker")
+        };
+        assert_eq!(spec.origin, "recent-files");
+        assert_eq!(
+            (spec.kind, spec.enter.as_slice(), spec.multi),
+            (Kind::Path, [Deliver::Paste, Deliver::Copy].as_slice(), true)
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let home = root.join("home");
+        let spaced = home.join("dir with space");
+        std::fs::create_dir_all(&spaced).unwrap();
+        // `a*.md` would glob to two files if the script let the shell expand it.
+        for file in ["a.txt", "b.txt"] {
+            std::fs::write(home.join(file), "").unwrap();
+        }
+        for file in ["a*.md", "ab.md"] {
+            std::fs::write(spaced.join(file), "").unwrap();
+        }
+        let stub = |dir: &std::path::Path, body: &str| {
+            std::fs::create_dir_all(dir).unwrap();
+            let path = dir.join("recent-files");
+            std::fs::write(
+                &path,
+                format!(
+                    "#!/bin/sh\n[ \"$*\" = 'list --days 90' ] || {{ echo \"args: $*\" >&2; exit 2; }}\n{body}\n"
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        let h = home.display();
+        stub(
+            &home.join("go/bin"),
+            &format!(
+                "printf '%s\\n' '{h}/b.txt' '{h}/gone.txt' '{h}/dir with space/a*.md' '{h}/a.txt'"
+            ),
+        );
+        let run = |home: &std::path::Path, path: &str| {
+            let mut argv = vec![
+                "env".to_owned(),
+                "-i".into(),
+                format!("HOME={}", home.display()),
+                format!("PATH={path}"),
+            ];
+            argv.extend(spec.command.iter().cloned());
+            crate::command::run(
+                &argv,
+                &spec.origin,
+                &root,
+                std::time::Duration::from_secs(5),
+            )
+        };
+
+        // ~/go/bin is found without being on PATH; the deleted file is dropped
+        // and the rest keep the CLI's newest-first order.
+        let listed = run(&home, "/usr/bin:/bin").unwrap();
+        assert_eq!(
+            listed.lines,
+            [
+                format!("{h}/b.txt"),
+                format!("{h}/dir with space/a*.md"),
+                format!("{h}/a.txt")
+            ]
+        );
+
+        // A recent-files on PATH wins over the fallback dirs.
+        let on_path = root.join("bin");
+        stub(&on_path, &format!("echo '{h}/a.txt'"));
+        let path = format!("{}:/usr/bin:/bin", on_path.display());
+        assert_eq!(run(&home, &path).unwrap().lines, [format!("{h}/a.txt")]);
+
+        // Its failure is reported under the list's name, with its own stderr.
+        stub(
+            &on_path,
+            "echo 'history.tsv: permission denied' >&2; exit 3",
+        );
+        assert_eq!(
+            run(&home, &path).unwrap_err(),
+            "recent-files failed (exit 3): history.tsv: permission denied"
+        );
+
+        // No CLI anywhere lists nothing, which shows the picker's `empty`
+        // message. Only provable where the fixed system dirs have none either.
+        let system = [
+            "/opt/homebrew/bin/recent-files",
+            "/usr/local/bin/recent-files",
+        ];
+        if !system.iter().any(|p| std::path::Path::new(p).exists()) {
+            let nothing = run(&root.join("empty-home"), "/usr/bin:/bin").unwrap();
+            assert!(nothing.lines.is_empty(), "{nothing:?}");
+            assert!(spec
+                .empty
+                .as_deref()
+                .is_some_and(|e| e.contains("recent-files CLI")));
+        }
+    }
+
     /// Herdr binds keys to manifest actions, so a picker without its action is
     /// unreachable and an `open` action without a picker fails at runtime.
     #[test]
