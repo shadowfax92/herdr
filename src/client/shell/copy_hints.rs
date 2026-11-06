@@ -232,8 +232,13 @@ impl ClientShellState {
                 outcome
                     .actions
                     .push(ClientShellAction::ClipboardWrite(text.into_bytes()));
-                // Like `y`, from either entry: this restores the entry scroll
-                // offset and pages a fullscreen app back down.
+                // A hint copy finishes with the pane, so from either entry it
+                // lands on the live bottom, even if the pane was already
+                // scrolled up when hints opened. Exiting also pages a
+                // fullscreen app back down.
+                if let Some(copy_mode) = self.copy_mode.as_mut() {
+                    copy_mode.entry_offset_from_bottom = 0;
+                }
                 self.exit_copy_mode(false, outcome);
             }
         }

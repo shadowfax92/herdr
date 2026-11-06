@@ -859,6 +859,8 @@ pub(super) struct ClientCopyModeState {
     pub(super) cursor: crate::api::schema::PaneTextPoint,
     pub(super) offset_from_bottom: usize,
     pub(super) max_offset_from_bottom: usize,
+    /// The scroll offset `exit_copy_mode` restores: where the pane was when
+    /// copy mode began, or 0 (the live bottom) once a hint label copied.
     pub(super) entry_offset_from_bottom: usize,
     /// Net pages copy mode scrolled a fullscreen app up (see
     /// `page_fullscreen_app`), paged back down on exit so the app follows

@@ -330,12 +330,30 @@ fn f_in_copy_mode_waits_for_the_page_it_asked_for_and_esc_returns_there() {
     state.handle_input_bytes(b"f");
     let chosen = state.handle_input_bytes(b"s");
     assert_eq!(clipboard(&chosen).as_deref(), Some("/old/zero"));
-    assert_eq!(
-        scrolled_to(&chosen),
-        [0],
-        "leaving restores the entry offset"
-    );
+    assert_eq!(scrolled_to(&chosen), [0], "a copy lands on the live bottom");
     assert_eq!(state.mode, ClientShellMode::Terminal);
+}
+
+#[test]
+fn a_copy_from_a_scrolled_pane_lands_on_the_live_bottom_and_esc_stays() {
+    let mut surface = hint_surface(&["/old/zero", "/old/one"], 20);
+    surface.panes[0].scroll = scroll(5, 20, 2);
+
+    let mut state = client(&Config::default(), &surface);
+    state.handle_input_bytes(PREFIX_F);
+    let chosen = state.handle_input_bytes(b"a");
+    assert_eq!(clipboard(&chosen).as_deref(), Some("/old/one"));
+    assert_eq!(scrolled_to(&chosen), [0], "the copy returns to the bottom");
+    assert_eq!(state.mode, ClientShellMode::Terminal);
+
+    let mut state = client(&Config::default(), &surface);
+    state.handle_input_bytes(PREFIX_F);
+    let cancelled = esc(&mut state);
+    assert_eq!(state.mode, ClientShellMode::Terminal);
+    assert!(
+        scrolled_to(&cancelled).iter().all(|offset| *offset == 5),
+        "Esc leaves the pane where it was scrolled"
+    );
 }
 
 fn ab_targets() -> (ClientShellState, PaneSurfaceFrame) {
