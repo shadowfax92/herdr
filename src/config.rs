@@ -1,5 +1,6 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 
+mod agent_key_rules;
 mod copy_hints;
 mod io;
 mod keybinds;
@@ -40,9 +41,11 @@ pub use self::{
     window_title::{WindowTitlePart, WindowTitleTemplate, WindowTitleToken},
 };
 
+pub use self::agent_key_rules::AgentKeyRulesConfig;
 pub use self::copy_hints::CopyHintsConfig;
 pub use self::landing_glow::LandingGlowConfig;
 
+pub(crate) use self::agent_key_rules::AgentKeyRules;
 pub(crate) use self::keybinds::parse_key_combo;
 pub(crate) use self::write::{update_file_at, write_edit, ConfigEdit};
 pub(crate) use self::{
@@ -125,6 +128,7 @@ impl Config {
             .chain(self.theme.diagnostics())
             .chain(self.ui.sound.diagnostics())
             .chain(crate::copy_hints::HintRules::compile(&self.copy_hints).1)
+            .chain(AgentKeyRules::compile(&self.agent_key_rules).1)
             .chain(tab_bar_right_diagnostics(&self.ui.tab_bar_right))
             .chain(window_title_diagnostics(&self.ui.window_title))
             .chain(self.invalid_sidebar_bounds_diagnostic())

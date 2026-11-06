@@ -6,6 +6,7 @@ use super::{model::LoadedConfig, Config, CONFIG_PATH_ENV_VAR};
 
 const KNOWN_TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
     "advanced",
+    "agent_key_rules",
     "copy_hints",
     "experimental",
     "keys",
@@ -354,6 +355,14 @@ fn load_live_config_from_str(content: &str) -> Result<LoadedConfig, Vec<String>>
     );
     load_live_section(
         table,
+        "agent_key_rules",
+        "agent key rules",
+        &mut diagnostics,
+        &mut invalid_sections,
+        |section| config.agent_key_rules = section,
+    );
+    load_live_section(
+        table,
         "advanced",
         "advanced config",
         &mut diagnostics,
@@ -387,6 +396,7 @@ fn load_live_config_from_str(content: &str) -> Result<LoadedConfig, Vec<String>>
 
     diagnostics.extend(config.theme.diagnostics());
     diagnostics.extend(crate::copy_hints::HintRules::compile(&config.copy_hints).1);
+    diagnostics.extend(super::AgentKeyRules::compile(&config.agent_key_rules).1);
 
     Ok(LoadedConfig {
         config,
@@ -463,7 +473,7 @@ fn unknown_top_level_config_key_diagnostics(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum ConfigKeyPathSegment {
+pub(super) enum ConfigKeyPathSegment {
     Key(String),
     Index(usize),
 }
@@ -491,7 +501,7 @@ fn config_key_path(path: &serde_ignored::Path<'_>) -> Vec<ConfigKeyPathSegment> 
     segments
 }
 
-fn format_config_key_path(path: &[ConfigKeyPathSegment]) -> String {
+pub(super) fn format_config_key_path(path: &[ConfigKeyPathSegment]) -> String {
     path.iter()
         .map(|segment| match segment {
             ConfigKeyPathSegment::Key(key)
@@ -1124,6 +1134,68 @@ regex = 5
         assert_eq!(
             loaded.diagnostics,
             vec!["copy_hints.patterns[0].regex must be a string; skipping pattern"]
+        );
+    }
+
+    const AGENT_KEY_RULES_NOT_A_TABLE: &str =
+        "agent_key_rules must be a table of [agent_key_rules.<agent>] tables; ignoring it";
+
+    #[test]
+    fn startup_keeps_the_rest_of_the_file_when_agent_key_rules_is_mistyped() {
+        let _guard = crate::config::test_config_env_lock().lock().unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "herdr-config-agent-key-rules-{}.toml",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "agent_key_rules = 5\n\n[ui]\ncopy_on_select = false\n",
+        )
+        .unwrap();
+        std::env::set_var(CONFIG_PATH_ENV_VAR, &path);
+
+        let loaded = Config::load();
+
+        std::env::remove_var(CONFIG_PATH_ENV_VAR);
+        let _ = std::fs::remove_file(path);
+
+        assert!(!loaded.config.ui.copy_on_select, "no reset to defaults");
+        assert_eq!(loaded.diagnostics, vec![AGENT_KEY_RULES_NOT_A_TABLE]);
+    }
+
+    #[test]
+    fn reload_keeps_the_rest_of_the_file_when_agent_key_rules_is_mistyped() {
+        let loaded =
+            load_live_config_from_str("agent_key_rules = 5\n\n[ui]\ncopy_on_select = false\n")
+                .unwrap();
+
+        assert!(!loaded.config.ui.copy_on_select);
+        assert_eq!(loaded.diagnostics, vec![AGENT_KEY_RULES_NOT_A_TABLE]);
+        assert!(loaded.invalid_sections.is_empty());
+    }
+
+    #[test]
+    fn reload_carries_agent_key_rules_and_reports_their_problems() {
+        let loaded = load_live_config_from_str(
+            "[agent_key_rules.claude]\n\"ctrl+d\" = \"drop\"\nq = \"drop\"\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            loaded.diagnostics,
+            vec![
+                "agent_key_rules.claude.q is a typing key, which can reach the pane as text; skipping rule"
+            ]
+        );
+        assert!(loaded.invalid_sections.is_empty());
+        let rules = super::super::AgentKeyRules::compile(&loaded.config.agent_key_rules).0;
+        let ctrl_d = crate::input::TerminalKey::new(
+            crossterm::event::KeyCode::Char('d'),
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+        assert!(
+            rules.find("claude", &ctrl_d).is_some(),
+            "the reloaded config keeps the rule"
         );
     }
 

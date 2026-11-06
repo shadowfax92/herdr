@@ -904,6 +904,18 @@
       ]
     },
     {
+      "id": "agent_key_rules",
+      "title": "Agent key rules",
+      "keys": [
+        {
+          "key": "agent_key_rules",
+          "type": "table of tables",
+          "default": "{}",
+          "description": "Keys Herdr would send to an agent's pane, dropped or replaced first. Write one [agent_key_rules.<agent>] table per agent, named as herdr agent list names it (claude, codex, agy, ...), with entries \"<key>\" = \"drop\" or \"<key>\" = { remap = \"<key>\" } in [keys] syntax without prefix+. A remap sends a whole press and release of the other key. Herdr's own bindings and the prefix win, and copy mode, copy hints, prompts, popups and the sidebar never consult rules. A dropped key shows a short notice that follows ui.toast.clipboard.enabled. Keys that type text cannot be rule keys. Rules always come from the local config, including under --remote. An unknown agent, key or action is reported by herdr config check and costs only its own rule or table."
+        }
+      ]
+    },
+    {
       "id": "copy_hints",
       "title": "Copy hints",
       "keys": [
