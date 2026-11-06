@@ -28,14 +28,14 @@ command = ["./bin/herdr-tools", "find", "open"]
 [[actions]]
 id = "find-paths"
 title = "Paste a path"
-description = "Pick a zoxide directory; Enter types its full path into this pane and copies it."
+description = "Pick a zoxide directory (Ctrl-o: a recent file); Enter types its full path into this pane and copies it."
 contexts = ["pane"]
 command = ["./bin/herdr-tools", "find", "open", "paths"]
 
 [[actions]]
 id = "find-recent-files"
 title = "Paste a recent file"
-description = "Pick a file from the recent-files CLI; Enter types its full path into this pane and copies it."
+description = "Open the paths picker on recent files (Ctrl-o: zoxide directories); Enter types the full path into this pane and copies it."
 contexts = ["pane"]
 command = ["./bin/herdr-tools", "find", "open", "recent-files"]
 

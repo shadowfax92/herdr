@@ -177,14 +177,19 @@ with tempfile.TemporaryDirectory(prefix="jump-paths-", dir="/tmp") as directory:
         checks.append(f"laid-out shadowfax.tools linked; {paths_key} bound to shadowfax.tools.find-paths in config.toml")
 
         content = open_paths("open")
-        assert content[0].endswith(f"zoxide · {len(expected_rows)}"), content[0]
+        # The heading counts the dirs (and the Ctrl-o files list) in its strip;
+        # a narrow popup drops the origin before the strip.
+        assert f" Dirs {len(expected_rows)} " in content[0], content[0]
+        assert content[0].endswith("zoxide") or args.width < 100, content[0]
         assert content[1] == "› Type part of a path…", content[1]
         assert same_rows(rows(content), expected_rows), (rows(content), expected_rows)
         # Hints drop whole pairs as the popup narrows (70 host columns ≈ 40 here).
-        assert content[-1].strip() in ("↑↓ select   tab mark   enter paste + copy   ctrl-r reload   esc close",
-                                       "↑↓ select  tab mark  enter paste + copy  ^r reload  esc close",
-                                       "tab mark  enter paste + copy  esc close",
-                                       "enter paste + copy  esc close"), content[-1]
+        assert content[-1].strip() in ("↑↓ select   tab mark   enter paste + copy   ctrl-o files   ctrl-r reload   esc close",
+                                       "↑↓ select  tab mark  enter paste + copy  ^o files  ^r reload  esc close",
+                                       "tab mark  enter paste + copy  ^o files  esc close",
+                                       "enter paste + copy  ^o files  esc close",
+                                       "enter paste + copy  ^o files  esc",
+                                       "enter  ^o files  esc"), content[-1]
         checks.append(f"{paths_key} lists every zoxide path in zoxide's order, with ~ for HOME")
 
         os.write(fd, b"herdr jump")

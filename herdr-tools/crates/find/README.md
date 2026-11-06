@@ -8,8 +8,8 @@ one Enter.
 | Key | Picker | Enter |
 | --- | --- | --- |
 | **Alt-p** | **Panes**: visible open panes (Ctrl-o: every pane), with agent states, views, kill mode and preview | Jump to the pane |
-| **Alt-n** | **Paths**: every directory zoxide knows, in zoxide's order; Tab marks several | Type the full paths into the pane you came from, and copy them |
-| **Alt-Shift-n** | **Recent files**: every file the recent-files CLI recorded that still exists, newest first; Tab marks several | Same as Alt-n |
+| **Alt-n** | **Paths**: every directory zoxide knows, in zoxide's order; **Ctrl-o** switches to recent files and back; Tab marks several | Type the full paths into the pane you came from, and copy them |
+| **Alt-Shift-n** | The same **Paths** popup, opened on **recent files**: every file the recent-files CLI recorded that still exists, newest first | Same as Alt-n |
 
 The keys are the owner's `[[keys.command]]` bindings in Herdr's `config.toml`
 (`shadowfax.tools.find`, `shadowfax.tools.find-paths` and
@@ -145,10 +145,12 @@ fragment (`herdr jump`, `skl/lib`, `~/code`), and press **Enter**: the full
 absolute path is typed into the pane you opened the popup from, without
 pressing Enter, and the same path is copied to the clipboard. It replaces
 `cd somewhere && m_path`. To pick several, press **Tab** on each (searching
-in between is fine), then press **Enter** once.
+in between is fine), then press **Enter** once. Press **Ctrl-o** to switch
+the same popup to [recent files](#recent-files-ctrl-o-or-alt-shift-n), and
+again to come back.
 
 ```text
- Paths · 2 marked, 1 hidden                                   zoxide · 477
+ Paths · 2 marked, 1 hidden   Dirs 477   Files 828                  zoxide
  › herdr jump                                                        3/477
  ──────────────────────────────────────────────────────────────────────────
  ■ ~/code/side-projects/herdr-custom-plugins/my/herdr-jump
@@ -156,8 +158,13 @@ in between is fine), then press **Enter** once.
    ~/llm/code/side-projects/herdr-custom-plugins/my/herdr-jump
 
  '/Users/shadowfax/Library/Application Support' /Users/shadowfax/code/side-pro…
- ↑↓ select   tab mark   enter paste + copy   ctrl-r reload   esc close
+ ↑↓ select   tab mark   enter paste + copy   ctrl-o files   ctrl-r reload   esc close
 ```
+
+- The heading counts both lists, the one on screen in a green pill, as Alt-p
+  shows its In focus / Everything switch. Both load when the popup opens,
+  each on its own, so zoxide shows at once however long recent-files takes;
+  a list still loading counts `…`, one that failed `!`.
 
 - The list is `zoxide query --list`, in zoxide's own frecency order. Rows show
   `~` for your home directory, with parent directories dimmed so the last
@@ -192,15 +199,23 @@ in between is fine), then press **Enter** once.
 | Up / Down, Ctrl-p / Ctrl-n | Select a path |
 | Tab / Shift-Tab | Mark (or unmark) the selected path, then move down / up |
 | Enter | Type the marked paths (or the selected one) into the source pane and copy them, then close |
-| Ctrl-r | Run zoxide again |
+| Ctrl-o | Switch between directories and recent files, keeping the query and marks |
+| Ctrl-r | Run the list on screen again (zoxide or recent-files) |
 | Escape / Ctrl-c | Close without typing or copying |
 
-## Recent files (Alt-Shift-n)
+## Recent files (Ctrl-o, or Alt-Shift-n)
 
-The twin of Alt-n for files. The owner's recent-files CLI
+The files list of the Alt-n popup. The owner's recent-files CLI
 (`~/code/side-projects/clis/recent-files`) records every file nvim opens and
-every file `m_path` copies; Alt-Shift-n lists them, and Enter types
-and copies them exactly as Alt-n does, Tab and Shift-Tab marks included.
+every file `m_path` copies; **Ctrl-o** in Alt-n lists them, and Enter types
+and copies them exactly as for directories, Tab and Shift-Tab marks included.
+**Alt-Shift-n** (`shadowfax.tools.find-recent-files`) opens the same popup
+already on files, where Ctrl-o goes to directories.
+
+- The query carries over when you switch, and each list keeps its own cursor.
+  Marks belong to the popup: mark a directory, press Ctrl-o, mark a file, and
+  one Enter types both, in the order marked. The heading's `hidden` count
+  includes marks in the other list.
 
 - The list is `recent-files list --days 90` (the window nvim's picker uses),
   newest first. Files deleted since are left out, as zoxide leaves out deleted
@@ -217,7 +232,8 @@ and copies them exactly as Alt-n does, Tab and Shift-Tab marks included.
 ## Popup size
 
 Each picker's popup key is its manifest action id: `find` for the pane
-navigator, `find-paths` for paths and `find-recent-files` for recent files.
+navigator, `find-paths` for paths and `find-recent-files` for the paths popup
+opened on recent files (the key follows the action that opened it).
 Size them in shadowfax.tools'
 `~/.config/herdr/plugins/config/shadowfax.tools/config.toml`; cells are a
 number, percentages a string:
@@ -260,7 +276,10 @@ empty = "No branches here."
    items; Enter then delivers them space-separated, in the order marked. A
    command that needs a shell can be `["sh", "-c", '''…''']`; set
    `origin = "<tool>"` so the heading and errors name the tool, not `sh`
-   (the `recent-files` picker does both).
+   (the `recent-files` picker does both). To make it a Ctrl-o list of an
+   existing popup instead of a popup of its own, give both pickers the same
+   `group` and each a short `label`, as `paths` and `recent-files` do; the
+   members must agree on `kind`, `enter` and `multi`.
 2. Add its action to the `# --- find ---` block of herdr-tools'
    `herdr-plugin.toml` (Herdr binds keys only to manifest actions; it rereads
    manifests on every invoke, so no relink is needed):

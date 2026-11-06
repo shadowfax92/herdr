@@ -7,10 +7,15 @@
 //! out. Marks look like the navigator's kill marks (`■` in the gutter, a bold
 //! name, `N marked, M hidden` in the heading), in the accent color rather than
 //! red, which this UI reserves for destruction.
+//!
+//! A grouped popup adds the navigator's reach-strip look after the title:
+//! `Paths   Dirs 477   Files 828 ……… zoxide`, the list on screen in a green
+//! pill, and `ctrl-o files` in the hints. The counts move into the pills, so
+//! the right side names only the shown list's source.
 use crate::{
     deliver,
     lines::{LineHit, LinePicker},
-    pickers::{Deliver, Kind, LineSource, Picker},
+    pickers::{Deliver, Kind, LineSource, Lists},
     ui::{self, Elided, ACCENT, MUTED},
 };
 use ratatui::{
@@ -22,20 +27,30 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-/// What a line picker draws besides its state: the spec's static facts.
+/// What a line picker draws besides its state: the specs' static facts, one
+/// source per list in the state's list order.
 pub(crate) struct Chrome<'a> {
-    pub picker: &'a Picker,
-    pub source: &'a LineSource,
+    pub lists: &'a Lists,
 }
 
 impl Chrome<'_> {
-    /// The list's source (`zoxide`), shown so where the items come from is clear.
-    fn origin(&self) -> String {
-        self.source.origin.clone()
+    /// The source of the list on screen.
+    fn source(&self, state: &LinePicker) -> &LineSource {
+        &self.lists.sources[state.active().min(self.lists.sources.len() - 1)]
+    }
+
+    /// A group's members agree on kind, enter and multi, so any source
+    /// answers for the popup.
+    fn shared(&self) -> &LineSource {
+        &self.lists.sources[0]
+    }
+
+    fn grouped(&self) -> bool {
+        self.lists.sources.len() > 1
     }
 
     fn noun(&self) -> &'static str {
-        match self.source.kind {
+        match self.shared().kind {
             Kind::Path => "paths",
             Kind::Text => "items",
         }
@@ -43,7 +58,7 @@ impl Chrome<'_> {
 
     /// `paste + copy`, in the order Enter performs them.
     fn enter_label(&self) -> String {
-        self.source
+        self.shared()
             .enter
             .iter()
             .map(|effect| match effect {
@@ -80,9 +95,10 @@ pub(crate) fn render(state: &LinePicker, chrome: &Chrome<'_>, frame: &mut Frame<
         Paragraph::new(heading_line(state, chrome, heading.width)),
         heading,
     );
+    let list = state.list();
     let count = (!state.query.trim().is_empty())
-        .then(|| format!("{}/{}", state.hits.len(), state.items.len()));
-    let placeholder = match chrome.source.kind {
+        .then(|| format!("{}/{}", list.hits.len(), list.items.len()));
+    let placeholder = match chrome.shared().kind {
         Kind::Path => "Type part of a path…",
         Kind::Text => "Type to filter…",
     };
@@ -97,7 +113,7 @@ pub(crate) fn render(state: &LinePicker, chrome: &Chrome<'_>, frame: &mut Frame<
     let chosen = state.chosen();
     if !chosen.is_empty() {
         // Exactly what Enter types (quoted if a shell needs it), or copies.
-        let text = if chrome.source.enter.contains(&Deliver::Paste) {
+        let text = if chrome.shared().enter.contains(&Deliver::Paste) {
             deliver::typed_all(&chosen, state.kind())
         } else {
             deliver::copied(&chosen, state.kind())
@@ -120,77 +136,207 @@ pub(crate) fn render(state: &LinePicker, chrome: &Chrome<'_>, frame: &mut Frame<
             notice,
         );
     }
-    let enter = chrome.enter_label();
-    let hints = if chrome.source.multi {
-        vec![
-            format!("↑↓ select   tab mark   enter {enter}   ctrl-r reload   esc close"),
-            format!("↑↓ select  tab mark  enter {enter}  ^r reload  esc close"),
-            format!("tab mark  enter {enter}  esc close"),
-            format!("enter {enter}  esc close"),
-            "tab  enter  esc".to_owned(),
-        ]
-    } else {
-        vec![
-            format!("↑↓ select   enter {enter}   ctrl-r reload   esc close"),
-            format!("↑↓ select  enter {enter}  ^r reload  esc close"),
-            format!("enter {enter}  esc close"),
-            "enter  esc".to_owned(),
-        ]
-    };
     frame.render_widget(
-        Paragraph::new(ui::fitting_hint(&hints, footer.width as usize)),
+        Paragraph::new(hint_line(state, chrome, footer.width as usize)),
         footer,
     );
 }
 
+/// Key hints, widest first; narrower ones drop whole `key action` pairs or
+/// shorten `ctrl-` to `^`. In a group `ctrl-o <next list>` sits right after
+/// `enter`, as in the navigator, so it outlasts the other keys. The set is
+/// chosen with the widest list name so ctrl-o never changes which one shows.
+fn hint_line(state: &LinePicker, chrome: &Chrome<'_>, width: usize) -> Line<'static> {
+    let enter = chrome.enter_label();
+    let multi = chrome.shared().multi;
+    let (tab_wide, tab) = if multi {
+        ("tab mark   ", "tab mark  ")
+    } else {
+        ("", "")
+    };
+    let hints = |next: &str| {
+        let (o_wide, o) = if next.is_empty() {
+            (String::new(), String::new())
+        } else {
+            (format!("   ctrl-o {next}"), format!("  ^o {next}"))
+        };
+        let mut hints = vec![
+            format!("↑↓ select   {tab_wide}enter {enter}{o_wide}   ctrl-r reload   esc close"),
+            format!("↑↓ select  {tab}enter {enter}{o}  ^r reload  esc close"),
+            format!("{tab}enter {enter}{o}  esc close"),
+            format!("enter {enter}{o}  esc close"),
+        ];
+        if !next.is_empty() {
+            hints.push(format!("enter {enter}  ^o {next}  esc"));
+            hints.push(format!("enter  ^o {next}  esc"));
+        }
+        hints.push(
+            if multi {
+                "tab  enter  esc"
+            } else {
+                "enter  esc"
+            }
+            .to_owned(),
+        );
+        hints
+    };
+    let next = if chrome.grouped() {
+        let sources = &chrome.lists.sources;
+        sources[(state.active() + 1) % sources.len()]
+            .label
+            .to_lowercase()
+    } else {
+        String::new()
+    };
+    let widest = chrome
+        .lists
+        .sources
+        .iter()
+        .map(|source| source.label.width())
+        .max()
+        .filter(|_| chrome.grouped())
+        .unwrap_or(0);
+    let judged = hints(&" ".repeat(widest));
+    let shown = hints(&next);
+    judged
+        .iter()
+        .zip(shown)
+        .find(|(judged, _)| judged.width() <= width)
+        .map(|(_, hint)| Line::styled(hint, Style::default().fg(MUTED)))
+        .unwrap_or_default()
+}
+
 /// `Paths · 2 marked, 1 hidden ……… zoxide · 477`; the item count waits for
 /// the first load. Narrow popups drop the hidden count, then the origin, and
-/// keep the mark count as long as it fits.
+/// keep the mark count as long as it fits. A group puts its list strip after
+/// the title (`Paths · 2 marked   Dirs 477   Files 828 ……… zoxide`) and sheds
+/// the inactive lists last, before the marks.
 fn heading_line(state: &LinePicker, chrome: &Chrome<'_>, width: u16) -> Line<'static> {
     let bold = Style::default().add_modifier(Modifier::BOLD);
     let muted = Style::default().fg(MUTED);
-    let title = vec![Span::styled(chrome.picker.title.clone(), bold)];
+    let title = vec![Span::styled(chrome.lists.title.clone(), bold)];
     let marked = state.marks().len();
     let hidden = state.hidden_marks();
-    // Richest first.
-    let mut counted: Vec<Vec<Span<'static>>> = Vec::new();
+    // Mark-count variants, richest first.
+    let mut marks: Vec<Vec<Span<'static>>> = Vec::new();
     if marked > 0 {
-        let mut count = title.clone();
-        count.extend([
+        let count = vec![
             Span::raw(" · "),
             Span::styled(format!("{marked} marked"), bold),
-        ]);
+        ];
         if hidden > 0 {
             let mut extra = count.clone();
             extra.push(Span::styled(format!(", {hidden} hidden"), muted));
-            counted.push(extra);
+            marks.push(extra);
         }
-        counted.push(count);
+        marks.push(count);
     }
-    let origin = if state.loading && state.items.is_empty() {
-        format!("{}…", chrome.origin())
-    } else if state.error.is_some() {
-        chrome.origin()
+    // Strip forms, richest first: every list, then the shown one alone.
+    let strips: Vec<Vec<Span<'static>>> = if chrome.grouped() {
+        vec![
+            strip_spans(state, chrome, false),
+            strip_spans(state, chrome, true),
+        ]
     } else {
-        format!("{} · {}", chrome.origin(), state.items.len())
+        vec![Vec::new()]
     };
+    let source = chrome.source(state);
+    let list = state.list();
+    let origin = if chrome.grouped() {
+        source.origin.clone()
+    } else if list.loading && list.items.is_empty() {
+        format!("{}…", source.origin)
+    } else if list.error.is_some() {
+        source.origin.clone()
+    } else {
+        format!("{} · {}", source.origin, list.items.len())
+    };
+    // Judge the origin by the widest a group can show, so ctrl-o never
+    // decides whether it fits.
+    let origin_room = chrome
+        .lists
+        .sources
+        .iter()
+        .map(|source| source.origin.width())
+        .chain([origin.width()])
+        .max()
+        .unwrap_or(0);
     let width = width as usize;
     let used = |spans: &[Span]| spans.iter().map(Span::width).sum::<usize>();
-    let (left, with_origin) = counted
-        .iter()
-        .map(|left| (left, true))
-        .chain(counted.iter().map(|left| (left, false)))
-        .chain([(&title, true)])
-        .find(|(left, with_origin)| {
-            used(left) + if *with_origin { origin.width() + 1 } else { 0 } <= width
+    let left = |marks: &[Span<'static>], strip: &[Span<'static>]| {
+        let mut spans = title.clone();
+        spans.extend(marks.iter().cloned());
+        if !strip.is_empty() {
+            spans.push(Span::raw("  "));
+            spans.extend(strip.iter().cloned());
+        }
+        spans
+    };
+    // Richest first. Within a strip form every mark form is tried with the
+    // origin before any without it, as an ungrouped heading always has; then
+    // the inactive lists go, then the marks, and the title with the shown
+    // list's pill stays longest.
+    let none: &[Span<'static>] = &[];
+    let marked_forms: Vec<&[Span<'static>]> = if marks.is_empty() {
+        vec![none]
+    } else {
+        marks.iter().map(Vec::as_slice).collect()
+    };
+    let mut variants = Vec::new();
+    for strip in &strips {
+        for with_origin in [true, false] {
+            for marks in &marked_forms {
+                variants.push((left(marks, strip), with_origin));
+            }
+        }
+    }
+    let last = strips.last().map_or(none, Vec::as_slice);
+    variants.extend([(left(none, last), true), (left(none, last), false)]);
+    let (mut spans, with_origin) = variants
+        .into_iter()
+        .find(|(spans, with_origin)| {
+            used(spans) + if *with_origin { origin_room + 1 } else { 0 } <= width
         })
-        .unwrap_or((&title, false));
-    let mut spans = left.clone();
+        .unwrap_or_else(|| (title.clone(), false));
     if with_origin {
-        let gap = width - used(left) - origin.width();
+        let gap = width.saturating_sub(used(&spans) + origin.width());
         spans.extend([Span::raw(" ".repeat(gap)), Span::styled(origin, muted)]);
     }
     Line::from(spans)
+}
+
+/// One padded segment per list (` Dirs 477 `), the shown one in the green
+/// pill the navigator's reach strip uses. Padding every segment keeps their
+/// positions fixed, so ctrl-o visibly moves the pill. A list still loading
+/// counts `…`, one that failed `!`.
+fn strip_spans(state: &LinePicker, chrome: &Chrome<'_>, only_active: bool) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for (index, (list, source)) in state.lists().iter().zip(&chrome.lists.sources).enumerate() {
+        let active = index == state.active();
+        if only_active && !active {
+            continue;
+        }
+        if !spans.is_empty() {
+            spans.push(Span::raw(" "));
+        }
+        let count = if list.loading && list.items.is_empty() {
+            "…".to_owned()
+        } else if list.error.is_some() {
+            "!".to_owned()
+        } else {
+            list.items.len().to_string()
+        };
+        let style = if active {
+            Style::default()
+                .bg(Color::Green)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(MUTED)
+        };
+        spans.push(Span::styled(format!(" {} {count} ", source.label), style));
+    }
+    spans
 }
 
 /// Prose where the list would be, wrapped between words so a narrow popup
@@ -206,22 +352,25 @@ fn body_text(frame: &mut Frame<'_>, area: Rect, text: &str, color: Color) {
     );
 }
 
+/// The shown list's rows, or why there are none, in that list's own words
+/// (each list in a group has its own empty message and source).
 fn render_rows(state: &LinePicker, chrome: &Chrome<'_>, frame: &mut Frame<'_>, area: Rect) {
-    if let Some(error) = state.error.as_deref().filter(|_| !state.loading) {
+    let list = state.list();
+    let source = chrome.source(state);
+    if let Some(error) = list.error.as_deref().filter(|_| !list.loading) {
         // The list is empty because the source failed; say why where the
         // list would be, so typing (which clears notices) never hides it.
         body_text(frame, area, error, ACCENT);
         return;
     }
-    if state.hits.is_empty() {
-        let message = if state.loading {
-            format!("Running {}…", chrome.origin())
-        } else if state.items.is_empty() {
-            chrome
-                .source
+    if list.hits.is_empty() {
+        let message = if list.loading {
+            format!("Running {}…", source.origin)
+        } else if list.items.is_empty() {
+            source
                 .empty
                 .clone()
-                .unwrap_or_else(|| format!("{} printed nothing", chrome.origin()))
+                .unwrap_or_else(|| format!("{} printed nothing", source.origin))
         } else {
             format!("No matching {}", chrome.noun())
         };
@@ -229,10 +378,10 @@ fn render_rows(state: &LinePicker, chrome: &Chrome<'_>, frame: &mut Frame<'_>, a
         return;
     }
     let visible = area.height.max(1) as usize;
-    let offset = state.selected.saturating_sub(visible - 1);
-    for (i, hit) in state.hits.iter().enumerate().skip(offset).take(visible) {
+    let offset = list.selected.saturating_sub(visible - 1);
+    for (i, hit) in list.hits.iter().enumerate().skip(offset).take(visible) {
         let rect = Rect::new(area.x, area.y + (i - offset) as u16, area.width, 1);
-        render_row(state, hit, i == state.selected, frame, rect);
+        render_row(state, hit, i == list.selected, frame, rect);
     }
 }
 
@@ -247,7 +396,7 @@ fn render_row(
     frame: &mut Frame<'_>,
     rect: Rect,
 ) {
-    let item = &state.items[hit.index];
+    let item = &state.list().items[hit.index];
     let marked = state.is_marked(item);
     let base = if selected {
         Style::default().bg(MUTED).fg(Color::White)
@@ -301,15 +450,11 @@ mod tests {
     };
     use std::path::Path;
 
-    fn paths_picker() -> Picker {
-        pickers::find("paths").unwrap()
-    }
-
-    fn source(picker: &Picker) -> LineSource {
-        match &picker.source {
-            pickers::Source::Lines(source) => source.clone(),
-            pickers::Source::Panes => unreachable!(),
-        }
+    /// The paths list alone, as an ungrouped picker would show it.
+    fn paths_alone() -> Lists {
+        let mut lists = pickers::lists("paths").unwrap();
+        lists.sources.truncate(1);
+        lists
     }
 
     fn state(lines: &[&str]) -> LinePicker {
@@ -318,20 +463,22 @@ mod tests {
             .iter()
             .map(|l| Item::new(l, Kind::Path, Some("/Users/me"), Path::new("/")))
             .collect();
-        state.loaded(Ok(Batch {
-            items,
-            ..Batch::default()
-        }));
+        state.loaded(
+            0,
+            Ok(Batch {
+                items,
+                ..Batch::default()
+            }),
+        );
         state
     }
 
     fn draw(state: &LinePicker, width: u16, height: u16) -> Buffer {
-        let picker = paths_picker();
-        let source = source(&picker);
-        let chrome = Chrome {
-            picker: &picker,
-            source: &source,
-        };
+        draw_with(state, &paths_alone(), width, height)
+    }
+
+    fn draw_with(state: &LinePicker, lists: &Lists, width: u16, height: u16) -> Buffer {
+        let chrome = Chrome { lists };
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
             .draw(|frame| render(state, &chrome, frame))
@@ -430,19 +577,10 @@ mod tests {
 
     #[test]
     fn pickers_without_multi_do_not_offer_tab() {
-        let picker = paths_picker();
-        let mut single = source(&picker);
-        single.multi = false;
-        let chrome = Chrome {
-            picker: &picker,
-            source: &single,
-        };
+        let mut single = paths_alone();
+        single.sources[0].multi = false;
         let state = state(&["/a"]);
-        let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
-        terminal
-            .draw(|frame| render(&state, &chrome, frame))
-            .unwrap();
-        let screen = rows(terminal.backend().buffer());
+        let screen = rows(&draw_with(&state, &single, 80, 12));
         assert_eq!(
             screen[11],
             " ↑↓ select   enter paste + copy   ctrl-r reload   esc close"
@@ -505,7 +643,10 @@ mod tests {
             ]
         );
         let mut failed = state(&["/a"]);
-        failed.loaded(Err("zoxide isn't installed or isn't on Herdr's PATH".into()));
+        failed.loaded(
+            0,
+            Err("zoxide isn't installed or isn't on Herdr's PATH".into()),
+        );
         failed.handle(Event::Paste("typing keeps the reason".into()));
         let screen = rows(&draw(&failed, 80, 12));
         assert!(screen[0].ends_with("zoxide"));
@@ -517,5 +658,200 @@ mod tests {
         let mut unmatched = state(&["/a"]);
         unmatched.handle(Event::Paste("zzz".into()));
         assert_eq!(rows(&draw(&unmatched, 80, 12))[3], " No matching paths");
+    }
+
+    fn items(lines: &[&str]) -> Result<Batch, String> {
+        Ok(Batch {
+            items: lines
+                .iter()
+                .map(|l| Item::new(l, Kind::Path, Some("/Users/me"), Path::new("/")))
+                .collect(),
+            ..Batch::default()
+        })
+    }
+
+    fn ctrl_o(state: &mut LinePicker) {
+        state.handle(Event::Key(KeyEvent::new(
+            KeyCode::Char('o'),
+            KeyModifiers::CONTROL,
+        )));
+    }
+
+    /// The real alt+n popup (paths + recent-files), opened on `opened`.
+    fn grouped(opened: usize) -> (LinePicker, Lists) {
+        let lists = pickers::lists(["paths", "recent-files"][opened]).unwrap();
+        let state = LinePicker::with_lists(
+            Kind::Path,
+            vec![Deliver::Paste, Deliver::Copy],
+            true,
+            lists.sources.len(),
+            lists.opened,
+        );
+        (state, lists)
+    }
+
+    /// Cells on row `y` with a green background (the shown list's pill), joined.
+    fn pill(buffer: &Buffer, y: u16) -> String {
+        (0..buffer.area.width)
+            .filter(|&x| buffer[(x, y)].bg == Color::Green)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect()
+    }
+
+    #[test]
+    fn the_heading_counts_both_lists_and_pills_the_one_on_screen() {
+        let (mut state, lists) = grouped(0);
+        // Before either list loads, both count `…`.
+        let screen = rows(&draw_with(&state, &lists, 80, 12));
+        assert!(
+            screen[0].starts_with(" Paths   Dirs …   Files … "),
+            "{screen:#?}"
+        );
+        assert!(screen[0].ends_with(" zoxide"), "{screen:#?}");
+        assert_eq!(screen[3], " Running zoxide…");
+        // zoxide lands first; recent-files is still running.
+        state.loaded(0, items(&["/Users/me/code/app", "/Users/me/notes"]));
+        let buffer = draw_with(&state, &lists, 80, 12);
+        let screen = rows(&buffer);
+        assert!(
+            screen[0].starts_with(" Paths   Dirs 2   Files … "),
+            "{screen:#?}"
+        );
+        assert_eq!(pill(&buffer, 0), " Dirs 2 ");
+        assert_eq!(screen[3], " › ~/code/app");
+        let files_at = screen[0].find("Files");
+        state.loaded(
+            1,
+            items(&["/Users/me/code/app/main.rs", "/Users/me/a", "/Users/me/b"]),
+        );
+        state.handle(Event::Paste("app".into()));
+        ctrl_o(&mut state);
+        let buffer = draw_with(&state, &lists, 80, 12);
+        let screen = rows(&buffer);
+        // Same segment positions; the pill moved and the origin follows.
+        assert!(
+            screen[0].starts_with(" Paths   Dirs 2   Files 3 "),
+            "{screen:#?}"
+        );
+        assert_eq!(screen[0].find("Files"), files_at);
+        assert!(screen[0].ends_with(" recent-files"), "{screen:#?}");
+        assert_eq!(pill(&buffer, 0), " Files 3 ");
+        assert!(screen[1].starts_with(" › app") && screen[1].ends_with(" 1/3"));
+        assert_eq!(screen[3], " › ~/code/app/main.rs");
+        ctrl_o(&mut state);
+        let buffer = draw_with(&state, &lists, 80, 12);
+        assert_eq!(pill(&buffer, 0), " Dirs 2 ");
+        assert_eq!(rows(&buffer)[3], " › ~/code/app");
+    }
+
+    #[test]
+    fn opened_on_files_the_heading_and_hints_say_so() {
+        let (mut state, lists) = grouped(1);
+        state.loaded(1, items(&["/Users/me/a.rs"]));
+        let buffer = draw_with(&state, &lists, 100, 12);
+        let screen = rows(&buffer);
+        assert!(
+            screen[0].starts_with(" Paths   Dirs …   Files 1 "),
+            "{screen:#?}"
+        );
+        assert!(screen[0].ends_with("recent-files"), "{screen:#?}");
+        assert_eq!(pill(&buffer, 0), " Files 1 ");
+        assert_eq!(
+            screen[11],
+            " ↑↓ select   tab mark   enter paste + copy   ctrl-o dirs   ctrl-r reload   esc close"
+        );
+        ctrl_o(&mut state);
+        let screen = rows(&draw_with(&state, &lists, 100, 12));
+        assert_eq!(
+            screen[11],
+            " ↑↓ select   tab mark   enter paste + copy   ctrl-o files   ctrl-r reload   esc close"
+        );
+    }
+
+    /// ctrl-o flips the hint's word, never which hint set fits: the set is
+    /// judged with the longer list name.
+    #[test]
+    fn narrow_hints_keep_ctrl_o_and_do_not_reflow_on_switch() {
+        let (mut state, lists) = grouped(0);
+        state.loaded(0, items(&["/a"]));
+        state.loaded(1, items(&["/b"]));
+        let hint =
+            |state: &LinePicker, width| rows(&draw_with(state, &lists, width, 12))[11].clone();
+        // The popup's inner width is two columns narrower.
+        assert_eq!(
+            hint(&state, 73),
+            " ↑↓ select  tab mark  enter paste + copy  ^o files  ^r reload  esc close"
+        );
+        assert_eq!(
+            hint(&state, 51),
+            " tab mark  enter paste + copy  ^o files  esc close"
+        );
+        assert_eq!(hint(&state, 35), " enter paste + copy  ^o files  esc");
+        assert_eq!(hint(&state, 22), " enter  ^o files  esc");
+        // One column short for `files`: the next set, for `dirs` too, though
+        // the wider set would fit `dirs`.
+        assert_eq!(hint(&state, 50), " enter paste + copy  ^o files  esc close");
+        ctrl_o(&mut state);
+        assert_eq!(hint(&state, 50), " enter paste + copy  ^o dirs  esc close");
+    }
+
+    #[test]
+    fn each_list_shows_its_own_empty_and_failed_state() {
+        let (mut state, lists) = grouped(0);
+        state.loaded(0, items(&[]));
+        state.loaded(1, Err("recent-files failed (exit 3): boom".into()));
+        let buffer = draw_with(&state, &lists, 80, 12);
+        let screen = rows(&buffer);
+        assert!(
+            screen[0].starts_with(" Paths   Dirs 0   Files ! "),
+            "{screen:#?}"
+        );
+        assert_eq!(
+            screen[3],
+            " zoxide has no directories yet. cd around and they appear here."
+        );
+        ctrl_o(&mut state);
+        let screen = rows(&draw_with(&state, &lists, 80, 12));
+        assert_eq!(
+            screen[3],
+            " recent-files failed (exit 3): boom · ctrl-r retries"
+        );
+        state.loaded(1, items(&[]));
+        let screen = rows(&draw_with(&state, &lists, 100, 12));
+        assert_eq!(
+            screen[3],
+            " No recent files yet. nvim and m_path add them when the recent-files CLI is installed."
+        );
+        state.loaded(1, items(&["/Users/me/a"]));
+        state.handle(Event::Paste("zzz".into()));
+        assert_eq!(
+            rows(&draw_with(&state, &lists, 80, 12))[3],
+            " No matching paths"
+        );
+    }
+
+    /// As in an ungrouped heading, the hidden count gives way to the origin
+    /// and then returns once the origin is gone; the other list goes next,
+    /// then the marks, and the shown list's pill stays with the title.
+    #[test]
+    fn a_narrow_grouped_heading_sheds_in_order() {
+        let (mut state, lists) = grouped(0);
+        state.loaded(0, items(&["/Users/me/a", "/Users/me/b"]));
+        state.loaded(1, items(&["/Users/me/c"]));
+        state.handle(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        state.handle(Event::Paste("b".into()));
+        let heading = |width| rows(&draw_with(&state, &lists, width, 12))[0].clone();
+        assert!(heading(80).starts_with(" Paths · 1 marked, 1 hidden   Dirs 2   Files 1 "));
+        assert!(heading(80).ends_with(" zoxide"));
+        assert!(heading(60).starts_with(" Paths · 1 marked   Dirs 2   Files 1 "));
+        assert!(heading(60).ends_with(" zoxide"));
+        assert_eq!(
+            heading(48),
+            " Paths · 1 marked, 1 hidden   Dirs 2   Files 1"
+        );
+        assert_eq!(heading(40), " Paths · 1 marked   Dirs 2   Files 1");
+        assert_eq!(heading(30), " Paths · 1 marked   Dirs 2");
+        assert_eq!(heading(20), " Paths   Dirs 2");
+        assert_eq!(heading(10), " Paths");
     }
 }

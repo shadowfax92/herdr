@@ -9,7 +9,7 @@ use crate::{
     host::{Host, KillExecutor},
     lines::{Batch, Item, LinePicker, Outcome},
     lines_ui,
-    pickers::{LineSource, Picker},
+    pickers::{LineSource, Lists},
     ui,
     worker::Worker,
 };
@@ -170,51 +170,67 @@ fn show_confirmation(terminal: &mut DefaultTerminal, app: &mut App) -> Result<bo
     Ok(true)
 }
 
-/// A line picker: the source command runs on a worker (in the source pane's
-/// directory), and Enter delivers the marks (or the selection) here, on the
-/// foreground loop.
+/// Runs one list's command on its own worker, in the source pane's directory.
+fn loader(host: &Host, source_pane: &str, spec: &LineSource) -> Worker<(), Result<Batch, String>> {
+    let (host, pane, command, origin, kind) = (
+        host.clone(),
+        source_pane.to_owned(),
+        spec.command.clone(),
+        spec.origin.clone(),
+        spec.kind,
+    );
+    Worker::new(move |()| -> Result<Batch, String> {
+        let home = std::env::var("HOME").ok().filter(|home| !home.is_empty());
+        let cwd = host
+            .pane_cwd(&pane)
+            .ok()
+            .flatten()
+            .or_else(|| home.as_deref().map(PathBuf::from).filter(|p| p.is_dir()))
+            .unwrap_or_else(|| PathBuf::from("/"));
+        let output = command::run(&command, &origin, &cwd, command::DEADLINE)?;
+        Ok(Batch {
+            items: output
+                .lines
+                .iter()
+                .map(|line| Item::new(line, kind, home.as_deref(), &cwd))
+                .collect(),
+            skipped: output.skipped,
+            truncated: output.truncated,
+        })
+    })
+}
+
+/// A line picker: each list's command runs on its own worker, and Enter
+/// delivers the marks (or the selection) here, on the foreground loop.
 /// The popup closes only after every Enter effect succeeded; otherwise it stays
 /// open and says what did and didn't happen.
-pub(crate) fn run_lines(
-    host: Host,
-    source_pane: String,
-    picker: &Picker,
-    spec: &LineSource,
-) -> Result<()> {
-    let mut state = LinePicker::new(spec.kind, spec.enter.clone(), spec.multi);
-    let chrome = lines_ui::Chrome {
-        picker,
-        source: spec,
-    };
-    let loader = {
-        let (host, pane, command, origin, kind) = (
-            host.clone(),
-            source_pane.clone(),
-            spec.command.clone(),
-            spec.origin.clone(),
-            spec.kind,
-        );
-        Worker::new(move |()| -> Result<Batch, String> {
-            let home = std::env::var("HOME").ok().filter(|home| !home.is_empty());
-            let cwd = host
-                .pane_cwd(&pane)
-                .ok()
-                .flatten()
-                .or_else(|| home.as_deref().map(PathBuf::from).filter(|p| p.is_dir()))
-                .unwrap_or_else(|| PathBuf::from("/"));
-            let output = command::run(&command, &origin, &cwd, command::DEADLINE)?;
-            Ok(Batch {
-                items: output
-                    .lines
-                    .iter()
-                    .map(|line| Item::new(line, kind, home.as_deref(), &cwd))
-                    .collect(),
-                skipped: output.skipped,
-                truncated: output.truncated,
-            })
-        })
-    };
-    loader.submit(());
+///
+/// Every list of a group starts loading at open, each on its own thread, so
+/// the heading can count them all and a slow list (recent-files) never delays
+/// the one on screen (zoxide): results are applied per list as they land.
+pub(crate) fn run_lines(host: Host, source_pane: String, lists: &Lists) -> Result<()> {
+    // A group's members agree on these, so the first list speaks for all.
+    let shared = &lists.sources[0];
+    let mut state = LinePicker::with_lists(
+        shared.kind,
+        shared.enter.clone(),
+        shared.multi,
+        lists.sources.len(),
+        lists.opened,
+    );
+    let chrome = lines_ui::Chrome { lists };
+    let loaders: Vec<_> = lists
+        .sources
+        .iter()
+        .map(|spec| loader(&host, &source_pane, spec))
+        .collect();
+    // The list on screen first, so its thread starts first.
+    loaders[state.active()].submit(());
+    for (index, loader) in loaders.iter().enumerate() {
+        if index != state.active() {
+            loader.submit(());
+        }
+    }
     session(|terminal| {
         let mut dirty = true;
         loop {
@@ -232,13 +248,13 @@ pub(crate) fn run_lines(
                     }
                     match state.handle(event) {
                         Outcome::Cancel => return Ok(()),
-                        Outcome::Reload => loader.submit(()),
+                        Outcome::Reload => loaders[state.active()].submit(()),
                         Outcome::Deliver(delivery) => {
                             match deliver::deliver(
                                 &host,
                                 &source_pane,
                                 &delivery.values,
-                                spec.kind,
+                                state.kind(),
                                 &delivery.effects,
                             ) {
                                 Ok(()) => return Ok(()),
@@ -257,9 +273,11 @@ pub(crate) fn run_lines(
                     }
                 }
             }
-            if let Some(result) = loader.take() {
-                state.loaded(result);
-                dirty = true;
+            for (index, loader) in loaders.iter().enumerate() {
+                if let Some(result) = loader.take() {
+                    state.loaded(index, result);
+                    dirty = true;
+                }
             }
         }
     })

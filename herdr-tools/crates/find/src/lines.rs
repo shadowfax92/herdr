@@ -7,6 +7,10 @@
 //! command lines ─ Item::new (value, display, leaf) ─ rank(query) ─ hits ─┬─ Enter ─ Outcome::Deliver(values)
 //!                                                     Tab / Shift-Tab ─ marks ─┘ (marks win over the cursor)
 //! ```
+//!
+//! A grouped popup (`pickers::Lists`) holds one [`List`] per picker. Ctrl-o
+//! shows the next one: the query, marks and Enter latch are the popup's and
+//! carry over, while items, cursor and load state stay with each list.
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -109,198 +113,35 @@ pub(crate) struct Batch {
     pub truncated: bool,
 }
 
-/// One line picker popup's foreground state, from the first load until Enter
-/// succeeds or Escape. Owned by the `picker` loop, which feeds it key events and
-/// load results and performs whatever `Outcome` it returns; `lines_ui` draws it.
-pub(crate) struct LinePicker {
-    pub query: String,
+/// One list of a line picker popup: one command's items, ranked under the
+/// popup's query, and where the cursor is. Each list loads on its own, so a
+/// slow command never holds back another list.
+#[derive(Debug)]
+pub(crate) struct List {
     pub items: Vec<Item>,
+    /// Ranked under the query as of the last time this list was shown; ctrl-o
+    /// re-ranks a list as it comes on screen.
     pub hits: Vec<LineHit>,
     pub selected: usize,
     pub loading: bool,
     /// Why the last load failed (e.g. zoxide missing). It stays on screen while
     /// the user types, until a reload succeeds.
     pub error: Option<String>,
-    /// A transient notice (skipped lines, a failed copy); editing or moving clears it.
-    pub message: Option<String>,
-    kind: Kind,
-    enter: Vec<Deliver>,
-    /// Only pickers declared `multi` let Tab mark.
-    multi: bool,
-    /// Marked values in the order they were marked, which is the order Enter
-    /// delivers them. Values rather than item indices, so marks survive every
-    /// query (they are not tied to `hits`) and a reload that reorders items.
-    marks: Vec<String>,
-    /// Effects that already succeeded for one set of values during a partly
-    /// failed Enter.
-    done: Option<(Vec<String>, Vec<Deliver>)>,
-    // Unix key repeat arrives as Press. After a failed delivery, a held Enter
-    // must not deliver again; editing or moving re-arms it (as in `app`).
-    enter_armed: bool,
+    /// Load notes (skipped or truncated lines) from a load that finished while
+    /// another list was on screen; shown when this list next is.
+    notice: Option<String>,
 }
 
-impl LinePicker {
-    pub fn new(kind: Kind, enter: Vec<Deliver>, multi: bool) -> Self {
+impl List {
+    fn new() -> Self {
         Self {
-            query: String::new(),
             items: Vec::new(),
             hits: Vec::new(),
             selected: 0,
             loading: true,
             error: None,
-            message: None,
-            kind,
-            enter,
-            multi,
-            marks: Vec::new(),
-            done: None,
-            enter_armed: true,
+            notice: None,
         }
-    }
-
-    pub fn kind(&self) -> Kind {
-        self.kind
-    }
-
-    /// Marked values in delivery order.
-    pub fn marks(&self) -> &[String] {
-        &self.marks
-    }
-
-    pub fn is_marked(&self, item: &Item) -> bool {
-        self.marks.contains(&item.value)
-    }
-
-    /// Marks the current query hides; the heading says how many, so a mark
-    /// made under another search is never a surprise at Enter.
-    pub fn hidden_marks(&self) -> usize {
-        // Distinct values: two items can share one (`rel` and `./rel` both
-        // become the same absolute path), and a mark is one value.
-        let shown: HashSet<&str> = self
-            .hits
-            .iter()
-            .map(|hit| self.items[hit.index].value.as_str())
-            .filter(|value| self.marks.iter().any(|mark| mark == value))
-            .collect();
-        self.marks.len() - shown.len()
-    }
-
-    /// What Enter would deliver now: every mark, else the selected item.
-    pub fn chosen(&self) -> Vec<&str> {
-        if self.marks.is_empty() {
-            self.selected()
-                .map(|item| vec![item.value.as_str()])
-                .unwrap_or_default()
-        } else {
-            self.marks.iter().map(String::as_str).collect()
-        }
-    }
-
-    pub fn handle(&mut self, event: Event) -> Outcome {
-        if let Event::Key(key) = &event {
-            if key.kind == KeyEventKind::Release {
-                return Outcome::None;
-            }
-            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-            match key.code {
-                KeyCode::Esc => return Outcome::Cancel,
-                KeyCode::Char('c') if ctrl => return Outcome::Cancel,
-                KeyCode::Enter => {
-                    let values: Vec<String> =
-                        self.chosen().into_iter().map(str::to_owned).collect();
-                    if key.kind == KeyEventKind::Press
-                        && self.enter_armed
-                        && !self.loading
-                        && !values.is_empty()
-                    {
-                        let done = match &self.done {
-                            Some((done_values, done)) if *done_values == values => done.as_slice(),
-                            _ => &[],
-                        };
-                        let effects = self
-                            .enter
-                            .iter()
-                            .filter(|effect| !done.contains(effect))
-                            .copied()
-                            .collect();
-                        self.enter_armed = false;
-                        return Outcome::Deliver(Delivery { values, effects });
-                    }
-                    return Outcome::None;
-                }
-                // fzf's multi-select keys, and the same toggle-then-move as
-                // the navigator's kill mode. Space stays query text here:
-                // paths are searched with several words.
-                KeyCode::Tab | KeyCode::BackTab
-                    if self.multi
-                        && !ctrl
-                        && key.modifiers.difference(KeyModifiers::SHIFT).is_empty() =>
-                {
-                    return self.toggle_mark(if key.code == KeyCode::BackTab { -1 } else { 1 });
-                }
-                KeyCode::Char('r') if ctrl => {
-                    self.loading = true;
-                    return Outcome::Reload;
-                }
-                KeyCode::Down => return self.moved(1),
-                KeyCode::Char('n') if ctrl => return self.moved(1),
-                KeyCode::Up => return self.moved(-1),
-                KeyCode::Char('p') if ctrl => return self.moved(-1),
-                _ => {}
-            }
-        }
-        if prompt::edit(&mut self.query, &event) {
-            self.rank(None);
-            self.message = None;
-            self.enter_armed = true;
-        }
-        Outcome::None
-    }
-
-    pub fn loaded(&mut self, result: Result<Batch, String>) {
-        let keep = self.selected().map(|item| item.value.clone());
-        self.loading = false;
-        match result {
-            Ok(batch) => {
-                self.items = batch.items;
-                self.error = None;
-                // A mark whose item is gone can no longer be seen or unmarked,
-                // so it must not be delivered either. A failed load keeps them.
-                let items = &self.items;
-                self.marks
-                    .retain(|mark| items.iter().any(|item| item.value == *mark));
-                let mut notes = Vec::new();
-                if batch.skipped > 0 {
-                    notes.push(format!(
-                        "Skipped {} unprintable {}",
-                        batch.skipped,
-                        if batch.skipped == 1 { "line" } else { "lines" }
-                    ));
-                }
-                if batch.truncated {
-                    notes.push(format!("Showing the first {} lines", self.items.len()));
-                }
-                self.message = (!notes.is_empty()).then(|| notes.join(" · "));
-            }
-            Err(message) => {
-                self.items.clear();
-                self.error = Some(format!("{message} · ctrl-r retries"));
-                self.message = None;
-            }
-        }
-        self.rank(keep.as_deref());
-    }
-
-    /// The popup stays open after a failed copy or paste so the message is
-    /// seen; Enter stays disarmed until the user edits, moves or marks. `done`
-    /// lists the effects that did succeed for `values`; a later Enter on the
-    /// same values skips them.
-    pub fn delivery_failed(&mut self, values: Vec<String>, done: Vec<Deliver>, message: String) {
-        match &mut self.done {
-            Some((done_values, already)) if *done_values == values => already.extend(done),
-            _ => self.done = Some((values, done)),
-        }
-        self.message = Some(message);
     }
 
     pub fn selected(&self) -> Option<&Item> {
@@ -309,41 +150,13 @@ impl LinePicker {
             .and_then(|hit| self.items.get(hit.index))
     }
 
-    /// Marks the selected item, or unmarks it if already marked (moving it to
-    /// the end of the order if marked again), then moves the cursor.
-    fn toggle_mark(&mut self, direction: isize) -> Outcome {
-        if let Some(value) = self.selected().map(|item| item.value.clone()) {
-            if let Some(at) = self.marks.iter().position(|mark| *mark == value) {
-                self.marks.remove(at);
-            } else {
-                self.marks.push(value);
-            }
-            self.enter_armed = true;
-            self.message = None;
-            self.moved(direction);
-        }
-        Outcome::None
-    }
-
-    fn moved(&mut self, direction: isize) -> Outcome {
-        if !self.hits.is_empty() {
-            self.selected = self
-                .selected
-                .saturating_add_signed(direction)
-                .min(self.hits.len() - 1);
-            self.message = None;
-            self.enter_armed = true;
-        }
-        Outcome::None
-    }
-
     /// Empty query: source order (zoxide's own ranking). With a query: the
     /// worst atom's match class, then how many atoms only matched outside the
     /// last path component, then score, then source order. The leaf is a
     /// separate, higher-priority matcher field so `jump` prefers `…/jump` over
     /// `…/jump/sub`, and its indices shift into `display` coordinates.
-    fn rank(&mut self, keep: Option<&str>) {
-        let query = Query::parse(&self.query);
+    fn rank(&mut self, query: &str, keep: Option<&str>) {
+        let query = Query::parse(query);
         let mut matcher = Matcher::default();
         let mut ranked: Vec<((MatchClass, usize, i32, usize), LineHit)> = Vec::new();
         for (index, item) in self.items.iter().enumerate() {
@@ -392,6 +205,301 @@ impl LinePicker {
     }
 }
 
+/// One line picker popup's foreground state, from the first load until Enter
+/// succeeds or Escape. Owned by the `picker` loop, which feeds it key events and
+/// load results and performs whatever `Outcome` it returns; `lines_ui` draws it.
+pub(crate) struct LinePicker {
+    pub query: String,
+    /// One per list, in `pickers::Lists` order; never empty.
+    lists: Vec<List>,
+    /// The list on screen; ctrl-o advances it.
+    active: usize,
+    /// A transient notice (skipped lines, a failed copy); editing or moving clears it.
+    pub message: Option<String>,
+    /// Shared by every list (`pickers` makes a group's members agree), since
+    /// marks and Enter span lists.
+    kind: Kind,
+    enter: Vec<Deliver>,
+    /// Only pickers declared `multi` let Tab mark.
+    multi: bool,
+    /// Marked values in the order they were marked, which is the order Enter
+    /// delivers them. Values rather than item indices, so marks survive every
+    /// query (they are not tied to `hits`), a reload that reorders items, and
+    /// ctrl-o: a directory and a file marked in their own lists go out together.
+    marks: Vec<String>,
+    /// Effects that already succeeded for one set of values during a partly
+    /// failed Enter.
+    done: Option<(Vec<String>, Vec<Deliver>)>,
+    // Unix key repeat arrives as Press. After a failed delivery, a held Enter
+    // must not deliver again; editing or moving re-arms it (as in `app`).
+    enter_armed: bool,
+}
+
+impl LinePicker {
+    /// A popup with a single list.
+    #[cfg(test)]
+    pub fn new(kind: Kind, enter: Vec<Deliver>, multi: bool) -> Self {
+        Self::with_lists(kind, enter, multi, 1, 0)
+    }
+
+    /// A popup of `lists` lists (at least one), showing `active` first. Every
+    /// list starts loading.
+    pub fn with_lists(
+        kind: Kind,
+        enter: Vec<Deliver>,
+        multi: bool,
+        lists: usize,
+        active: usize,
+    ) -> Self {
+        let lists: Vec<List> = (0..lists.max(1)).map(|_| List::new()).collect();
+        Self {
+            query: String::new(),
+            active: active.min(lists.len() - 1),
+            lists,
+            message: None,
+            kind,
+            enter,
+            multi,
+            marks: Vec::new(),
+            done: None,
+            enter_armed: true,
+        }
+    }
+
+    pub fn kind(&self) -> Kind {
+        self.kind
+    }
+
+    /// The list on screen.
+    pub fn list(&self) -> &List {
+        &self.lists[self.active]
+    }
+
+    pub fn lists(&self) -> &[List] {
+        &self.lists
+    }
+
+    pub fn active(&self) -> usize {
+        self.active
+    }
+
+    /// Marked values in delivery order.
+    pub fn marks(&self) -> &[String] {
+        &self.marks
+    }
+
+    pub fn is_marked(&self, item: &Item) -> bool {
+        self.marks.contains(&item.value)
+    }
+
+    /// Marks the current query hides; the heading says how many, so a mark
+    /// made under another search is never a surprise at Enter.
+    pub fn hidden_marks(&self) -> usize {
+        // Distinct values: two items can share one (`rel` and `./rel` both
+        // become the same absolute path), and a mark is one value.
+        // A mark made in another list counts as hidden: it is not on screen,
+        // and Enter still delivers it.
+        let list = self.list();
+        let shown: HashSet<&str> = list
+            .hits
+            .iter()
+            .map(|hit| list.items[hit.index].value.as_str())
+            .filter(|value| self.marks.iter().any(|mark| mark == value))
+            .collect();
+        self.marks.len() - shown.len()
+    }
+
+    /// What Enter would deliver now: every mark, else the selected item.
+    pub fn chosen(&self) -> Vec<&str> {
+        if self.marks.is_empty() {
+            self.selected()
+                .map(|item| vec![item.value.as_str()])
+                .unwrap_or_default()
+        } else {
+            self.marks.iter().map(String::as_str).collect()
+        }
+    }
+
+    pub fn handle(&mut self, event: Event) -> Outcome {
+        if let Event::Key(key) = &event {
+            if key.kind == KeyEventKind::Release {
+                return Outcome::None;
+            }
+            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+            match key.code {
+                KeyCode::Esc => return Outcome::Cancel,
+                KeyCode::Char('c') if ctrl => return Outcome::Cancel,
+                KeyCode::Enter => {
+                    let values: Vec<String> =
+                        self.chosen().into_iter().map(str::to_owned).collect();
+                    if key.kind == KeyEventKind::Press
+                        && self.enter_armed
+                        && !self.list().loading
+                        && !values.is_empty()
+                    {
+                        let done = match &self.done {
+                            Some((done_values, done)) if *done_values == values => done.as_slice(),
+                            _ => &[],
+                        };
+                        let effects = self
+                            .enter
+                            .iter()
+                            .filter(|effect| !done.contains(effect))
+                            .copied()
+                            .collect();
+                        self.enter_armed = false;
+                        return Outcome::Deliver(Delivery { values, effects });
+                    }
+                    return Outcome::None;
+                }
+                // fzf's multi-select keys, and the same toggle-then-move as
+                // the navigator's kill mode. Space stays query text here:
+                // paths are searched with several words.
+                KeyCode::Tab | KeyCode::BackTab
+                    if self.multi
+                        && !ctrl
+                        && key.modifiers.difference(KeyModifiers::SHIFT).is_empty() =>
+                {
+                    return self.toggle_mark(if key.code == KeyCode::BackTab { -1 } else { 1 });
+                }
+                // Reloads the list on screen; the caller reloads `active()`.
+                KeyCode::Char('r') if ctrl => {
+                    self.lists[self.active].loading = true;
+                    return Outcome::Reload;
+                }
+                // As in the pane navigator, ctrl-o switches what the popup
+                // lists. Herdr binds no ctrl+o, so it reaches the popup.
+                KeyCode::Char('o') if ctrl => return self.switch_list(),
+                KeyCode::Down => return self.moved(1),
+                KeyCode::Char('n') if ctrl => return self.moved(1),
+                KeyCode::Up => return self.moved(-1),
+                KeyCode::Char('p') if ctrl => return self.moved(-1),
+                _ => {}
+            }
+        }
+        if prompt::edit(&mut self.query, &event) {
+            // Only the list on screen is ranked per keystroke; the others
+            // catch up when ctrl-o shows them.
+            self.lists[self.active].rank(&self.query, None);
+            self.message = None;
+            self.enter_armed = true;
+        }
+        Outcome::None
+    }
+
+    /// Shows the next list (a no-op with one). The query carries over and
+    /// ranks the list now shown, whose cursor stays on the item it was on if
+    /// that still matches.
+    fn switch_list(&mut self) -> Outcome {
+        if self.lists.len() > 1 {
+            self.active = (self.active + 1) % self.lists.len();
+            let list = &mut self.lists[self.active];
+            let keep = list.selected().map(|item| item.value.clone());
+            list.rank(&self.query, keep.as_deref());
+            self.message = list.notice.take();
+            self.enter_armed = true;
+        }
+        Outcome::None
+    }
+
+    /// One load of list `index` finished. Loads of different lists arrive in
+    /// any order; one for a list off screen only updates that list.
+    pub fn loaded(&mut self, index: usize, result: Result<Batch, String>) {
+        let Some(list) = self.lists.get_mut(index) else {
+            return;
+        };
+        let keep = list.selected().map(|item| item.value.clone());
+        list.loading = false;
+        let mut notice = None;
+        let succeeded = result.is_ok();
+        match result {
+            Ok(batch) => {
+                list.items = batch.items;
+                list.error = None;
+                let mut notes = Vec::new();
+                if batch.skipped > 0 {
+                    notes.push(format!(
+                        "Skipped {} unprintable {}",
+                        batch.skipped,
+                        if batch.skipped == 1 { "line" } else { "lines" }
+                    ));
+                }
+                if batch.truncated {
+                    notes.push(format!("Showing the first {} lines", list.items.len()));
+                }
+                notice = (!notes.is_empty()).then(|| notes.join(" · "));
+            }
+            Err(message) => {
+                list.items.clear();
+                list.error = Some(format!("{message} · ctrl-r retries"));
+            }
+        }
+        list.rank(&self.query, keep.as_deref());
+        if index == self.active {
+            self.message = notice;
+        } else {
+            list.notice = notice;
+        }
+        if succeeded {
+            // A mark that no list holds any more can no longer be seen or
+            // unmarked, so it must not be delivered either. A failed load
+            // keeps them, for the retry.
+            let lists = &self.lists;
+            self.marks.retain(|mark| {
+                lists
+                    .iter()
+                    .any(|list| list.items.iter().any(|item| item.value == *mark))
+            });
+        }
+    }
+
+    /// The popup stays open after a failed copy or paste so the message is
+    /// seen; Enter stays disarmed until the user edits, moves or marks. `done`
+    /// lists the effects that did succeed for `values`; a later Enter on the
+    /// same values skips them.
+    pub fn delivery_failed(&mut self, values: Vec<String>, done: Vec<Deliver>, message: String) {
+        match &mut self.done {
+            Some((done_values, already)) if *done_values == values => already.extend(done),
+            _ => self.done = Some((values, done)),
+        }
+        self.message = Some(message);
+    }
+
+    /// The cursor's item in the list on screen.
+    pub fn selected(&self) -> Option<&Item> {
+        self.list().selected()
+    }
+
+    /// Marks the selected item, or unmarks it if already marked (moving it to
+    /// the end of the order if marked again), then moves the cursor.
+    fn toggle_mark(&mut self, direction: isize) -> Outcome {
+        if let Some(value) = self.selected().map(|item| item.value.clone()) {
+            if let Some(at) = self.marks.iter().position(|mark| *mark == value) {
+                self.marks.remove(at);
+            } else {
+                self.marks.push(value);
+            }
+            self.enter_armed = true;
+            self.message = None;
+            self.moved(direction);
+        }
+        Outcome::None
+    }
+
+    fn moved(&mut self, direction: isize) -> Outcome {
+        let list = &mut self.lists[self.active];
+        if !list.hits.is_empty() {
+            list.selected = list
+                .selected
+                .saturating_add_signed(direction)
+                .min(list.hits.len() - 1);
+            self.message = None;
+            self.enter_armed = true;
+        }
+        Outcome::None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -417,10 +525,13 @@ mod tests {
             .iter()
             .map(|line| Item::new(line, Kind::Path, Some(HOME), Path::new("/work")))
             .collect();
-        picker.loaded(Ok(Batch {
-            items,
-            ..Batch::default()
-        }));
+        picker.loaded(
+            0,
+            Ok(Batch {
+                items,
+                ..Batch::default()
+            }),
+        );
         picker
     }
 
@@ -434,15 +545,19 @@ mod tests {
 
     fn shown(picker: &LinePicker) -> Vec<&str> {
         picker
+            .list()
             .hits
             .iter()
-            .map(|hit| picker.items[hit.index].display.as_str())
+            .map(|hit| picker.list().items[hit.index].display.as_str())
             .collect()
     }
 
     fn marked(picker: &LinePicker, hit: usize) -> String {
-        let hit = &picker.hits[hit];
-        let graphemes: Vec<_> = picker.items[hit.index].display.graphemes(true).collect();
+        let hit = &picker.list().hits[hit];
+        let graphemes: Vec<_> = picker.list().items[hit.index]
+            .display
+            .graphemes(true)
+            .collect();
         hit.indices.iter().map(|&i| graphemes[i as usize]).collect()
     }
 
@@ -465,9 +580,9 @@ mod tests {
                 "/a/b/"
             ]
         );
-        assert_eq!(picker.items[0].leaf, "~/code/".len());
-        assert_eq!(picker.items[3].leaf, 0);
-        assert_eq!(picker.items[4].leaf, "/a/".len());
+        assert_eq!(picker.list().items[0].leaf, "~/code/".len());
+        assert_eq!(picker.list().items[3].leaf, 0);
+        assert_eq!(picker.list().items[4].leaf, "/a/".len());
         assert_eq!(
             picker.handle(key(KeyCode::Enter)),
             deliver("/Users/me/code/herdr-jump", &ENTER)
@@ -526,10 +641,13 @@ mod tests {
             .iter()
             .map(|line| Item::new(line, Kind::Text, Some(HOME), Path::new("/")))
             .collect();
-        picker.loaded(Ok(Batch {
-            items,
-            ..Batch::default()
-        }));
+        picker.loaded(
+            0,
+            Ok(Batch {
+                items,
+                ..Batch::default()
+            }),
+        );
         picker.handle(Event::Paste("zox".into()));
         assert_eq!(picker.selected().unwrap().value, "feat/jump-zoxide");
         assert_eq!(marked(&picker, 0), "zox");
@@ -597,43 +715,49 @@ mod tests {
     fn navigation_clamps_and_reload_keeps_the_selected_value() {
         let mut picker = paths(&["/a", "/b", "/c"]);
         picker.handle(key(KeyCode::Up));
-        assert_eq!(picker.selected, 0);
+        assert_eq!(picker.list().selected, 0);
         for event in [key(KeyCode::Down), ctrl('n'), ctrl('n'), ctrl('p')] {
             picker.handle(event);
         }
         assert_eq!(picker.selected().unwrap().value, "/b");
         assert_eq!(picker.handle(ctrl('r')), Outcome::Reload);
-        assert!(picker.loading);
+        assert!(picker.list().loading);
         let items = ["/c", "/b"]
             .iter()
             .map(|l| Item::new(l, Kind::Path, None, Path::new("/")))
             .collect();
-        picker.loaded(Ok(Batch {
-            items,
-            ..Batch::default()
-        }));
+        picker.loaded(
+            0,
+            Ok(Batch {
+                items,
+                ..Batch::default()
+            }),
+        );
         assert_eq!(picker.selected().unwrap().value, "/b");
     }
 
     #[test]
     fn load_failures_and_skipped_lines_are_reported() {
         let mut picker = paths(&["/a"]);
-        picker.loaded(Err("zoxide isn't installed".into()));
-        assert!(picker.items.is_empty() && picker.hits.is_empty());
+        picker.loaded(0, Err("zoxide isn't installed".into()));
+        assert!(picker.list().items.is_empty() && picker.list().hits.is_empty());
         assert_eq!(
-            picker.error.as_deref(),
+            picker.list().error.as_deref(),
             Some("zoxide isn't installed · ctrl-r retries")
         );
         // Typing must not hide why the list is empty.
         picker.handle(Event::Paste("x".into()));
         picker.handle(key(KeyCode::Backspace));
-        assert!(picker.error.is_some());
-        picker.loaded(Ok(Batch {
-            items: vec![Item::new("/a", Kind::Path, None, Path::new("/"))],
-            skipped: 2,
-            truncated: true,
-        }));
-        assert!(picker.error.is_none());
+        assert!(picker.list().error.is_some());
+        picker.loaded(
+            0,
+            Ok(Batch {
+                items: vec![Item::new("/a", Kind::Path, None, Path::new("/"))],
+                skipped: 2,
+                truncated: true,
+            }),
+        );
+        assert!(picker.list().error.is_none());
         assert_eq!(
             picker.message.as_deref(),
             Some("Skipped 2 unprintable lines · Showing the first 1 lines")
@@ -669,7 +793,7 @@ mod tests {
         assert_eq!(picker.hidden_marks(), 1);
         picker.handle(tab());
         search(&mut picker, "zzz");
-        assert!(picker.hits.is_empty());
+        assert!(picker.list().hits.is_empty());
         assert_eq!(picker.hidden_marks(), 2);
         assert_eq!(
             picker.chosen(),
@@ -700,7 +824,7 @@ mod tests {
         picker.handle(key(KeyCode::Down));
         picker.handle(tab());
         assert_eq!(picker.marks(), ["/a", "/c", "/b"]);
-        assert!(picker.is_marked(&picker.items[1]));
+        assert!(picker.is_marked(&picker.list().items[1]));
         picker.handle(back_tab());
         picker.handle(back_tab());
         picker.handle(back_tab());
@@ -711,10 +835,13 @@ mod tests {
     #[test]
     fn tab_is_ignored_without_multi_and_with_modifiers() {
         let mut picker = LinePicker::new(Kind::Path, ENTER.to_vec(), false);
-        picker.loaded(Ok(Batch {
-            items: vec![Item::new("/a", Kind::Path, None, Path::new("/"))],
-            ..Batch::default()
-        }));
+        picker.loaded(
+            0,
+            Ok(Batch {
+                items: vec![Item::new("/a", Kind::Path, None, Path::new("/"))],
+                ..Batch::default()
+            }),
+        );
         picker.handle(tab());
         assert!(picker.marks().is_empty());
         assert_eq!(picker.query, "");
@@ -767,16 +894,19 @@ mod tests {
         picker.handle(key(KeyCode::Down));
         picker.handle(tab());
         assert_eq!(picker.marks(), ["/a", "/c"]);
-        picker.loaded(Err("zoxide failed".into()));
+        picker.loaded(0, Err("zoxide failed".into()));
         assert_eq!(picker.marks(), ["/a", "/c"]);
         let items = ["/c", "/b"]
             .iter()
             .map(|l| Item::new(l, Kind::Path, None, Path::new("/")))
             .collect();
-        picker.loaded(Ok(Batch {
-            items,
-            ..Batch::default()
-        }));
+        picker.loaded(
+            0,
+            Ok(Batch {
+                items,
+                ..Batch::default()
+            }),
+        );
         assert_eq!(picker.marks(), ["/c"]);
         assert_eq!(picker.hidden_marks(), 0);
     }
@@ -788,7 +918,204 @@ mod tests {
         let mut picker = paths(&["rel", "./rel", "/b"]);
         picker.handle(tab());
         assert_eq!(picker.marks(), ["/work/rel"]);
-        assert!(picker.is_marked(&picker.items[1]));
+        assert!(picker.is_marked(&picker.list().items[1]));
         assert_eq!(picker.hidden_marks(), 0);
+    }
+
+    fn batch(lines: &[&str]) -> Result<Batch, String> {
+        Ok(Batch {
+            items: lines
+                .iter()
+                .map(|line| Item::new(line, Kind::Path, Some(HOME), Path::new("/work")))
+                .collect(),
+            ..Batch::default()
+        })
+    }
+
+    const DIRS: [&str; 3] = [
+        "/Users/me/code/app",
+        "/Users/me/notes",
+        "/Users/me/code/lib",
+    ];
+    const FILES: [&str; 3] = [
+        "/Users/me/code/app/main.rs",
+        "/Users/me/notes/todo.md",
+        "/Users/me/code/app/lib.rs",
+    ];
+
+    /// The alt+n popup: directories first, files second, both loaded.
+    fn dirs_and_files() -> LinePicker {
+        let mut picker = LinePicker::with_lists(Kind::Path, ENTER.to_vec(), true, 2, 0);
+        picker.loaded(0, batch(&DIRS));
+        picker.loaded(1, batch(&FILES));
+        picker
+    }
+
+    #[test]
+    fn ctrl_o_switches_lists_and_back_and_the_query_carries_over() {
+        let mut picker = dirs_and_files();
+        assert_eq!(picker.active(), 0);
+        assert_eq!(shown(&picker), ["~/code/app", "~/notes", "~/code/lib"]);
+        picker.handle(Event::Paste("app".into()));
+        assert_eq!(shown(&picker), ["~/code/app"]);
+        assert_eq!(picker.handle(ctrl('o')), Outcome::None);
+        assert_eq!(picker.active(), 1);
+        assert_eq!(picker.query, "app", "ctrl-o is not query text");
+        // The files list is ranked under the same query as it comes on screen.
+        assert_eq!(shown(&picker), ["~/code/app/main.rs", "~/code/app/lib.rs"]);
+        assert_eq!(
+            picker.handle(key(KeyCode::Enter)),
+            deliver("/Users/me/code/app/main.rs", &ENTER)
+        );
+        picker.delivery_failed(vec![], vec![], "x".into());
+        picker.handle(ctrl('o'));
+        assert_eq!(picker.active(), 0);
+        assert!(picker.message.is_none());
+        // Edited while files showed, the query ranks dirs on the way back.
+        picker.handle(ctrl('o'));
+        search(&mut picker, "notes");
+        assert_eq!(shown(&picker), ["~/notes/todo.md"]);
+        picker.handle(ctrl('o'));
+        assert_eq!(shown(&picker), ["~/notes"]);
+        assert_eq!(
+            picker.handle(key(KeyCode::Enter)),
+            deliver("/Users/me/notes", &ENTER),
+            "ctrl-o re-arms Enter"
+        );
+    }
+
+    #[test]
+    fn each_list_keeps_its_own_cursor_and_counts() {
+        let mut picker = dirs_and_files();
+        let counts: Vec<_> = picker.lists().iter().map(|l| l.items.len()).collect();
+        assert_eq!(counts, [3, 3]);
+        picker.handle(key(KeyCode::Down));
+        picker.handle(key(KeyCode::Down));
+        picker.handle(ctrl('o'));
+        assert_eq!(picker.selected().unwrap().value, FILES[0]);
+        picker.handle(key(KeyCode::Down));
+        picker.handle(ctrl('o'));
+        assert_eq!(picker.selected().unwrap().value, DIRS[2]);
+        picker.handle(ctrl('o'));
+        assert_eq!(picker.selected().unwrap().value, FILES[1]);
+        // A cursor whose item the new query hides falls back to the top hit.
+        picker.handle(ctrl('o'));
+        picker.handle(Event::Paste("app".into()));
+        picker.handle(ctrl('o'));
+        assert_eq!(picker.selected().unwrap().value, FILES[0]);
+    }
+
+    /// Marks are the popup's: a directory and a file marked in their own
+    /// lists go out together, in mark order, and each counts as hidden
+    /// while the other list shows.
+    #[test]
+    fn marks_span_both_lists_and_enter_delivers_them_in_mark_order() {
+        let mut picker = dirs_and_files();
+        search(&mut picker, "notes");
+        picker.handle(tab());
+        picker.handle(ctrl('o'));
+        assert_eq!(picker.hidden_marks(), 1);
+        search(&mut picker, "main");
+        picker.handle(tab());
+        assert_eq!(picker.marks(), ["/Users/me/notes", FILES[0]]);
+        assert_eq!(picker.hidden_marks(), 1);
+        picker.handle(ctrl('o'));
+        assert_eq!(shown(&picker), Vec::<&str>::new(), "no dir matches main");
+        assert_eq!(picker.hidden_marks(), 2);
+        // A reload of one list keeps the marks the other list still holds.
+        picker.loaded(1, batch(&FILES));
+        picker.loaded(0, batch(&DIRS));
+        assert_eq!(picker.marks().len(), 2);
+        assert_eq!(
+            picker.handle(key(KeyCode::Enter)),
+            deliver_all(&["/Users/me/notes", FILES[0]], &ENTER)
+        );
+        // A mark no list holds any more is dropped.
+        picker.loaded(1, batch(&FILES[1..]));
+        assert_eq!(picker.marks(), ["/Users/me/notes"]);
+    }
+
+    /// recent-files can be slow: the dirs list works while files still load,
+    /// and the files result lands without moving the dirs cursor.
+    #[test]
+    fn a_list_still_loading_never_holds_back_the_one_on_screen() {
+        let mut picker = LinePicker::with_lists(Kind::Path, ENTER.to_vec(), true, 2, 0);
+        picker.loaded(0, batch(&DIRS));
+        assert!(picker.lists()[1].loading);
+        picker.handle(key(KeyCode::Down));
+        assert_eq!(picker.handle(key(KeyCode::Enter)), deliver(DIRS[1], &ENTER));
+        picker.delivery_failed(vec![], vec![], "retry".into());
+        picker.handle(ctrl('o'));
+        assert!(picker.list().loading);
+        assert_eq!(picker.handle(key(KeyCode::Enter)), Outcome::None);
+        picker.handle(ctrl('o'));
+        picker.loaded(1, batch(&FILES));
+        assert_eq!(picker.selected().unwrap().value, DIRS[1]);
+        assert_eq!(picker.message, None);
+        // Opened on files (find-recent-files): that list is on screen first.
+        let mut files_first = LinePicker::with_lists(Kind::Path, ENTER.to_vec(), true, 2, 1);
+        files_first.loaded(1, batch(&FILES));
+        assert_eq!(files_first.active(), 1);
+        assert_eq!(files_first.selected().unwrap().value, FILES[0]);
+        assert!(files_first.lists()[0].loading);
+    }
+
+    #[test]
+    fn ctrl_r_reloads_only_the_list_on_screen() {
+        let mut picker = dirs_and_files();
+        picker.handle(ctrl('o'));
+        assert_eq!(picker.handle(ctrl('r')), Outcome::Reload);
+        let loading: Vec<_> = picker.lists().iter().map(|l| l.loading).collect();
+        assert_eq!(loading, [false, true]);
+    }
+
+    /// Empty and failed lists stay per list: one list's failure or empty
+    /// result never leaks into the other's state.
+    #[test]
+    fn empty_and_failed_lists_keep_their_state_across_ctrl_o() {
+        let mut picker = LinePicker::with_lists(Kind::Path, ENTER.to_vec(), true, 2, 0);
+        picker.loaded(0, batch(&[]));
+        picker.loaded(1, Err("recent-files failed (exit 3)".into()));
+        assert!(picker.list().items.is_empty() && picker.list().error.is_none());
+        assert_eq!(picker.handle(key(KeyCode::Enter)), Outcome::None);
+        picker.handle(ctrl('o'));
+        assert_eq!(
+            picker.list().error.as_deref(),
+            Some("recent-files failed (exit 3) · ctrl-r retries")
+        );
+        picker.handle(ctrl('o'));
+        assert!(picker.list().error.is_none());
+    }
+
+    /// Load notes for a list off screen wait until it shows.
+    #[test]
+    fn a_load_notice_for_the_other_list_shows_when_it_does() {
+        let mut picker = LinePicker::with_lists(Kind::Path, ENTER.to_vec(), true, 2, 0);
+        picker.loaded(0, batch(&DIRS));
+        picker.loaded(
+            1,
+            Ok(Batch {
+                skipped: 1,
+                ..Batch::default()
+            }),
+        );
+        assert_eq!(picker.message, None);
+        picker.handle(ctrl('o'));
+        assert_eq!(
+            picker.message.as_deref(),
+            Some("Skipped 1 unprintable line")
+        );
+        picker.handle(ctrl('o'));
+        picker.handle(ctrl('o'));
+        assert_eq!(picker.message, None, "shown once");
+    }
+
+    #[test]
+    fn ctrl_o_with_a_single_list_is_inert() {
+        let mut picker = paths(&["/a", "/b"]);
+        picker.handle(key(KeyCode::Down));
+        assert_eq!(picker.handle(ctrl('o')), Outcome::None);
+        assert_eq!((picker.active(), picker.query.as_str()), (0, ""));
+        assert_eq!(picker.selected().unwrap().value, "/b");
     }
 }

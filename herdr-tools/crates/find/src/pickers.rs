@@ -5,6 +5,8 @@
 //! manifest actions, so each picker also has an `[[actions]]` entry in
 //! herdr-tools' `herdr-plugin.toml`; a unit test keeps the two files in
 //! agreement. The action id doubles as the picker's popup key in `[popup]`.
+//! Line pickers that share a `group` open as one popup with one list each
+//! ([`lists`]); ctrl-o switches between them.
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
@@ -43,6 +45,8 @@ pub(crate) enum Source {
 /// A command whose output lines are the items, and what Enter does with them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LineSource {
+    /// The declaring picker's id, so group errors can name each member.
+    pub id: String,
     pub command: Vec<String>,
     /// Where the list comes from, as the heading, the loading line and command
     /// errors name it: the spec's `origin`, else the program's file name. A
@@ -54,6 +58,27 @@ pub(crate) struct LineSource {
     /// Tab and Shift-Tab mark items; Enter then delivers every mark, in the
     /// order marked, as one space-separated text.
     pub multi: bool,
+    /// The list's name in a grouped popup's heading strip and ctrl-o hint
+    /// (`Dirs`, `Files`): the spec's `label`, else its title.
+    pub label: String,
+    /// Pickers sharing a group are one popup; see [`lists`].
+    pub group: Option<String>,
+}
+
+/// What one line-picker popup shows: the opened picker's list alone, or one
+/// list per picker in its group, in pickers.toml order. The popup process
+/// builds it from the picker id Herdr launched it with, so `find-paths` and
+/// `find-recent-files` open the same popup, each on its own list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Lists {
+    /// The popup's heading: the group's first picker's title, so switching
+    /// lists never retitles (or reflows) the heading.
+    pub title: String,
+    /// Members agree on kind, enter and multi (`parse` enforces it), because
+    /// marks and Enter span every list; command, origin, empty and label differ.
+    pub sources: Vec<LineSource>,
+    /// Index of the opened picker's list, shown first.
+    pub opened: usize,
 }
 
 /// How items are shown, matched and delivered.
@@ -97,6 +122,8 @@ struct Raw {
     empty: Option<String>,
     multi: Option<bool>,
     width: Option<u16>,
+    label: Option<String>,
+    group: Option<String>,
 }
 
 /// Every declared picker, in file order.
@@ -109,6 +136,44 @@ pub(crate) fn find(id: &str) -> Result<Picker> {
         .into_iter()
         .find(|picker| picker.id == id)
         .with_context(|| format!("unknown picker {id:?}; pickers are declared in pickers.toml"))
+}
+
+/// The lists the line picker `id` opens: its own, or its whole group's.
+pub(crate) fn lists(id: &str) -> Result<Lists> {
+    lists_in(&all()?, id)
+}
+
+fn lists_in(pickers: &[Picker], id: &str) -> Result<Lists> {
+    let line = |picker: &Picker| match &picker.source {
+        Source::Lines(source) => Some(source.clone()),
+        Source::Panes => None,
+    };
+    let opened = pickers
+        .iter()
+        .find(|picker| picker.id == id)
+        .with_context(|| format!("unknown picker {id:?}; pickers are declared in pickers.toml"))?;
+    let Some(source) = line(opened) else {
+        bail!("picker {id:?} is not a line picker");
+    };
+    let Some(group) = source.group.clone() else {
+        return Ok(Lists {
+            title: opened.title.clone(),
+            sources: vec![source],
+            opened: 0,
+        });
+    };
+    let members: Vec<&Picker> = pickers
+        .iter()
+        .filter(
+            |picker| matches!(&picker.source, Source::Lines(s) if s.group.as_ref() == Some(&group)),
+        )
+        .collect();
+    Ok(Lists {
+        // `parse` guarantees at least two members, the opened one among them.
+        title: members.first().map_or(&opened.title, |p| &p.title).clone(),
+        opened: members.iter().position(|p| p.id == id).unwrap_or_default(),
+        sources: members.iter().filter_map(|p| line(p)).collect(),
+    })
 }
 
 fn parse(text: &str) -> Result<Vec<Picker>> {
@@ -124,7 +189,42 @@ fn parse(text: &str) -> Result<Vec<Picker>> {
         }
         pickers.push(picker);
     }
+    validate_groups(&pickers)?;
     Ok(pickers)
+}
+
+/// A group is one popup whose marks and Enter span every list, so its members
+/// must deliver alike; a lone member is almost surely a misspelled group.
+fn validate_groups(pickers: &[Picker]) -> Result<()> {
+    let grouped: Vec<&LineSource> = pickers
+        .iter()
+        .filter_map(|picker| match &picker.source {
+            Source::Lines(source) if source.group.is_some() => Some(source),
+            _ => None,
+        })
+        .collect();
+    for source in &grouped {
+        let members: Vec<&&LineSource> = grouped
+            .iter()
+            .filter(|other| other.group == source.group)
+            .collect();
+        let group = source.group.as_deref().unwrap_or_default();
+        if members.len() < 2 {
+            bail!(
+                "picker {:?}: group {group:?} has no other picker; a group joins two or more",
+                source.id
+            );
+        }
+        let first = members[0];
+        if (first.kind, &first.enter, first.multi) != (source.kind, &source.enter, source.multi) {
+            bail!(
+                "pickers {:?} and {:?} in group {group:?} must agree on kind, enter and multi",
+                first.id,
+                source.id
+            );
+        }
+    }
+    Ok(())
 }
 
 fn validate(raw: Raw) -> Result<Picker> {
@@ -149,9 +249,11 @@ fn validate(raw: Raw) -> Result<Picker> {
                 || raw.enter.is_some()
                 || raw.empty.is_some()
                 || raw.multi.is_some()
+                || raw.label.is_some()
+                || raw.group.is_some()
             {
                 bail!(
-                    "picker {id:?}: the panes source takes no origin, kind, enter, empty or multi"
+                    "picker {id:?}: the panes source takes no origin, kind, enter, empty, multi, label or group"
                 );
             }
             Source::Panes
@@ -174,13 +276,21 @@ fn validate(raw: Raw) -> Result<Picker> {
             if enter.is_empty() {
                 bail!("picker {id:?}: enter needs \"paste\", \"copy\" or both");
             }
+            for (field, value) in [("label", &raw.label), ("group", &raw.group)] {
+                if value.as_deref().is_some_and(|v| v.trim().is_empty()) {
+                    bail!("picker {id:?}: {field} must not be blank");
+                }
+            }
             Source::Lines(LineSource {
+                id: id.clone(),
                 command,
                 origin,
                 kind: raw.kind.unwrap_or_default(),
                 enter,
                 empty: raw.empty,
                 multi: raw.multi.unwrap_or_default(),
+                label: raw.label.unwrap_or_else(|| raw.title.clone()),
+                group: raw.group,
             })
         }
         _ => bail!("picker {id:?} needs exactly one of source or command"),
@@ -218,6 +328,7 @@ mod tests {
         assert_eq!(
             paths.source,
             Source::Lines(LineSource {
+                id: "paths".into(),
                 command: vec!["zoxide".into(), "query".into(), "--list".into()],
                 origin: "zoxide".into(),
                 kind: Kind::Path,
@@ -226,9 +337,86 @@ mod tests {
                     "zoxide has no directories yet. cd around and they appear here.".into()
                 ),
                 multi: true,
+                label: "Dirs".into(),
+                group: Some("paths".into()),
             })
         );
         assert!(find("missing").is_err());
+    }
+
+    /// alt+n (`paths`) and `find-recent-files` open one popup: the same lists
+    /// in the same order under one title, each action on its own list.
+    #[test]
+    fn paths_and_recent_files_are_one_popup_opened_on_either_list() {
+        let dirs = lists("paths").unwrap();
+        let files = lists("recent-files").unwrap();
+        assert_eq!((dirs.title.as_str(), dirs.opened), ("Paths", 0));
+        assert_eq!((files.title.as_str(), files.opened), ("Paths", 1));
+        assert_eq!(dirs.sources, files.sources);
+        let named: Vec<_> = dirs
+            .sources
+            .iter()
+            .map(|s| (s.id.as_str(), s.label.as_str(), s.origin.as_str()))
+            .collect();
+        assert_eq!(
+            named,
+            [
+                ("paths", "Dirs", "zoxide"),
+                ("recent-files", "Files", "recent-files")
+            ]
+        );
+        assert!(lists(DEFAULT).is_err(), "the navigator has no lists");
+        assert!(lists("missing").is_err());
+    }
+
+    #[test]
+    fn groups_join_in_file_order_and_ungrouped_pickers_stand_alone() {
+        let line = |id: &str, extra: &str| {
+            format!("[[picker]]\nid = \"{id}\"\ntitle = \"T {id}\"\ncommand = [\"ls\"]\nenter = [\"copy\"]\n{extra}\n")
+        };
+        let text = [
+            line("a", "group = \"g\""),
+            line("solo", ""),
+            line("b", "group = \"g\"\nlabel = \"Bees\""),
+        ]
+        .concat();
+        let pickers = parse(&text).unwrap();
+        let grouped = lists_in(&pickers, "b").unwrap();
+        assert_eq!((grouped.title.as_str(), grouped.opened), ("T a", 1));
+        let labels: Vec<_> = grouped.sources.iter().map(|s| s.label.as_str()).collect();
+        assert_eq!(labels, ["T a", "Bees"], "label defaults to the title");
+        let solo = lists_in(&pickers, "solo").unwrap();
+        assert_eq!((solo.title.as_str(), solo.sources.len()), ("T solo", 1));
+    }
+
+    #[test]
+    fn groups_must_have_two_members_that_deliver_alike() {
+        let line = |id: &str, extra: &str| {
+            format!("[[picker]]\nid = \"{id}\"\ntitle = \"T\"\ncommand = [\"ls\"]\nenter = [\"copy\"]\ngroup = \"g\"\n{extra}\n")
+        };
+        for (text, needle) in [
+            (line("a", ""), "no other picker"),
+            (
+                line("a", "") + &line("b", "kind = \"path\""),
+                "must agree on kind, enter and multi",
+            ),
+            (line("a", "") + &line("b", "multi = true"), "must agree"),
+            (
+                line("a", "").replace("[\"copy\"]", "[\"paste\"]") + &line("b", ""),
+                "must agree",
+            ),
+            (
+                line("a", "label = \" \"") + &line("b", ""),
+                "label must not be blank",
+            ),
+            (
+                line("a", "").replace("group = \"g\"", "group = \"\"") + &line("b", ""),
+                "group must not be blank",
+            ),
+        ] {
+            let error = parse(&text).unwrap_err();
+            assert!(format!("{error:#}").contains(needle), "{text}: {error:#}");
+        }
     }
 
     /// The recent-files picker is a paths twin over an `sh -c` wrapper. Its
@@ -414,6 +602,14 @@ mod tests {
             ),
             (
                 "id = \"x\"\ntitle = \"X\"\nsource = \"panes\"\norigin = \"y\"",
+                "takes no",
+            ),
+            (
+                "id = \"x\"\ntitle = \"X\"\nsource = \"panes\"\ngroup = \"g\"",
+                "takes no",
+            ),
+            (
+                "id = \"x\"\ntitle = \"X\"\nsource = \"panes\"\nlabel = \"L\"",
                 "takes no",
             ),
             (

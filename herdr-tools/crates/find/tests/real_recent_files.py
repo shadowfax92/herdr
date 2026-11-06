@@ -1,20 +1,26 @@
-"""Opt-in real acceptance for Find's recent-files picker in a private Herdr server.
+"""Opt-in real acceptance for Find's recent-files list in a private Herdr server.
 
-It presses Alt-Shift-n, which the private Herdr config binds to
-shadowfax.tools.find-recent-files (keys live only in config.toml), and checks
-the rows against a private recent-files log, then that Enter types the path.
+Recent files are the Ctrl-o list of the Alt-n paths popup. It presses Alt-n
+(shadowfax.tools.find-paths) and Ctrl-o, and Alt-Shift-n
+(shadowfax.tools.find-recent-files, the same popup opened on files); keys live
+only in the private config.toml. It checks the rows against a private
+recent-files log and zoxide database, that Enter types a file's path, that
+Ctrl-o goes back to directories, and that a slow recent-files never delays the
+directories.
 
 Usage (from herdr-tools/): just bin && uv run --with pyte==0.8.2 python crates/find/tests/real_recent_files.py [--width 140] [--height 40]
 It lays out shadowfax.tools from target/release under a private XDG_DATA_HOME
 and links it there. Everything is private: HOME, Herdr config (sound off),
-server socket, the recent-files log, and the clipboard (HERDR_JUMP_COPY_COMMAND
-writes a file). recent-files has no data-dir flag; it keeps its log under
-$HOME, so the private HOME holds the fixture log and the owner's is never read.
+server socket, the recent-files log, the zoxide database, and the clipboard
+(HERDR_JUMP_COPY_COMMAND writes a file). recent-files has no data-dir flag; it
+keeps its log under $HOME, so the private HOME holds the fixture log and the
+owner's is never read.
 
 The server's PATH has every directory holding a recent-files removed, and the
-private ~/go/bin links the real CLI (a stub with the same `list` contract when
-none is installed), so the rows also prove the picker finds a CLI that is off
-Herdr's PATH, as `go install` leaves it.
+private ~/go/bin holds a wrapper around the real CLI (a stub with the same
+`list` contract when none is installed), so the rows also prove the picker
+finds a CLI that is off Herdr's PATH, as `go install` leaves it. The wrapper
+sleeps while $HOME/slow exists, to show the directories don't wait for it.
 """
 import argparse
 import fcntl
@@ -37,14 +43,17 @@ parser.add_argument("--height", type=int, default=40)
 args = parser.parse_args()
 herdr_tools = Path(__file__).resolve().parents[3]
 binary = herdr_tools / "target/release/herdr-tools"
-herdr = shutil.which("herdr")
-assert herdr and binary.is_file(), (herdr, binary)
+herdr, zoxide = shutil.which("herdr"), shutil.which("zoxide")
+assert herdr and zoxide and binary.is_file(), (herdr, zoxide, binary)
 real_cli = shutil.which("recent-files") or next(
     (str(p) for p in [Path.home() / "go/bin/recent-files"] if os.access(p, os.X_OK)), None)
 session = f"find-recent-{os.getpid()}"
 checks = []
 key = "alt+shift+n"
 key_bytes = b"\x1bN"  # what a legacy terminal sends for Alt-Shift-n
+paths_key, paths_bytes = "alt+n", b"\x1bn"
+ctrl_o = b"\x0f"
+slow_seconds = 3
 
 with tempfile.TemporaryDirectory(prefix="find-recent-", dir="/tmp") as directory:
     root = Path(directory).resolve()
@@ -53,7 +62,9 @@ with tempfile.TemporaryDirectory(prefix="find-recent-", dir="/tmp") as directory
     config = root / "config.toml"
     config.write_text('onboarding = false\n[terminal]\ndefault_shell = "/bin/sh"\n[ui.sound]\nenabled = false\n\n'
                       f'[[keys.command]]\nkey = "{key}"\ntype = "plugin_action"\n'
-                      'command = "shadowfax.tools.find-recent-files"\ndescription = "Paste a recent file"\n')
+                      'command = "shadowfax.tools.find-recent-files"\ndescription = "Paste a recent file"\n\n'
+                      f'[[keys.command]]\nkey = "{paths_key}"\ntype = "plugin_action"\n'
+                      'command = "shadowfax.tools.find-paths"\ndescription = "Paste a path"\n')
     # No directory on the server's PATH may hold a recent-files: the CLI must be
     # found through the private ~/go/bin fallback.
     path = [d for d in os.environ["PATH"].split(":") if d and not (Path(d) / "recent-files").exists()]
@@ -64,21 +75,27 @@ with tempfile.TemporaryDirectory(prefix="find-recent-", dir="/tmp") as directory
                XDG_DATA_HOME=str(root / "data"), XDG_RUNTIME_DIR=str(root / "run"),
                HERDR_CONFIG_PATH=str(config), TERM="xterm-256color",
                HERDR_DISABLE_SOUND="1",
+               _ZO_DATA_DIR=str(root / "zoxide"),
                HERDR_JUMP_COPY_COMMAND=f"cat > '{clip}'")
 
     def install_cli(into):
-        """Puts a recent-files in `into`/go/bin: the real CLI, else a stub."""
+        """Puts a recent-files in `into`/go/bin: the real CLI, else a stub,
+        behind a wrapper that sleeps while `into`/slow exists."""
         bin_dir = into / "go/bin"
         bin_dir.mkdir(parents=True)
-        if real_cli:
-            os.symlink(real_cli, bin_dir / "recent-files")
-        else:
+        cli_path = real_cli
+        if not cli_path:
             # The CLI's `list` contract: newest first, one path per line.
-            (bin_dir / "recent-files").write_text(
+            stub = bin_dir / "recent-files-stub"
+            stub.write_text(
                 '#!/bin/sh\n[ "$*" = "list --days 90" ] || exit 2\n'
                 'log="$HOME/.local/share/recent-files/history.tsv"\n'
                 '[ -f "$log" ] || exit 0\nsort -t "$(printf \'\\t\')" -k1,1nr "$log" | cut -f2-\n')
-            (bin_dir / "recent-files").chmod(0o755)
+            stub.chmod(0o755)
+            cli_path = str(stub)
+        (bin_dir / "recent-files").write_text(
+            f'#!/bin/sh\nif [ -e "$HOME/slow" ]; then sleep {slow_seconds}; fi\nexec \'{cli_path}\' "$@"\n')
+        (bin_dir / "recent-files").chmod(0o755)
 
     # The log, oldest line first as the CLI appends; `gone.txt` was deleted.
     files = {"todo": home / "notes/todo.md", "main": home / "code/app/main.rs",
@@ -96,6 +113,15 @@ with tempfile.TemporaryDirectory(prefix="find-recent-", dir="/tmp") as directory
     install_cli(home)
     newest_first = ["todo", "main", "report", "old"]
     expected_rows = ["~/" + str(files[n].relative_to(home)) for n in newest_first]
+    # The directories list: zoxide ranks by frecency, more visits first.
+    dirs = {"app": home / "code/app", "notes": home / "notes"}
+    for name, visits in (("app", 3), ("notes", 1)):
+        for _ in range(visits):
+            subprocess.run([zoxide, "add", str(dirs[name])], env=env, check=True)
+    ranked = subprocess.run([zoxide, "query", "--list"], env=env, check=True,
+                            capture_output=True, text=True).stdout.split("\n")[:-1]
+    dir_rows = ["~/" + str(Path(p).relative_to(home)) for p in ranked]
+    assert dir_rows == ["~/code/app", "~/notes"], dir_rows
 
     plugin_dir = root / "data/herdr/plugins/shadowfax.tools"
 
@@ -165,10 +191,19 @@ with tempfile.TemporaryDirectory(prefix="find-recent-", dir="/tmp") as directory
         return clip.read_text() if clip.exists() else None
 
     def open_recent(label):
+        """Alt-Shift-n: the paths popup, already on files."""
         os.write(fd, key_bytes)
         frame(label, 1.0)
         content = popup(label)
-        assert content and content[0].startswith("Recent files"), screens[label][-3000:]
+        assert content and content[0].startswith("Paths") and content[0].endswith("recent-files"), \
+            screens[label][-3000:]
+        return content
+
+    def press(data, label, seconds=0.6):
+        os.write(fd, data)
+        frame(label, seconds)
+        content = popup(label)
+        assert content, screens[label][-3000:]
         return content
 
     try:
@@ -180,14 +215,49 @@ with tempfile.TemporaryDirectory(prefix="find-recent-", dir="/tmp") as directory
         cli("server", "reload-config")
         cli("config", "check")
         frame("prepared")
-        checks.append(f"{key} bound to shadowfax.tools.find-recent-files; recent-files "
+        checks.append(f"{paths_key} bound to shadowfax.tools.find-paths and {key} to "
+                      "shadowfax.tools.find-recent-files; recent-files "
                       f"{'linked from ' + real_cli if real_cli else 'stubbed (not installed)'}")
 
-        content = open_recent("open")
-        assert content[0].endswith(f"recent-files · {len(expected_rows)}"), content[0]
+        # Alt-n opens on directories, counting both lists; Ctrl-o shows the
+        # files and goes back, the query kept across both switches.
+        content = press(paths_bytes, "alt-n", 1.0)
+        assert content[0].startswith(f"Paths   Dirs {len(dir_rows)}   Files {len(expected_rows)} "), content[0]
+        assert content[0].endswith("zoxide"), content[0]
+        assert rows(content) == dir_rows, (rows(content), dir_rows)
+        assert "ctrl-o files" in content[-1] or "^o files" in content[-1], content[-1]
+        content = press(ctrl_o, "alt-n-files")
+        assert content[0].endswith("recent-files"), content[0]
         assert rows(content) == expected_rows, (rows(content), expected_rows)
-        checks.append(f"{key} lists the log's existing files newest first with ~ for HOME, "
-                      "drops the deleted one, and finds the CLI off PATH in ~/go/bin")
+        assert "ctrl-o dirs" in content[-1] or "^o dirs" in content[-1], content[-1]
+        content = press(b"app", "alt-n-files-app")
+        assert rows(content) == ["~/code/app/main.rs", "~/code/app/old.rs"], content
+        content = press(ctrl_o, "alt-n-back")
+        assert content[0].endswith("zoxide") and content[1].startswith("› app"), content
+        assert rows(content) == ["~/code/app"], content
+        content = press(ctrl_o, "alt-n-files-again")
+        assert rows(content) == ["~/code/app/main.rs", "~/code/app/old.rs"], content
+        os.write(fd, b"\r")
+        frame("alt-n-typed", 1.0)
+        assert popup("alt-n-typed") is None, "popup closes after Enter"
+        assert clipboard() == str(files["main"]), clipboard()
+        last = pane_lines(origin)[-1]
+        assert last.endswith(str(files["main"])) and "$" in last, pane_lines(origin)
+        checks.append(f"{paths_key} shows the zoxide dirs with both counts; ctrl-o shows the files, keeps "
+                      "the query, goes back to dirs and returns; Enter pastes and copies the file path")
+        os.write(fd, b"\x15")
+        frame("cleared")
+        clip.unlink()
+
+        content = open_recent("open")
+        assert f" Files {len(expected_rows)} " in content[0], content[0]
+        assert rows(content) == expected_rows, (rows(content), expected_rows)
+        content = press(ctrl_o, "open-dirs")
+        assert rows(content) == dir_rows, content
+        content = press(ctrl_o, "open-files")
+        assert rows(content) == expected_rows, content
+        checks.append(f"{key} opens the same popup on files: the log's existing files newest first with ~ "
+                      "for HOME, the deleted one dropped, the CLI found off PATH in ~/go/bin; ctrl-o shows dirs")
 
         os.write(fd, b"main")
         frame("search")
@@ -213,7 +283,7 @@ with tempfile.TemporaryDirectory(prefix="find-recent-", dir="/tmp") as directory
         os.write(fd, b"\t")
         frame("multi-marked")
         content = popup("multi-marked")
-        assert content and content[0].startswith("Recent files · 2 marked"), content
+        assert content and content[0].startswith("Paths · 2 marked"), content
         os.write(fd, b"\r")
         frame("multi-typed", 1.0)
         typed = f"'{files['report']}' {files['todo']}"
@@ -226,6 +296,20 @@ with tempfile.TemporaryDirectory(prefix="find-recent-", dir="/tmp") as directory
         start = out.index(want[0]) if want[0] in out else -1
         assert start >= 0 and out[start:start + 2] == want, out
         checks.append("Tab marks two files across searches; Enter types both, quoted, in mark order, and copies them")
+
+        # A slow recent-files never delays the directories.
+        (home / "slow").touch()
+        content = press(paths_bytes, "slow-open", 1.0)
+        assert rows(content) == dir_rows, content
+        assert " Files … " in content[0], content[0]
+        frame("slow-loaded", slow_seconds + 1.5)
+        content = popup("slow-loaded")
+        assert content and f" Files {len(expected_rows)} " in content[0], content
+        os.write(fd, b"\x1b")
+        frame("slow-closed")
+        (home / "slow").unlink()
+        checks.append(f"with recent-files taking {slow_seconds}s, {paths_key} lists dirs at once "
+                      "(Files counts … until it lands)")
 
         # The empty state, for an empty log and for no CLI at all. The second is
         # only provable where the fixed system dirs hold no recent-files either.

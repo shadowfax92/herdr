@@ -42,6 +42,14 @@
 #            used when config.toml sizes no popup for this picker's key. On a
 #            narrower terminal the popup shrinks to keep 2 columns free on
 #            each side.
+#   group    Optional. Line pickers that share a group open as one popup with
+#            one list each, in this file's order, under the first one's title.
+#            Ctrl-o switches lists; the query carries over and the heading
+#            counts every list. Each picker's own action opens the popup on its
+#            own list. Members must agree on kind, enter and multi, because
+#            marks and Enter span every list.
+#   label    The list's name in a group's heading and Ctrl-o hint (default:
+#            the title).
 
 [[picker]]
 id = "panes"
@@ -51,24 +59,31 @@ source = "panes"
 # 20% wider than the default, so the Name column doesn't come out of Task.
 width = 132
 
+# `paths` and `recent-files` are one popup: alt+n opens it on directories,
+# find-recent-files opens it on files, and Ctrl-o switches between them.
 [[picker]]
 id = "paths"
 title = "Paths"
+group = "paths"
+label = "Dirs"
 command = ["zoxide", "query", "--list"]
 kind = "path"
 enter = ["paste", "copy"]
 multi = true
 empty = "zoxide has no directories yet. cd around and they appear here."
 
-# The twin of `paths` for files: everything the recent-files CLI recorded (nvim
-# opens, m_path copies), most recent first. The command runs without a shell in
-# the Herdr server's environment, where ~/go/bin (`go install`'s default) may
-# be missing from PATH, so sh also looks in the dirs nvim's integration checks.
+# The files list of the `paths` popup: everything the recent-files CLI
+# recorded (nvim opens, m_path copies), most recent first. The command runs
+# without a shell in the Herdr server's environment, where ~/go/bin (`go
+# install`'s default) may be missing from PATH, so sh also looks in the dirs
+# nvim's integration checks.
 # Deleted files are dropped, as zoxide drops deleted directories; the log keeps
 # them. With no CLI the list is empty, so `empty` covers both cases.
 [[picker]]
 id = "recent-files"
 title = "Recent files"
+group = "paths"
+label = "Files"
 origin = "recent-files"
 command = ["sh", "-c", '''
 rf=$(command -v recent-files) || rf=

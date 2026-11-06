@@ -1,7 +1,7 @@
 //! The `find` mode of herdr-tools: `herdr-tools find <command>`.
 //!
-//! Hosts transient picker popups (the pane navigator, zoxide paths, and
-//! whatever else `pickers.toml` declares); Herdr owns panes and focus.
+//! Hosts transient picker popups (the pane navigator, zoxide paths with recent
+//! files, and whatever else `pickers.toml` declares); Herdr owns panes and focus.
 //!
 //! ```text
 //!  action find / find-paths ──▶ `find open [picker]`   validates the picker id,
@@ -82,8 +82,9 @@ pub fn run(command: Command) -> Result<()> {
             let host = host::Host::from_environment()?;
             match picker.source {
                 pickers::Source::Panes => picker::run(host, source),
-                pickers::Source::Lines(ref lines) => {
-                    picker::run_lines(host, source, &picker, lines)
+                // A grouped picker opens its whole group, on its own list.
+                pickers::Source::Lines(_) => {
+                    picker::run_lines(host, source, &pickers::lists(&picker.id)?)
                 }
             }
         }
