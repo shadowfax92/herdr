@@ -5,7 +5,7 @@
 //! here rather than in core.
 use crate::{
     age::Starts,
-    catalog::{self, Candidate, Pane},
+    catalog::{self, Candidate, Listing, Pane},
     pickers::Picker,
 };
 use anyhow::{bail, Context, Result};
@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
-use tools_core::{Config, PopupDims, PopupSize};
+use tools_core::{Config, PopupDims, PopupSize, ScopeFilter};
 
 /// Host refusals keep their code across anyhow contexts. Text is presentation,
 /// never the authority for deciding that an absent pane is safe to skip.
@@ -49,21 +49,31 @@ impl Host {
         self.inner.request(method, params)
     }
 
-    /// Every open pane in this session except the popup itself, as rows, minus
-    /// the panes whose tab Herdr's focus/hide scope leaves out.
+    /// Every open pane in this session except the popup itself, as rows, each
+    /// marked with whether Herdr's focus/hide scope admits its tab. The popup
+    /// lists only admitted rows until the user widens it (ctrl-o), so the
+    /// verdict travels with the row instead of dropping it here.
     ///
     /// The server judges scope (`scope.get`'s per-tab verdict); Find never
     /// reimplements the rule. The scope read fails open: a Herdr without
-    /// scope, a timeout or a malformed reply lists every pane, as Find did
-    /// before scope existed. Only the list is scoped: an explicit jump to a
-    /// pane Find did list still revalidates by identity, not by scope.
-    pub fn candidates(&self, source: &str, own: &str) -> Result<Vec<Candidate>> {
+    /// scope, a timeout or a malformed reply admits every pane, as Find did
+    /// before scope existed, and the popup then offers no toggle. Only the
+    /// list is scoped: a jump revalidates by identity, never by scope, so
+    /// jumping to an out-of-scope row leaves focus and hide untouched.
+    pub fn candidates(&self, source: &str, own: &str) -> Result<Listing> {
         let mut rows = self.all_candidates(source, own)?;
         // Read after the snapshot, so every listed tab most likely has a
-        // verdict; a tab the report misses is admitted.
-        let scope = self.inner.scope_filter();
-        rows.retain(|row| scope.admits_tab(&row.tab_id));
-        Ok(rows)
+        // verdict; a tab the report misses is admitted. This is core's
+        // `scope_filter` fail-open, kept inline because the header also needs
+        // to know whether focus (not just hide) produced the verdicts.
+        let (focus, filter) = match self.inner.scope() {
+            Ok(Some(report)) => (report.focus_engaged(), ScopeFilter::new(report.local.tabs)),
+            Ok(None) | Err(_) => (false, ScopeFilter::default()),
+        };
+        for row in &mut rows {
+            row.in_scope = filter.admits_tab(&row.tab_id);
+        }
+        Ok(Listing { rows, focus })
     }
 
     fn all_candidates(&self, source: &str, own: &str) -> Result<Vec<Candidate>> {
@@ -385,23 +395,30 @@ mod tests {
 
     #[test]
     fn tests_that_jump_revalidates_shell_identity_and_displays_its_tab() {
-        let methods = Arc::new(Mutex::new(Vec::new()));
-        let seen = methods.clone();
-        let (_dir, host) = server(move |req| {
-            let method = req["method"].as_str().unwrap();
-            seen.lock().unwrap().push(method.to_owned());
-            let result = if method == "tab.focus" {
-                json!({"tab":{"tab_id":"w1:t1"}})
-            } else {
-                json!({"pane":pane()})
-            };
-            json!({"id": req["id"], "result": result})
-        });
-        host.jump(&target()).unwrap();
-        assert_eq!(
-            *methods.lock().unwrap(),
-            ["pane.get", "pane.focus", "tab.focus"]
-        );
+        // An out-of-scope row (listed by ctrl-o) jumps the same way: identity
+        // checks and focus only, never a scope read or edit, so focus and
+        // hide stay exactly as they were.
+        for in_scope in [true, false] {
+            let methods = Arc::new(Mutex::new(Vec::new()));
+            let seen = methods.clone();
+            let (_dir, host) = server(move |req| {
+                let method = req["method"].as_str().unwrap();
+                seen.lock().unwrap().push(method.to_owned());
+                let result = if method == "tab.focus" {
+                    json!({"tab":{"tab_id":"w1:t1"}})
+                } else {
+                    json!({"pane":pane()})
+                };
+                json!({"id": req["id"], "result": result})
+            });
+            let mut target = target();
+            target.in_scope = in_scope;
+            host.jump(&target).unwrap();
+            assert_eq!(
+                *methods.lock().unwrap(),
+                ["pane.get", "pane.focus", "tab.focus"]
+            );
+        }
     }
 
     #[test]
@@ -644,45 +661,79 @@ mod tests {
                 {"pane_id": "w2:p1", "terminal_id": "term3", "tab_id": "w2:t1", "workspace_id": "w2"}]}})
     }
 
-    fn listed(host: &Host) -> Vec<String> {
-        host.candidates("w1:p1", "own")
-            .unwrap()
+    /// Each row's pane id and scope verdict, and whether focus produced them.
+    fn listed(host: &Host) -> (Vec<(String, bool)>, bool) {
+        let listing = host.candidates("w1:p1", "own").unwrap();
+        let rows = listing
+            .rows
             .into_iter()
-            .map(|row| row.pane_id)
+            .map(|row| (row.pane_id, row.in_scope))
+            .collect();
+        (rows, listing.focus)
+    }
+
+    fn verdicts(expected: &[(&str, bool)]) -> Vec<(String, bool)> {
+        expected
+            .iter()
+            .map(|(pane, admitted)| (pane.to_string(), *admitted))
             .collect()
     }
 
-    #[test]
-    fn panes_in_tabs_out_of_scope_are_not_listed() {
-        let (_dir, host) = server(|req| {
+    fn scoped_host(scope: Value) -> (tempfile::TempDir, Host) {
+        server(move |req| {
             let result = match req["method"].as_str().unwrap() {
                 "session.snapshot" => scoped_snapshot(),
-                "scope.get" => json!({"type": "scope", "scope": {}, "local": {"tabs": [
+                "scope.get" => json!({"type": "scope", "scope": scope.clone(), "local": {"tabs": [
                     {"workspace_id": "w1", "tab_id": "w1:t1", "admitted": true},
                     {"workspace_id": "w1", "tab_id": "w1:t2", "admitted": false},
                     {"workspace_id": "w2", "tab_id": "w2:t1", "admitted": false}]}}),
                 other => panic!("listing must only read: {other}"),
             };
             json!({"id": req["id"], "result": result})
-        });
-        assert_eq!(listed(&host), ["w1:p1"]);
+        })
     }
 
     #[test]
-    fn a_herdr_without_scope_lists_every_pane() {
+    fn every_pane_is_listed_with_its_tabs_scope_verdict() {
+        // Hide only: the verdicts come from hide, so the view is "Visible".
+        let (_dir, host) =
+            scoped_host(json!({"hidden": [{"machine": "*", "workspace_label": "ft"}]}));
+        assert_eq!(
+            listed(&host),
+            (
+                verdicts(&[("w1:p1", true), ("w1:p2", false), ("w2:p1", false)]),
+                false
+            )
+        );
+
+        // Focus on with a target: the same verdicts, now named "In focus".
+        let (_dir, host) = scoped_host(json!({"focus": {"active": true,
+            "targets": [{"machine": "local", "workspace_label": "setup"}]}}));
+        assert_eq!(
+            listed(&host),
+            (
+                verdicts(&[("w1:p1", true), ("w1:p2", false), ("w2:p1", false)]),
+                true
+            )
+        );
+    }
+
+    #[test]
+    fn a_herdr_without_scope_admits_every_pane() {
+        let every = verdicts(&[("w1:p1", true), ("w1:p2", true), ("w2:p1", true)]);
         let (_dir, host) = server(|req| match req["method"].as_str().unwrap() {
             "session.snapshot" => json!({"id": req["id"], "result": scoped_snapshot()}),
             method => json!({"id": req["id"], "error": {"code": "invalid_request",
                 "message": format!("invalid request: unknown variant `{method}`, expected one of `ping`")}}),
         });
-        assert_eq!(listed(&host), ["w1:p1", "w1:p2", "w2:p1"]);
+        assert_eq!(listed(&host), (every.clone(), false));
 
         // Any other scope failure fails open too, rather than emptying Find.
         let (_dir, host) = server(|req| match req["method"].as_str().unwrap() {
             "session.snapshot" => json!({"id": req["id"], "result": scoped_snapshot()}),
             _ => json!({"id": req["id"], "error": {"code": "internal", "message": "boom"}}),
         });
-        assert_eq!(listed(&host), ["w1:p1", "w1:p2", "w2:p1"]);
+        assert_eq!(listed(&host), (every, false));
     }
 
     #[test]

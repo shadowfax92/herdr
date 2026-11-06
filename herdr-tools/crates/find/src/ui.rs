@@ -1,10 +1,14 @@
 //! Pure rendering of local popup state. No host reads or state transitions are
 //! hidden inside drawing, including preview sizing and Unicode cursor placement.
 //!
-//! Top to bottom: heading (mode title + view strip), query, rule, results or
-//! the kill review, selected-pane details, notice, key hints. Every width
-//! decision (strip form, row layout, hint set) drops whole elements, so a
-//! narrow popup never clips a word or a key hint mid-way.
+//! Top to bottom: heading (mode title, reach strip, view strip), query, rule,
+//! results or the kill review, selected-pane details, notice, key hints. Every
+//! width decision (strip forms, row layout, hint set) drops whole elements, so
+//! a narrow popup never clips a word or a key hint mid-way.
+//!
+//! The reach strip (`In focus 12  Everything 32`, ctrl-o) appears only when
+//! Herdr's focus or hide leaves some pane out; in `Everything`, those panes'
+//! rows carry `⊘` and a dim title, the focus picker's mark for "not shown".
 //!
 //! Every result shows why it matched: yellow letters in the title, workspace,
 //! tab, or pane name, or, when the query matched a field the row doesn't show
@@ -18,7 +22,7 @@ use std::ops::Range;
 
 use crate::{
     age,
-    app::{App, Mode, View},
+    app::{App, Mode, Reach, View},
     catalog::{AgentState, Candidate, Hit, Reason, ReasonKind},
 };
 use ratatui::{
@@ -73,6 +77,31 @@ const KILL_HINTS: [&str; 6] = [
     "tab mark  enter review  esc cancel",
     "tab  enter  esc",
 ];
+/// The same tables while the reach toggle exists, `{o}` standing for the
+/// reach ctrl-o switches to. ctrl-o sits right after `enter`, like ctrl-e, so
+/// it outlasts the other keys as the popup narrows.
+const BROWSE_REACH_HINTS: [&str; 8] = [
+    "↑↓ select   enter jump   ctrl-o {o}   ctrl-e filter   ctrl-x kill   ctrl-space preview   ctrl-r refresh   esc close",
+    "↑↓ select  enter jump  ctrl-o {o}  ctrl-e filter  ctrl-x kill  ctrl-space preview  esc close",
+    "↑↓ select  enter jump  ^o {o}  ^e filter  ^x kill  ^space preview  esc close",
+    "↑↓ select  enter jump  ^o {o}  ^e filter  ^x kill  esc close",
+    "↑↓  enter jump  ^o {o}  ^e filter  ^x kill  esc close",
+    "enter  ^o {o}  ^e filter  ^x kill  esc",
+    "enter  ^o {o}  esc",
+    "enter  esc",
+];
+const KILL_REACH_HINTS: [&str; 6] = [
+    "↑↓ move   tab/space mark   enter review   ctrl-o {o}   ctrl-e filter   ctrl-space preview   esc cancel",
+    "↑↓ move  tab/space mark  enter review  ctrl-o {o}  ctrl-e filter  esc cancel",
+    "↑↓ move  tab mark  enter review  ^o {o}  ^e filter  esc cancel",
+    "tab mark  enter review  ^o {o}  ^e filter  esc cancel",
+    "tab mark  enter review  esc cancel",
+    "tab  enter  esc",
+];
+/// The every-pane reach's name in the header, and lowercased in ctrl-o's hint.
+const EVERYTHING: &str = "Everything";
+/// Marks an out-of-scope row, as Herdr's focus picker marks a hidden one.
+const OUT_OF_SCOPE: &str = "⊘ ";
 
 /// herdr's `symbols` status indicators in its theme's hues (red, teal, yellow,
 /// green, overlay gray map to the terminal's ANSI slots). Every state has its
@@ -247,9 +276,10 @@ enum Strip {
     Active,
 }
 
-/// One padded segment per view. Padding every segment (not just the pill)
-/// keeps segment positions fixed, so ctrl-e visibly slides the pill along.
-fn strip_spans(app: &App, form: Strip, active: View) -> Vec<Span<'static>> {
+/// One padded segment per view, counted within `reach`. Padding every segment
+/// (not just the pill) keeps segment positions fixed, so ctrl-e visibly slides
+/// the pill along.
+fn strip_spans(app: &App, form: Strip, active: View, reach: Reach) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     for view in View::CYCLE {
         if form == Strip::Active && view != active {
@@ -258,7 +288,7 @@ fn strip_spans(app: &App, form: Strip, active: View) -> Vec<Span<'static>> {
         if !spans.is_empty() {
             spans.push(Span::raw(" "));
         }
-        let count = app.view_count(view);
+        let count = app.view_count_in(view, reach);
         if view == active {
             let pill = Style::default()
                 .bg(ACCENT)
@@ -292,9 +322,55 @@ pub(crate) fn spans_width(spans: &[Span<'_>]) -> usize {
     spans.iter().map(Span::width).sum()
 }
 
-/// The strip form depends on width alone — its widest variant over every
-/// active view must fit beside the browse title — so cycling views or toggling
-/// kill mode never reflows the header. Titles shorten before the strip does.
+/// The reach strip's forms: both reaches, or only the active one.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReachStrip {
+    /// `In focus 12   Everything 32`
+    Full,
+    Active,
+}
+
+/// The reach strip: which panes the list draws from, each with its count, the
+/// active one pilled in green (Herdr's focus color) so it reads as its own
+/// switch beside the yellow status pill. Empty when ctrl-o has nothing to
+/// switch, which removes the control rather than showing a dead one.
+fn reach_spans(app: &App, form: ReachStrip, active: Reach) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    if !app.reach_toggles() {
+        return spans;
+    }
+    for reach in Reach::BOTH {
+        if form == ReachStrip::Active && reach != active {
+            continue;
+        }
+        if !spans.is_empty() {
+            spans.push(Span::raw(" "));
+        }
+        let label = match reach {
+            Reach::Scope => app.scope_label(),
+            Reach::Everything => EVERYTHING,
+        };
+        let style = if reach == active {
+            Style::default()
+                .bg(Color::Green)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(MUTED)
+        };
+        spans.push(Span::styled(
+            format!(" {label} {} ", app.reach_count(reach)),
+            style,
+        ));
+    }
+    spans
+}
+
+/// The strip forms depend on width alone — their widest variants over every
+/// reach and view must fit beside the browse title — so ctrl-o, ctrl-e or
+/// kill mode never reflow the header. Kill titles shorten first, then the view
+/// strip narrows (labels, glyph counts, the active view only), then the reach
+/// strip (both reaches, the active one only), and last the browse title.
 fn heading_line(app: &App, width: usize) -> Line<'static> {
     let titles = titles(app);
     let first_fitting = |room: usize| {
@@ -306,22 +382,37 @@ fn heading_line(app: &App, width: usize) -> Line<'static> {
     let strip_hidden = app.mode() == Mode::Confirm || (app.loading && app.candidates.is_empty());
     if !strip_hidden {
         let shortest = titles.last().map_or(0, |title| spans_width(title));
-        for (form, reference) in [
-            (Strip::Full, TITLE.width()),
-            (Strip::Compact, TITLE.width()),
-            (Strip::Active, TITLE.width()),
-            (Strip::Active, shortest),
+        for (reach_form, form, reference) in [
+            (ReachStrip::Full, Strip::Full, TITLE.width()),
+            (ReachStrip::Full, Strip::Compact, TITLE.width()),
+            (ReachStrip::Full, Strip::Active, TITLE.width()),
+            (ReachStrip::Active, Strip::Active, TITLE.width()),
+            (ReachStrip::Active, Strip::Active, shortest),
         ] {
-            let widest = View::CYCLE
+            // The reach strip follows the title after two spaces; with no
+            // toggle it is empty and takes no room.
+            let reach = Reach::BOTH
                 .iter()
-                .map(|view| spans_width(&strip_spans(app, form, *view)))
+                .map(|reach| spans_width(&reach_spans(app, reach_form, *reach)))
                 .max()
                 .unwrap_or(0);
+            let reach = if reach > 0 { reach + 2 } else { 0 };
+            let widest = reach
+                + View::CYCLE
+                    .iter()
+                    .flat_map(|view| Reach::BOTH.map(|reach| (*view, reach)))
+                    .map(|(view, reach)| spans_width(&strip_spans(app, form, view, reach)))
+                    .max()
+                    .unwrap_or(0);
             if reference + 2 + widest > width {
                 continue;
             }
             if let Some(mut spans) = first_fitting(2 + widest) {
-                let strip = strip_spans(app, form, app.view());
+                if reach > 0 {
+                    spans.push(Span::raw("  "));
+                    spans.extend(reach_spans(app, reach_form, app.reach()));
+                }
+                let strip = strip_spans(app, form, app.view(), app.reach());
                 let gap = width.saturating_sub(spans_width(&spans) + spans_width(&strip));
                 spans.push(Span::raw(" ".repeat(gap)));
                 spans.extend(strip);
@@ -424,6 +515,13 @@ struct RowView<'a> {
 }
 
 impl RowView<'_> {
+    /// Outside Herdr's scope: listed only by ctrl-o's Everything (or kept in a
+    /// kill review after switching back). Still a jump target, so unlike an
+    /// inert row it keeps its match highlights.
+    fn out_of_scope(&self) -> bool {
+        !self.candidate.in_scope
+    }
+
     fn base(&self) -> Style {
         if self.selected {
             Style::default().bg(MUTED).fg(Color::White)
@@ -481,6 +579,7 @@ impl RowView<'_> {
             (true, false) => weight(self.base()),
             (false, true) => Style::default().fg(MUTED),
             (false, false) if self.marked => weight(Style::default().fg(DANGER)),
+            (false, false) if self.out_of_scope() => Style::default().fg(MUTED),
             (false, false) => Style::default(),
         }
     }
@@ -500,8 +599,22 @@ impl RowView<'_> {
     /// chip. The title is guaranteed half the cell (all of it when shorter);
     /// chips may use the rest and give back what they don't use. Without
     /// reasons, as with an empty query or in the review, this is exactly the
-    /// plain title.
+    /// plain title. An out-of-scope row leads with `⊘ `, taken from the cell.
     fn title_cell(&self, width: u16, name_column: bool) -> Line<'_> {
+        if !self.out_of_scope() {
+            return self.title_and_chips(width, name_column);
+        }
+        let marker = OUT_OF_SCOPE.width() as u16;
+        if width <= marker {
+            return Line::from(Span::styled(OUT_OF_SCOPE, self.context()));
+        }
+        let mut line = self.title_and_chips(width - marker, name_column);
+        line.spans
+            .insert(0, Span::styled(OUT_OF_SCOPE, self.context()));
+        line
+    }
+
+    fn title_and_chips(&self, width: u16, name_column: bool) -> Line<'_> {
         let title = &self.candidate.title;
         let indices = self.indices(|h| &h.title_indices);
         let reasons = match self.hit {
@@ -835,14 +948,22 @@ fn empty_message(app: &App) -> String {
         return "Loading panes…".into();
     }
     let view = app.view();
+    // In All, the only wider list is the one outside Herdr's scope.
+    let all = |message: &str| {
+        if app.reach_toggles() && app.reach() == Reach::Scope {
+            format!("{message} · ctrl-o everything")
+        } else {
+            message.to_owned()
+        }
+    };
     let message = if !app.query.trim().is_empty() {
         if view == View::All {
-            return "No matching panes".into();
+            return all("No matching panes");
         }
         "No matching panes in this view"
     } else {
         match view {
-            View::All => return "No panes".into(),
+            View::All => return all("No panes"),
             View::InProgress => "No agents are working",
             View::Attention => "No blocked or unread agents",
             View::Idle => "No idle agents",
@@ -910,9 +1031,30 @@ pub(crate) fn fitting_hint<S: AsRef<str>>(hints: &[S], width: usize) -> Line<'st
         .unwrap_or_default()
 }
 
+/// The widest `{o}` template that fits, judged with the widest word ctrl-o can
+/// show so the chosen set never changes when ctrl-o flips the word.
+fn fitting_reach_hint(templates: &[&str], app: &App, width: usize) -> Line<'static> {
+    let target = match app.reach() {
+        Reach::Scope => EVERYTHING,
+        Reach::Everything => app.scope_label(),
+    }
+    .to_lowercase();
+    let widest = [EVERYTHING.width(), app.scope_label().width()]
+        .into_iter()
+        .max()
+        .unwrap_or(0);
+    templates
+        .iter()
+        .find(|template| template.replace("{o}", &" ".repeat(widest)).width() <= width)
+        .map(|template| Line::styled(template.replace("{o}", &target), Style::default().fg(MUTED)))
+        .unwrap_or_default()
+}
+
 fn hint_line(app: &App, width: usize) -> Line<'static> {
     let muted = Style::default().fg(MUTED);
     match app.mode() {
+        Mode::Browse if app.reach_toggles() => fitting_reach_hint(&BROWSE_REACH_HINTS, app, width),
+        Mode::Kill if app.reach_toggles() => fitting_reach_hint(&KILL_REACH_HINTS, app, width),
         Mode::Browse => fitting_hint(&BROWSE_HINTS, width),
         Mode::Kill => fitting_hint(&KILL_HINTS, width),
         Mode::Confirm => {
@@ -2598,6 +2740,246 @@ mod tests {
                 "the active view is always named at width {width}"
             );
         }
+    }
+
+    /// `fixture()` under a focus that leaves MISC (w3) out, as
+    /// `Host::candidates` marks it: its two idle agents are out of scope, so
+    /// the focus lists 6 rows and Everything 8.
+    fn scoped_fixture() -> App {
+        let mut rows = fixture_rows();
+        for row in &mut rows {
+            row.in_scope = row.workspace_id != "w3";
+        }
+        let mut app = App::with_context(SOURCE.into(), String::new());
+        let revision = app.request_catalog();
+        assert!(app.catalog_finished(revision, Ok(crate::catalog::Listing { rows, focus: true })));
+        app
+    }
+
+    #[test]
+    fn tests_that_the_reach_strip_names_both_reaches_and_pills_the_active_one() {
+        for width in [70, 110, 132, 140] {
+            let mut app = scoped_fixture();
+            let mut headers = Vec::new();
+            for active in ["In focus 6", "Everything 8"] {
+                let buffer = draw(&app, width, 30);
+                let header = text(&buffer).remove(0);
+                for segment in ["In focus 6", "Everything 8"] {
+                    let x = col(&header, segment) as u16;
+                    assert_eq!(
+                        buffer[(x, 0)].bg == Color::Green,
+                        segment == active,
+                        "{segment} at {width}: {header}"
+                    );
+                }
+                // Title, then the reach, then the status views.
+                assert!(col(&header, TITLE) < col(&header, "In focus 6"), "{header}");
+                assert!(
+                    col(&header, "Everything 8") < col(&header, "All "),
+                    "{header}"
+                );
+                headers.push(header);
+                app.handle(ctrl('o'));
+            }
+            // ctrl-o moves the pill and recounts the views within the reach;
+            // the reach strip itself never moves.
+            assert_eq!(
+                col(&headers[0], "In focus 6"),
+                col(&headers[1], "In focus 6")
+            );
+            assert!(
+                headers[0].contains("All 6") && headers[1].contains("All 8"),
+                "{headers:#?}"
+            );
+        }
+        // At the popup's default width every reach and view is named in full.
+        let header = text(&draw(&scoped_fixture(), 132, 30)).remove(0);
+        for part in [
+            TITLE,
+            "In focus 6",
+            "Everything 8",
+            "All 6",
+            "In progress 2",
+            "Unread/Blocked 2",
+            "Idle 1",
+        ] {
+            assert!(header.contains(part), "{part:?} in {header:?}");
+        }
+        // With focus off, only hide can leave panes out: the reach says so.
+        let mut app = App::with_context(SOURCE.into(), String::new());
+        let mut rows = fixture_rows();
+        rows[3].in_scope = false;
+        let revision = app.request_catalog();
+        app.catalog_finished(revision, Ok(crate::catalog::Listing { rows, focus: false }));
+        let header = text(&draw(&app, 132, 30)).remove(0);
+        assert!(
+            header.contains("Visible 7") && header.contains("Everything 8"),
+            "{header}"
+        );
+    }
+
+    #[test]
+    fn tests_that_ctrl_o_never_changes_the_header_form() {
+        // (reaches named, views named, title shown): only the width decides.
+        let named = |header: &str| {
+            (
+                ["In focus 6", "Everything 8"]
+                    .iter()
+                    .filter(|segment| header.contains(*segment))
+                    .count(),
+                [
+                    &["All 6", "All 8"][..],
+                    &["In progress 2", "◐ 2"],
+                    &["Unread/Blocked 2", "×✓ 2"],
+                    &["Idle 1", "Idle 3", "○ 1", "○ 3"],
+                ]
+                .iter()
+                .filter(|forms| forms.iter().any(|form| header.contains(form)))
+                .count(),
+                header.contains(TITLE),
+            )
+        };
+        for width in 30..=140u16 {
+            let mut app = scoped_fixture();
+            let mut forms = Vec::new();
+            for _ in View::CYCLE {
+                for _ in Reach::BOTH {
+                    forms.push(named(&text(&draw(&app, width, 30)).remove(0)));
+                    app.handle(ctrl('o'));
+                }
+                app.handle(ctrl('e'));
+            }
+            assert!(
+                forms.windows(2).all(|pair| pair[0] == pair[1]),
+                "width {width}: {forms:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn tests_that_out_of_scope_rows_carry_the_hidden_mark_and_a_dim_title() {
+        let out = ["Optimize Sentry tracing costs", "Drop 30 day filter"];
+        for width in [70, 110, 140] {
+            let mut app = scoped_fixture();
+            let lines = text(&draw(&app, width, 30));
+            for title in out {
+                assert!(!lines.iter().any(|line| line.contains(title)), "{title}");
+            }
+            assert!(!lines.iter().any(|line| line.contains('⊘')));
+
+            app.handle(ctrl('o'));
+            let buffer = draw(&app, width, 30);
+            let lines = text(&buffer);
+            for title in out {
+                let y = row(&lines, title);
+                assert!(lines[y].contains(&format!("⊘ {title}")), "{}", lines[y]);
+                let x = col(&lines[y], title) as u16;
+                assert_eq!(
+                    buffer[(x, y as u16)].fg,
+                    Color::DarkGray,
+                    "{title} at {width}"
+                );
+            }
+            for title in [
+                "Review RTR sessions",
+                "Trigger release build",
+                "Fresh agent without",
+            ] {
+                let y = row(&lines, title);
+                assert!(!lines[y].contains('⊘'), "{}", lines[y]);
+                let x = col(&lines[y], title) as u16;
+                assert_ne!(
+                    buffer[(x, y as u16)].fg,
+                    Color::DarkGray,
+                    "{title} at {width}"
+                );
+            }
+            // The selection bar keeps the mark, and a match still highlights:
+            // an out-of-scope row is a jump target, not an inert one.
+            app.handle(Event::Paste("sentry".into()));
+            let buffer = draw(&app, width, 30);
+            let lines = text(&buffer);
+            let y = row(&lines, out[0]);
+            assert!(
+                lines[y].contains("› ") && lines[y].contains("⊘ Optimize"),
+                "{}",
+                lines[y]
+            );
+            assert!(
+                cells_of(&buffer, y, "Sentry")
+                    .iter()
+                    .all(|(x, _)| is_match(&buffer[(*x, y as u16)])),
+                "{}",
+                lines[y]
+            );
+        }
+    }
+
+    #[test]
+    fn tests_that_the_ctrl_o_hint_names_where_it_goes_and_keeps_its_form() {
+        let mut browsing = scoped_fixture();
+        let mut killing = scoped_fixture();
+        killing.handle(ctrl('x'));
+        for (app, templates) in [
+            (&mut browsing, &BROWSE_REACH_HINTS[..]),
+            (&mut killing, &KILL_REACH_HINTS[..]),
+        ] {
+            for width in 6..=160u16 {
+                // The set is judged with the widest word, `everything`.
+                let expected = templates.iter().find(|template| {
+                    template.replace("{o}", "everything").width() + 2 <= width as usize
+                });
+                for word in ["everything", "in focus"] {
+                    let footer = text(&draw(app, width, 24)).pop().unwrap();
+                    assert_eq!(
+                        footer.trim(),
+                        expected.map_or(String::new(), |template| template.replace("{o}", word)),
+                        "width {width}"
+                    );
+                    app.handle(ctrl('o'));
+                }
+            }
+        }
+        // At the popup's default width the widest set fits, ctrl-o included.
+        let footer = text(&draw(&scoped_fixture(), 132, 24)).pop().unwrap();
+        assert_eq!(
+            footer.trim(),
+            BROWSE_REACH_HINTS[0].replace("{o}", "everything")
+        );
+    }
+
+    #[test]
+    fn tests_that_an_empty_scoped_list_points_at_everything() {
+        let mut app = scoped_fixture();
+        app.handle(Event::Paste("sentry".into()));
+        let screen = text(&draw(&app, 110, 24)).join("\n");
+        assert!(
+            screen.contains("No matching panes · ctrl-o everything"),
+            "{screen}"
+        );
+        app.handle(ctrl('o'));
+        let screen = text(&draw(&app, 110, 24)).join("\n");
+        assert!(screen.contains("⊘ Optimize Sentry"), "{screen}");
+    }
+
+    #[test]
+    fn tests_that_without_scope_there_is_no_reach_control() {
+        // Every row in scope: focus and hide off, or the read failed open.
+        let mut app = fixture();
+        for width in [70, 110, 132, 140] {
+            let lines = text(&draw(&app, width, 30));
+            assert!(!lines[0].contains("Everything"), "{}", lines[0]);
+            let footer = lines.last().unwrap();
+            assert!(
+                !footer.contains("^o") && !footer.contains("ctrl-o"),
+                "{footer}"
+            );
+            assert!(!lines.iter().any(|line| line.contains('⊘')));
+        }
+        app.handle(ctrl('o'));
+        let screen = text(&draw(&app, 110, 24)).join("\n");
+        assert!(screen.contains("Every pane is already listed"), "{screen}");
+        assert!(!screen.contains("Everything"), "{screen}");
     }
 
     #[test]

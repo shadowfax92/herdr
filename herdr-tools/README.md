@@ -60,7 +60,9 @@ herdr-tools never stores or judges scope. It only does two things with it:
   what Herdr judges out of scope, from `scope.get`'s per-tab verdict
   ([`scope`](#scope-scopers)): Find's pane navigator, and Move's source,
   destination and kill-target lists. Move keeps the tab it was opened from
-  (and its workspace) listed, since that is on screen. On a remote machine's
+  (and its workspace) listed, since that is on screen. Find's Ctrl-o lists
+  every pane on request, marking the out-of-scope ones `⊘`, and a jump to one
+  leaves the scope as it was. On a remote machine's
   pane the verdict follows the attached client's scope once that server
   supports `scope.mirror`; an older one judges by its own config hides.
 

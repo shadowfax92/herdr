@@ -1,8 +1,31 @@
 //! The popup's local state machine. It never performs host I/O, so query editing
 //! and selection can be tested independently of terminal and worker timing.
-use crate::catalog::{self, AgentState, Candidate, Hit};
+//!
+//! Two independent membership filters decide which catalog rows are searched:
+//! the [`Reach`] (Herdr's focus/hide scope, or every pane; ctrl-o) and the
+//! status [`View`] (ctrl-e). Counts in the header follow the reach, so a view's
+//! count is always what it would list.
+use crate::catalog::{self, AgentState, Candidate, Hit, Listing};
 use crate::prompt;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
+
+/// Whether the list honors Herdr's focus/hide scope. Each popup opens in
+/// `Scope`, as Find always behaved; `Everything` is a peek outside the scope
+/// that changes nothing in Herdr, since a jump never touches the scope.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reach {
+    Scope,
+    Everything,
+}
+impl Reach {
+    pub const BOTH: [Reach; 2] = [Self::Scope, Self::Everything];
+    fn other(self) -> Self {
+        match self {
+            Self::Scope => Self::Everything,
+            Self::Everything => Self::Scope,
+        }
+    }
+}
 
 /// A catalog-wide membership filter, independent of the current fuzzy query.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,6 +91,13 @@ pub(crate) struct App {
     catalog_revision: u64,
     jump_armed: bool,
     view: View,
+    reach: Reach,
+    /// From the last catalog read: whether focus (rather than hide alone)
+    /// produced the rows' scope verdicts, which only names the scoped reach.
+    focus: bool,
+    /// Rows Herdr's scope leaves out, cached per catalog read. Zero means the
+    /// reach toggle has nothing to switch, so it is hidden and inert.
+    out_of_scope: usize,
     mode: Mode,
     source: String,
     own: String,
@@ -98,6 +128,9 @@ impl App {
             catalog_revision: 0,
             jump_armed: true,
             view: View::All,
+            reach: Reach::Scope,
+            focus: false,
+            out_of_scope: 0,
             mode: Mode::Browse,
             source,
             own,
@@ -163,6 +196,21 @@ impl App {
                         self.rebuild(selected.as_ref());
                         self.message = None;
                         self.jump_armed = true;
+                    }
+                    // Herdr's own focus picker switches focus with Ctrl-o, and
+                    // Herdr binds no direct ctrl+o, so it reaches this popup.
+                    KeyCode::Char('o') if ctrl => {
+                        // Pressed ahead of the first catalog, it still counts
+                        // and applies once rows arrive, as a typed query does.
+                        if self.reach_toggles() || (self.loading && self.candidates.is_empty()) {
+                            let selected = self.selected().cloned();
+                            self.reach = self.reach.other();
+                            self.rebuild(selected.as_ref());
+                            self.message = None;
+                            self.jump_armed = true;
+                        } else {
+                            self.message = Some("Every pane is already listed".into());
+                        }
                     }
                     KeyCode::Enter if self.mode == Mode::Kill => {
                         if key.kind == KeyEventKind::Press {
@@ -234,16 +282,15 @@ impl App {
         self.catalog_revision
     }
 
-    pub fn catalog_finished(
-        &mut self,
-        revision: u64,
-        result: Result<Vec<Candidate>, String>,
-    ) -> bool {
+    pub fn catalog_finished(&mut self, revision: u64, result: Result<Listing, String>) -> bool {
         if revision != self.catalog_revision {
             return false;
         }
         match result {
-            Ok(rows) => self.loaded(rows),
+            Ok(listing) => {
+                self.focus = listing.focus;
+                self.loaded(listing.rows);
+            }
             Err(error) => {
                 self.loading = false;
                 self.message = Some(format!("{} · Ctrl-r retries", catalog::clean(&error)));
@@ -255,6 +302,9 @@ impl App {
     pub fn loaded(&mut self, rows: Vec<Candidate>) {
         let selected = self.selected().cloned();
         self.candidates = rows;
+        // A refresh can change the scope too. The reach is kept either way:
+        // with nothing out of scope both reaches list the same rows.
+        self.out_of_scope = self.candidates.iter().filter(|c| !c.in_scope).count();
         self.marks
             .retain(|marked| self.candidates.iter().any(|row| same_identity(marked, row)));
         // Confirmation identities stay frozen, but a refresh may drop a closed
@@ -274,12 +324,10 @@ impl App {
     }
 
     fn rebuild(&mut self, selected: Option<&Candidate>) {
-        self.hits = catalog::search_view(
-            &self.candidates,
-            &self.query,
-            self.view == View::All,
-            |state| self.view.includes(state),
-        );
+        let (reach, view) = (self.reach, self.view);
+        self.hits = catalog::search_view(&self.candidates, &self.query, view == View::All, |row| {
+            reaches(reach, row) && view.includes(row.state)
+        });
         self.selected = selected
             .and_then(|selected| {
                 self.hits
@@ -293,11 +341,42 @@ impl App {
     pub fn view(&self) -> View {
         self.view
     }
+    /// Rows `view` lists within the current reach.
     pub fn view_count(&self, view: View) -> usize {
+        self.view_count_in(view, self.reach)
+    }
+    /// Rows `view` would list within `reach`; the header measures its strip
+    /// with both reaches so ctrl-o cannot change the strip's form.
+    pub fn view_count_in(&self, view: View, reach: Reach) -> usize {
         self.candidates
             .iter()
-            .filter(|c| view.includes(c.state))
+            .filter(|c| reaches(reach, c) && view.includes(c.state))
             .count()
+    }
+    pub fn reach(&self) -> Reach {
+        self.reach
+    }
+    /// Whether ctrl-o switches anything: some row is out of Herdr's scope.
+    /// False with focus and hide off, on a Herdr without scope, or when the
+    /// scope read failed open, so the header and hints leave the toggle out.
+    pub fn reach_toggles(&self) -> bool {
+        self.out_of_scope > 0
+    }
+    /// Rows `reach` covers, across every status view.
+    pub fn reach_count(&self, reach: Reach) -> usize {
+        match reach {
+            Reach::Scope => self.candidates.len() - self.out_of_scope,
+            Reach::Everything => self.candidates.len(),
+        }
+    }
+    /// The scoped reach's name: the panes focus keeps, or with focus off,
+    /// the ones hide leaves visible. Never "All", which is a status view.
+    pub fn scope_label(&self) -> &'static str {
+        if self.focus {
+            "In focus"
+        } else {
+            "Visible"
+        }
     }
     pub fn mode(&self) -> Mode {
         self.mode
@@ -399,6 +478,10 @@ fn same_identity(a: &Candidate, b: &Candidate) -> bool {
     a.pane_id == b.pane_id && a.terminal_id == b.terminal_id
 }
 
+fn reaches(reach: Reach, row: &Candidate) -> bool {
+    reach == Reach::Everything || row.in_scope
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,6 +497,205 @@ mod tests {
 
     fn key(code: KeyCode) -> Event {
         Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    fn listing(rows: Vec<Candidate>) -> Listing {
+        Listing { rows, focus: false }
+    }
+
+    /// `rows()`'s two SETUP panes in scope, plus two panes in an `ft`
+    /// workspace that Herdr's scope leaves out, the way `Host::candidates`
+    /// marks them. `ft`'s blocked worker is the only agent.
+    fn scoped_rows() -> Vec<Candidate> {
+        let mut rows = crate::catalog::catalog(json!({
+            "workspaces":[{"workspace_id":"w1","label":"SETUP","number":1},{"workspace_id":"w2","label":"ft","number":2}],
+            "tabs":[{"tab_id":"w1:t1","workspace_id":"w1","label":"tools"},{"tab_id":"w2:t1","workspace_id":"w2","label":"agents"}],
+            "panes":[
+                {"pane_id":"w1:p1","terminal_id":"t1","tab_id":"w1:t1","workspace_id":"w1","label":"jump rust"},
+                {"pane_id":"w1:p2","terminal_id":"t2","tab_id":"w1:t1","workspace_id":"w1","label":"jump shell"},
+                {"pane_id":"w2:p1","terminal_id":"t3","tab_id":"w2:t1","workspace_id":"w2","label":"ft worker","agent":"codex","agent_status":"blocked"},
+                {"pane_id":"w2:p2","terminal_id":"t4","tab_id":"w2:t1","workspace_id":"w2","label":"ft shell"}
+            ]}), "w1:p1").unwrap();
+        for row in &mut rows {
+            row.in_scope = row.workspace_id == "w1";
+        }
+        rows
+    }
+
+    fn scoped_app(focus: bool) -> App {
+        let mut app = App::with_context("w1:p1".into(), "own".into());
+        let revision = app.request_catalog();
+        assert!(app.catalog_finished(
+            revision,
+            Ok(Listing {
+                rows: scoped_rows(),
+                focus
+            })
+        ));
+        app
+    }
+
+    fn listed(app: &App) -> Vec<&str> {
+        app.hits
+            .iter()
+            .map(|hit| app.candidates[hit.index].pane_id.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn each_open_lists_only_panes_in_scope() {
+        let app = scoped_app(true);
+        assert_eq!(app.reach(), Reach::Scope);
+        assert!(app.reach_toggles());
+        assert_eq!(listed(&app), ["w1:p1", "w1:p2"]);
+        assert_eq!(app.candidates.len(), 4, "the catalog keeps every pane");
+    }
+
+    #[test]
+    fn ctrl_o_switches_to_every_pane_and_back_keeping_query_view_and_selection() {
+        let mut app = scoped_app(true);
+        app.handle(Event::Paste("shell".into()));
+        assert_eq!(listed(&app), ["w1:p2"]);
+        assert_eq!(app.handle(ctrl('o')), Action::None);
+        assert_eq!(app.reach(), Reach::Everything);
+        assert_eq!(app.query, "shell");
+        assert_eq!(listed(&app), ["w1:p2", "w2:p2"]);
+        // The selection follows its pane across the switch.
+        assert_eq!(app.selected().unwrap().pane_id, "w1:p2");
+        app.handle(key(KeyCode::Down));
+        assert_eq!(app.selected().unwrap().pane_id, "w2:p2");
+        app.handle(ctrl('o'));
+        assert_eq!(app.reach(), Reach::Scope);
+        assert_eq!(app.query, "shell");
+        // An out-of-scope selection has nowhere to stay, so the top row is selected.
+        assert_eq!(app.selected().unwrap().pane_id, "w1:p2");
+
+        // The status view survives both ways, and keeps filtering inside the reach.
+        app.handle(ctrl('u'));
+        app.handle(ctrl('e'));
+        app.handle(ctrl('e'));
+        assert_eq!(app.view(), View::Attention);
+        assert!(app.hits.is_empty());
+        app.handle(ctrl('o'));
+        assert_eq!(app.view(), View::Attention);
+        assert_eq!(listed(&app), ["w2:p1"]);
+        app.handle(ctrl('o'));
+        assert_eq!(app.view(), View::Attention);
+        assert!(app.hits.is_empty());
+    }
+
+    #[test]
+    fn counts_follow_the_reach() {
+        let mut app = scoped_app(true);
+        assert_eq!(
+            (
+                app.reach_count(Reach::Scope),
+                app.reach_count(Reach::Everything)
+            ),
+            (2, 4)
+        );
+        // Status counts are what each view would list in the current reach.
+        assert_eq!(View::CYCLE.map(|view| app.view_count(view)), [2, 0, 0, 0]);
+        app.handle(ctrl('o'));
+        assert_eq!(View::CYCLE.map(|view| app.view_count(view)), [4, 0, 1, 0]);
+        // The reach counts do not depend on the reach or the status view.
+        app.handle(ctrl('e'));
+        assert_eq!(
+            (
+                app.reach_count(Reach::Scope),
+                app.reach_count(Reach::Everything)
+            ),
+            (2, 4)
+        );
+    }
+
+    #[test]
+    fn the_scoped_reach_is_named_by_what_narrows_it() {
+        assert_eq!(scoped_app(true).scope_label(), "In focus");
+        assert_eq!(scoped_app(false).scope_label(), "Visible");
+    }
+
+    #[test]
+    fn with_nothing_out_of_scope_ctrl_o_is_inert() {
+        // Focus and hide off, a Herdr without scope, or a scope read that
+        // failed open: every row is in scope, so there is nothing to switch.
+        let mut app = App::new();
+        app.loaded(rows());
+        assert!(!app.reach_toggles());
+        app.handle(Event::Paste("jump".into()));
+        app.handle(key(KeyCode::Down));
+        assert_eq!(app.handle(ctrl('o')), Action::None);
+        assert_eq!(app.reach(), Reach::Scope);
+        assert_eq!(app.message.as_deref(), Some("Every pane is already listed"));
+        assert_eq!(app.query, "jump");
+        assert_eq!(app.selected().unwrap().pane_id, "w1:p2");
+        assert_eq!(
+            (
+                app.reach_count(Reach::Scope),
+                app.reach_count(Reach::Everything)
+            ),
+            (2, 2)
+        );
+    }
+
+    #[test]
+    fn enter_on_an_out_of_scope_row_jumps_to_it() {
+        let mut app = scoped_app(true);
+        app.handle(ctrl('o'));
+        app.handle(Event::Paste("ft worker".into()));
+        let selected = app.selected().unwrap();
+        assert_eq!(
+            (selected.pane_id.as_str(), selected.in_scope),
+            ("w2:p1", false)
+        );
+        assert_eq!(app.handle(key(KeyCode::Enter)), Action::Jump);
+    }
+
+    #[test]
+    fn ctrl_o_typed_ahead_of_the_first_catalog_applies_when_it_arrives() {
+        let mut app = App::with_context("w1:p1".into(), "own".into());
+        let revision = app.request_catalog();
+        app.handle(ctrl('o'));
+        assert!(app.message.is_none());
+        assert!(app.catalog_finished(revision, Ok(listing(scoped_rows()))));
+        assert_eq!(app.reach(), Reach::Everything);
+        assert_eq!(app.hits.len(), 4);
+    }
+
+    #[test]
+    fn a_refresh_keeps_the_reach() {
+        let mut app = scoped_app(true);
+        app.handle(ctrl('o'));
+        assert_eq!(app.handle(ctrl('r')), Action::Refresh);
+        let revision = app.request_catalog();
+        assert!(app.catalog_finished(revision, Ok(listing(scoped_rows()))));
+        assert_eq!(app.reach(), Reach::Everything);
+        assert_eq!(app.hits.len(), 4);
+        assert_eq!(
+            app.scope_label(),
+            "Visible",
+            "the new read's verdicts name the reach"
+        );
+    }
+
+    #[test]
+    fn marks_survive_ctrl_o_and_the_review_keeps_out_of_scope_targets() {
+        let mut app = scoped_app(true);
+        app.handle(ctrl('x'));
+        app.handle(ctrl('o'));
+        app.handle(Event::Paste("ft shell".into()));
+        app.handle(key(KeyCode::Tab));
+        assert_eq!(app.marked_count(), 1);
+        app.handle(ctrl('o'));
+        assert_eq!(app.mode(), Mode::Kill);
+        assert_eq!(app.marked_count(), 1);
+        assert!(app.hits.is_empty());
+        app.handle(key(KeyCode::Enter));
+        app.confirmation_shown();
+        let Action::Kill(targets) = app.handle(key(KeyCode::Char('y'))) else {
+            panic!("expected kill")
+        };
+        assert_eq!(targets[0].pane_id, "w2:p2");
     }
 
     #[test]
@@ -595,6 +877,7 @@ mod tests {
             ctrl('k'),
             ctrl('x'),
             ctrl('y'),
+            ctrl('o'),
             Event::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::ALT)),
             key(KeyCode::Down),
         ] {
@@ -854,18 +1137,18 @@ mod tests {
         let older = app.request_catalog();
         let latest = app.request_catalog();
         app.handle(key(KeyCode::Enter));
-        assert!(!app.catalog_finished(older, Ok(rows())));
+        assert!(!app.catalog_finished(older, Ok(listing(rows()))));
         assert!(app.loading);
         assert!(!app.catalog_finished(older, Err("old error".into())));
         assert!(app.message.is_none());
         app.confirmation_shown();
         assert_eq!(app.handle(key(KeyCode::Char('y'))), Action::None);
         assert_eq!(app.mode(), Mode::Confirm);
-        assert!(app.catalog_finished(latest, Ok(vec![rows()[1].clone()])));
+        assert!(app.catalog_finished(latest, Ok(listing(vec![rows()[1].clone()]))));
         assert!(!app.loading);
         assert_eq!(app.mode(), Mode::Kill);
         assert_eq!(app.marked_count(), 0);
-        assert!(!app.catalog_finished(older, Ok(rows())));
+        assert!(!app.catalog_finished(older, Ok(listing(rows()))));
         assert_eq!(app.candidates.len(), 1);
     }
 

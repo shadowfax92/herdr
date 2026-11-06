@@ -7,7 +7,7 @@ one Enter.
 
 | Key | Picker | Enter |
 | --- | --- | --- |
-| **Alt-p** | **Panes**: visible open panes, with agent states, views, kill mode and preview | Jump to the pane |
+| **Alt-p** | **Panes**: visible open panes (Ctrl-o: every pane), with agent states, views, kill mode and preview | Jump to the pane |
 | **Alt-n** | **Paths**: every directory zoxide knows, in zoxide's order; Tab marks several | Type the full paths into the pane you came from, and copy them |
 
 The keys are the owner's `[[keys.command]]` bindings in Herdr's `config.toml`
@@ -65,6 +65,19 @@ drops the panes of the others, so a hidden workspace such as `ft` (including
 one hidden by `[ui.sidebar.agents] hidden_workspaces`) is not listed, and while
 focus is on only the focused workspaces and tabs are. On a Herdr without scope,
 or when that read fails, every pane is listed and there is no notice.
+
+**Ctrl-o** peeks past the scope without changing it. When focus or hide leaves
+any pane out, the header shows the two lists beside the title, each with its
+count, the active one in green: `In focus 12  Everything 32` (with focus off and
+only hide in play, `Visible 30  Everything 32`). Ctrl-o switches between them;
+the query, the status view and the selection carry over, and the view counts
+follow the list. In Everything the panes outside the scope are marked `⊘` with
+a dim title, like hidden rows in Herdr's focus picker. Enter on one jumps there
+and leaves focus and hide exactly as they were; Herdr's next/previous workspace
+and next-attention-agent keys then lead back into the focus. Every popup opens
+on the scoped list. With nothing left out (focus and hide off, or no scope to
+read) the control and its hint are absent, and Ctrl-o only says that every pane
+is already listed.
 herdr-jump's last release read the retired Agents plugin's workspace
 visibility instead; Find drops that adapter. Find navigates existing panes;
 archived conversations and other Herdr servers are outside its scope.
@@ -77,6 +90,7 @@ archived conversations and other Herdr servers are outside its scope.
 | Up / Down, Ctrl-p / Ctrl-n | Select a result while keeping search focused |
 | Enter | Jump to the selected pane and close |
 | Ctrl-e | Next view: All → In progress → Unread/Blocked → Idle |
+| Ctrl-o | Switch between the panes in focus (or not hidden) and every pane |
 | Ctrl-x | Enter or leave kill mode (leaving clears marks) |
 | Ctrl-space | Toggle the selected pane's terminal preview |
 | Ctrl-u | Clear the query |
@@ -99,8 +113,8 @@ In kill mode:
 | Escape | Leave kill mode and clear marks |
 | Ctrl-c | Close the popup without killing |
 
-Typing, Backspace, Ctrl-u, arrows, Ctrl-e, Ctrl-space, and Ctrl-r work in kill
-mode too; Space marks instead of typing a space.
+Typing, Backspace, Ctrl-u, arrows, Ctrl-e, Ctrl-o, Ctrl-space, and Ctrl-r work
+in kill mode too; Space marks instead of typing a space.
 
 Each query word must match contiguously, stay within one word, or follow runs
 starting at word boundaries (`rfkm` or `revfer` for “Review ferry kill mode”).
@@ -328,8 +342,9 @@ shared by every picker: matcher · prompt (query editing) · ui (query line, hig
   start, charging only actual buffered reads to the shared budget. Only timestamps
   leave the module. This runs on the catalog worker and never blocks typing;
   refresh retries previously unknown sessions.
-- `app` owns input, query, selection, views, marks, confirmation, and preview
-  generations. `ui` only renders that state through Ratatui; it performs no host I/O.
+- `app` owns input, query, selection, views, the reach (scope or everything),
+  marks, confirmation, and preview generations. `ui` only renders that state
+  through Ratatui; it performs no host I/O.
 - `picker` owns the terminal for every picker. For panes it dispatches two
   bounded read workers: one for catalog loading, one for preview. Each worker retains at most one pending
   request and one result. Stale previews cannot replace the current selection.
@@ -378,7 +393,14 @@ just ci                                   # fmt, clippy -D warnings, every test
 just bin
 python3 crates/find/tests/slow_host.py
 python3 crates/find/tests/real_find.py    # each find action once, sized from config.toml
+HERDR_BIN=/path/to/fork/herdr python3 crates/find/tests/real_scope_toggle.py   # ctrl-o peek with focus on
 ```
+
+`real_scope_toggle.py` needs a Herdr with `herdr scope` (it prints SKIP on one
+without). With focus on one workspace it opens Find, checks the scoped header,
+presses Ctrl-o, jumps to a pane outside the focus, and asserts that the pane is
+focused and drawn, stays focused, and that `herdr scope get` is unchanged; then
+Alt-}, Alt-{ and Alt-u each lead back into the focus.
 
 `tests/find_cli.rs` (in the root package, which owns the binary) runs the real
 `herdr-tools find`.

@@ -65,8 +65,24 @@ pub(crate) struct Candidate {
     pub state: AgentState,
     /// Session start in Unix milliseconds; absent for neutral or unknown sessions.
     pub started_at: Option<i64>,
+    /// Herdr's focus/hide verdict for this pane's tab, set by `Host::candidates`
+    /// from `scope.get`. The catalog itself never judges scope, so every row it
+    /// builds starts in scope; the navigator lists only these unless the user
+    /// widens it to every pane (ctrl-o).
+    pub in_scope: bool,
     search_fields: Vec<SearchField>,
     detail_search: Haystack,
+}
+
+/// One catalog read handed from the read worker to the popup: every pane, each
+/// with Herdr's scope verdict in `in_scope`, and what produced the verdicts so
+/// the header can name the in-scope view ("In focus" or "Visible").
+#[derive(Debug, Default)]
+pub(crate) struct Listing {
+    pub rows: Vec<Candidate>,
+    /// Focus is on with targets, so the in-scope rows are the focused ones.
+    /// False when only hide (or nothing) leaves rows out.
+    pub focus: bool,
 }
 
 /// Which hidden field explains a match the row can't otherwise show.
@@ -367,6 +383,7 @@ pub(crate) fn catalog_with_own(
             started_at: pane
                 .started_at
                 .filter(|at| *at > 0 && state != AgentState::Neutral),
+            in_scope: true,
             search_fields,
             detail_search,
         };
@@ -537,18 +554,20 @@ fn hidden_reasons(row: &Candidate, atoms: &[&HiddenAtom<'_>]) -> Vec<Reason> {
 /// Empty queries retain the view's status/age order. For a query, each atom
 /// chooses its best (class, field kind, score), then the row uses the worst atom
 /// class, best chosen kind and total score before status, age and catalog order.
+/// `includes` is the membership filter (status view and scope reach) applied
+/// before matching, so excluded rows cost no match work.
 pub(crate) fn search_view(
     rows: &[Candidate],
     query: &str,
     status_first: bool,
-    includes: impl Fn(AgentState) -> bool,
+    includes: impl Fn(&Candidate) -> bool,
 ) -> Vec<Hit> {
     let empty_query = query.trim().is_empty();
     let query = Query::parse(query);
     let mut matcher = Matcher::default();
     let mut hits = Vec::new();
     for (index, row) in rows.iter().enumerate() {
-        if !includes(row.state) {
+        if !includes(row) {
             continue;
         }
         let mut hit = Hit {
@@ -1417,8 +1436,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             [4, 5, 3, 1, 2, 0, 6, 7]
         );
-        let hits = search_view(&rows, "", false, |s| {
-            matches!(s, AgentState::Blocked | AgentState::Done)
+        let hits = search_view(&rows, "", false, |row| {
+            matches!(row.state, AgentState::Blocked | AgentState::Done)
         });
         assert_eq!(
             hits.iter().map(|h| h.index).collect::<Vec<_>>(),
