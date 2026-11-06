@@ -635,7 +635,7 @@
           "key": "keys.next_attention_agent",
           "type": "keybinding",
           "default": "unset",
-          "description": "Focus the next agent in the agent panel, on any machine, whose status is listed in ui.sidebar.agents.attention. Unset by default."
+          "description": "Focus the next agent needing attention, on any machine, by the order of ui.sidebar.agents.attention: the next agent of the first listed status that has one besides the focused agent. Unset by default."
         },
         {
           "key": "keys.focus_picker",
@@ -1179,7 +1179,7 @@
           "key": "ui.sidebar.agents.attention",
           "type": "list of strings",
           "default": "[\"blocked\", \"done\"]",
-          "description": "Agent statuses keys.next_attention_agent stops at: blocked, done, working, idle or unknown. done is the panel's unread mark, cleared when the agent's pane is focused."
+          "description": "Agent statuses keys.next_attention_agent visits, most urgent first: blocked, done, working, idle or unknown. The order is a priority, not a set: with [\"blocked\", \"done\", \"working\"] the key goes to a blocked agent if there is one besides the focused agent, then to an unread one, then to a working one. Within one status it walks the agent panel from the focused agent and wraps. done is the panel's unread mark, cleared when the agent's pane is focused."
         },
         {
           "key": "ui.sidebar.agents.hidden_workspaces",

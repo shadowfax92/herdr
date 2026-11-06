@@ -3,18 +3,23 @@
 //! `[ui.sidebar.agents].attention` (blocked and unread by default).
 //!
 //! Statuses are the panel's own, so `done` is the client's per-pane unread mark
-//! from `endpoint_agent_state`, not the server's per-tab one. Order is the
-//! panel's order: with the priority sort, blocked agents come first and then
-//! unread ones, each newest first. The focused agent is the cursor, so repeated
-//! presses keep moving down the panel and wrap, instead of returning to an
-//! agent that stays blocked until it is answered.
+//! from `endpoint_agent_state`, not the server's per-tab one. The list is an
+//! order, not a set: the key goes to the first listed status that has an agent
+//! other than the focused one, so `["blocked", "done", "working"]` reaches an
+//! unread agent before a working one wherever the two sit in the panel.
+//!
+//! Within one status the focused agent is the cursor: the walk starts on the
+//! row below it and wraps, so repeated presses move through every agent of
+//! that status instead of bouncing between the first two.
 
 use super::aggregate_navigation::{aggregate_agent_rows, AggregateAgentRow, AggregateAgentTarget};
 use super::*;
 
-/// The first row after `focused`, wrapping, whose status is listed in
-/// `attention`. The focused row itself never qualifies, so None means there is
-/// nowhere else to go.
+/// The next agent to visit: for each status in `attention`, in order, the
+/// first row of that status after `focused` in panel order, wrapping. The
+/// focused row itself never qualifies, so None means there is nowhere else to
+/// go. Runs once per key press over the drawn rows, so the status-by-row scan
+/// costs nothing per frame.
 pub(super) fn next_attention_target(
     rows: &[AggregateAgentRow<'_>],
     focused: Option<(&ClientEndpointId, &str)>,
@@ -25,13 +30,16 @@ pub(super) fn next_attention_target(
             .position(|row| row.endpoint.endpoint_id == endpoint_id && row.agent.pane_id == pane_id)
     });
     let start = current.map_or(0, |index| index + 1);
-    (0..rows.len())
-        .map(|offset| (start + offset) % rows.len())
-        .filter(|index| Some(*index) != current)
-        .map(|index| &rows[index])
-        .find(|row| {
-            let status = status_text(row.agent.agent_status);
-            attention.iter().any(|wanted| wanted == status)
+    let walk = || {
+        (0..rows.len())
+            .map(move |offset| (start + offset) % rows.len())
+            .filter(move |index| Some(*index) != current)
+            .map(|index| &rows[index])
+    };
+    attention
+        .iter()
+        .find_map(|wanted| {
+            walk().find(|row| status_text(row.agent.agent_status) == wanted.as_str())
         })
         .map(|row| AggregateAgentTarget {
             endpoint_id: row.endpoint.endpoint_id.clone(),

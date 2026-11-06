@@ -164,7 +164,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # last_workspace = ""     # optional, unset by default; bind e.g. "alt+backtick" to flip between the last two workspaces
 # previous_agent = ""     # optional, unset by default
 # next_agent = ""         # optional, unset by default
-# next_attention_agent = "" # optional, unset by default; visits agents in ui.sidebar.agents.attention, e.g. "alt+u"
+# next_attention_agent = "" # optional, unset by default; visits agents by the status order of ui.sidebar.agents.attention, e.g. "alt+u"
 # focus_picker = ""       # optional, unset by default; picks workspaces or tabs to focus, on any machine
 # hide_picker = ""        # optional, unset by default; picks workspaces or tabs to hide, on any machine
 # toggle_focus = ""       # optional, unset by default; switches focus on or off, keeping what is focused
@@ -374,6 +374,9 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Blank rows between agent entries. Set to 1 to restore the previous spacing.
 # row_gap = 0
 # rows = [["state_icon", "machine", "workspace", "tab"], ["agent"]]
+# Statuses keys.next_attention_agent visits, most urgent first: it goes to the first
+# listed status with an agent besides the focused one. "done" is the unread mark.
+# attention = ["blocked", "done"]
 # Optional canonical agent IDs replace the default rows for matching agents.
 # [ui.sidebar.agents.rows_by_agent]
 # claude = [["state_icon", "machine", "workspace", "tab"], ["terminal_title_stripped"], ["agent"]]

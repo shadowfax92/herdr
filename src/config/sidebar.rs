@@ -452,9 +452,11 @@ pub struct AgentsSidebarConfig {
     /// it. Presentation only: the API still lists them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub hidden_workspaces: Vec<String>,
-    /// Agent statuses `next_attention_agent` stops at, from `blocked`, `done`,
-    /// `working`, `idle` and `unknown`. `done` is the panel's unread mark, so
-    /// the default visits agents waiting on the user.
+    /// Agent statuses `next_attention_agent` visits, from `blocked`, `done`,
+    /// `working`, `idle` and `unknown`, most urgent first: the key goes to the
+    /// first listed status that has an agent besides the focused one, walking
+    /// the panel from the focused agent within that status. `done` is the
+    /// panel's unread mark, so the default visits agents waiting on the user.
     #[serde(
         deserialize_with = "deserialize_attention",
         skip_serializing_if = "is_default_attention"

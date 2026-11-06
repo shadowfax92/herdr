@@ -388,8 +388,8 @@ pub struct KeysConfig {
     pub previous_agent: BindingConfig,
     /// Focus the next agent shown in the agent panel. Unset by default.
     pub next_agent: BindingConfig,
-    /// Focus the next agent in the agent panel, on any machine, whose status
-    /// is listed in `ui.sidebar.agents.attention`. Unset by default.
+    /// Focus the next agent, on any machine, by the status order of
+    /// `ui.sidebar.agents.attention`. Unset by default.
     pub next_attention_agent: BindingConfig,
     /// Open the focus/hide picker in focus mode. Unset by default.
     pub focus_picker: BindingConfig,
