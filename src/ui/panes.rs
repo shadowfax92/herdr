@@ -13,7 +13,7 @@ use super::text::truncate_end;
 use super::widgets::panel_contrast_fg;
 use crate::app::state::Palette;
 use crate::app::AppState;
-use crate::layout::{PaneId, PaneInfo};
+use crate::layout::{zoomed_rect, PaneId, PaneInfo, ZoomWidth};
 use crate::popup_size::resolve_popup_geometry;
 use crate::terminal::{TerminalRuntime, TerminalRuntimeRegistry};
 
@@ -70,8 +70,9 @@ pub(crate) enum NewPanePlacement {
         direction: Direction,
         ratio: f32,
     },
-    /// A pane split off and immediately zoomed over its tab.
-    ZoomedOverlay,
+    /// A pane split off `over` in workspace `ws_idx` and immediately zoomed
+    /// over its tab, at that tab's zoom width.
+    ZoomedOverlay { ws_idx: usize, over: PaneId },
     /// An existing pane in workspace `ws_idx` getting a new terminal.
     Existing { ws_idx: usize, pane: PaneId },
 }
@@ -98,20 +99,28 @@ pub(crate) fn new_pane_terminal_size(
         let ws = app.workspaces.get(ws_idx)?;
         ws.tabs.get(ws.find_tab_index_for_pane(pane)?)
     };
+    let zoomed = |width, multi_pane| {
+        pane_inner_rect(
+            zoomed_rect(area, width, app.zoom_margins),
+            zoomed_pane_borders(app, multi_pane),
+        )
+    };
     let pane_inner = match placement {
         NewPanePlacement::Alone => alone(),
         NewPanePlacement::Existing { ws_idx, pane } => tab_for(ws_idx, pane)
             .and_then(|tab| {
                 if tab.zoomed && tab.layout.focused() == pane {
-                    let multi_pane = tab.layout.pane_count() > 1;
-                    return Some(pane_inner_rect(area, zoomed_pane_borders(app, multi_pane)));
+                    return Some(zoomed(tab.zoom_width, tab.layout.pane_count() > 1));
                 }
                 let panes = tab.layout.panes(area);
                 let index = panes.iter().position(|info| info.id == pane)?;
                 Some(laid_out(panes, index))
             })
             .unwrap_or_else(alone),
-        NewPanePlacement::ZoomedOverlay => pane_inner_rect(area, zoomed_pane_borders(app, true)),
+        NewPanePlacement::ZoomedOverlay { ws_idx, over } => zoomed(
+            tab_for(ws_idx, over).map_or_else(ZoomWidth::default, |tab| tab.zoom_width),
+            true,
+        ),
         NewPanePlacement::Split {
             ws_idx,
             target,
@@ -326,7 +335,10 @@ pub(super) fn resize_tab_panes(
         if let Some((terminal_id, rt)) =
             runtime_for_tab_pane(app, terminal_runtimes, workspace_index, tab, focused_id)
         {
-            let pane_inner = pane_inner_rect(area, zoomed_pane_borders(app, multi_pane));
+            let pane_inner = pane_inner_rect(
+                zoomed_rect(area, tab.zoom_width, app.zoom_margins),
+                zoomed_pane_borders(app, multi_pane),
+            );
             let inner_rect = terminal_inner_rect(rt, pane_inner, app.pane_scrollbars);
             if !app.direct_attach_resize_locks.contains(terminal_id) {
                 rt.resize(
@@ -386,8 +398,11 @@ pub(super) fn compute_pane_infos_for_tab(
 
     if tab.zoomed {
         let focused_id = tab.layout.focused();
+        // The client hit-tests this rect, so a click in a fitted zoom's
+        // margin lands on no pane.
+        let rect = zoomed_rect(area, tab.zoom_width, app.zoom_margins);
         let borders = zoomed_pane_borders(app, multi_pane);
-        let pane_inner = pane_inner_rect(area, borders);
+        let pane_inner = pane_inner_rect(rect, borders);
         let mut inner_rect = pane_inner;
         let mut scrollbar_rect = None;
         if let Some(rt) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, focused_id) {
@@ -408,7 +423,7 @@ pub(super) fn compute_pane_infos_for_tab(
         }
         return vec![PaneInfo {
             id: focused_id,
-            rect: area,
+            rect,
             inner_rect,
             scrollbar_rect,
             borders,
@@ -1436,6 +1451,153 @@ mod tests {
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, None);
         assert_eq!(info.inner_rect, Rect::new(11, 4, 37, 6));
+    }
+
+    /// A two-pane tab zoomed on its second pane at `width`, which has a
+    /// runtime; returns the state and that pane.
+    fn zoomed_two_pane_app(width: crate::layout::ZoomWidth) -> (AppState, PaneId) {
+        let mut app = AppState::test_new();
+        let mut workspace = Workspace::test_new("test");
+        let focused_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        workspace.zoomed = true;
+        workspace.zoom_width = width;
+        workspace.tabs[0].runtimes.insert(
+            focused_pane,
+            TerminalRuntime::test_with_scrollback_bytes(40, 8, 1024, b"ready\n"),
+        );
+        app.workspaces = vec![workspace];
+        app.active = Some(0);
+        (app, focused_pane)
+    }
+
+    /// The owner's 483-column client minus the default 26-column sidebar.
+    const ULTRAWIDE_AREA: Rect = Rect::new(26, 1, 457, 40);
+
+    #[tokio::test]
+    async fn fitted_zoom_narrows_the_drawn_rect_and_the_pty_on_a_wide_area() {
+        let (app, focused_pane) = zoomed_two_pane_app(crate::layout::ZoomWidth::Fitted);
+        let terminal_runtimes = TerminalRuntimeRegistry::new();
+        let infos = compute_pane_infos(
+            &app,
+            &terminal_runtimes,
+            ULTRAWIDE_AREA,
+            true,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+
+        // 20% of 457 is 91 columns on each side; the border wraps the rest.
+        let [info] = &infos[..] else {
+            panic!("one zoomed pane, got {}", infos.len());
+        };
+        assert_eq!(info.rect, Rect::new(26 + 91, 1, 275, 40));
+        assert_eq!(info.borders, Borders::ALL);
+        // One column of the border on each side, one more for the scrollbar gutter.
+        assert_eq!(info.inner_rect, Rect::new(26 + 92, 2, 272, 38));
+        assert_eq!(
+            app.workspaces[0].tabs[0].runtimes[&focused_pane].current_size(),
+            (38, 272)
+        );
+    }
+
+    #[tokio::test]
+    async fn full_zoom_and_narrow_areas_fill_the_whole_area() {
+        let terminal_runtimes = TerminalRuntimeRegistry::new();
+        let laptop = Rect::new(26, 1, 293 - 26, 40);
+        for (width, area) in [
+            (crate::layout::ZoomWidth::Full, ULTRAWIDE_AREA),
+            (crate::layout::ZoomWidth::Fitted, laptop),
+        ] {
+            let (app, focused_pane) = zoomed_two_pane_app(width);
+            let infos = compute_pane_infos(
+                &app,
+                &terminal_runtimes,
+                area,
+                true,
+                crate::kitty_graphics::HostCellSize::default(),
+            );
+            assert_eq!(infos[0].rect, area, "{width:?} in {area:?}");
+            assert_eq!(
+                app.workspaces[0].tabs[0].runtimes[&focused_pane].current_size(),
+                (area.height - 2, area.width - 3),
+                "{width:?} in {area:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn background_resize_and_new_pane_sizing_follow_the_fitted_rect() {
+        let (app, focused_pane) = zoomed_two_pane_app(crate::layout::ZoomWidth::Fitted);
+        let terminal_runtimes = TerminalRuntimeRegistry::new();
+
+        crate::ui::resize_tab_surface(
+            &app,
+            &terminal_runtimes,
+            0,
+            0,
+            ULTRAWIDE_AREA,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        assert_eq!(
+            app.workspaces[0].tabs[0].runtimes[&focused_pane].current_size(),
+            (38, 272)
+        );
+
+        for placement in [
+            NewPanePlacement::Existing {
+                ws_idx: 0,
+                pane: focused_pane,
+            },
+            NewPanePlacement::ZoomedOverlay {
+                ws_idx: 0,
+                over: focused_pane,
+            },
+        ] {
+            assert_eq!(
+                new_pane_terminal_size(&app, ULTRAWIDE_AREA, placement),
+                (38, 272),
+                "{placement:?}"
+            );
+        }
+
+        let (full, focused_pane) = zoomed_two_pane_app(crate::layout::ZoomWidth::Full);
+        assert_eq!(
+            new_pane_terminal_size(
+                &full,
+                ULTRAWIDE_AREA,
+                NewPanePlacement::ZoomedOverlay {
+                    ws_idx: 0,
+                    over: focused_pane,
+                },
+            ),
+            (38, 454),
+            "an overlay over a full zoom is full width"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fitted_zoom_leaves_its_margins_blank() {
+        let (mut app, _) = zoomed_two_pane_app(crate::layout::ZoomWidth::Fitted);
+        app.pane_borders = PaneBordersConfig::Off;
+        let area = Rect::new(0, 0, 400, 3);
+        let terminal_runtimes = TerminalRuntimeRegistry::new();
+        let layout = crate::ui::compute_tab_surface(
+            &app,
+            &terminal_runtimes,
+            area,
+            true,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        assert!(layout.split_borders.is_empty());
+        let (buffer, ..) = crate::server::render_stream::render_tab_surface_virtual(
+            &app,
+            &terminal_runtimes,
+            layout,
+            area,
+        );
+
+        let row: String = (0..area.width).map(|x| buffer[(x, 0)].symbol()).collect();
+        assert_eq!(&row[80..85], "ready", "text starts at the left margin");
+        assert!(row[..80].trim().is_empty() && row[85..].trim().is_empty());
     }
 
     #[tokio::test]

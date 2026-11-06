@@ -20,7 +20,7 @@ use crate::app::actions::{PaneZoomCommand, PaneZoomNoopReason};
 use crate::app::App;
 #[cfg(test)]
 use crate::app::Mode;
-use crate::layout::{find_in_direction, NavDirection, PaneId};
+use crate::layout::{find_in_direction, NavDirection, PaneId, ZoomWidth};
 
 use super::super::api_helpers::{
     detect_state_from_api, encode_api_keys, normalize_metadata_source, normalize_metadata_tokens,
@@ -1420,8 +1420,8 @@ impl App {
             return encode_error(id, "pane_not_found", "pane not found");
         };
         let command = match params.mode {
-            PaneZoomMode::Toggle => PaneZoomCommand::Toggle,
-            PaneZoomMode::On => PaneZoomCommand::On,
+            PaneZoomMode::Toggle => PaneZoomCommand::Toggle(ZoomWidth::Fitted),
+            PaneZoomMode::On => PaneZoomCommand::On(ZoomWidth::Fitted),
             PaneZoomMode::Off => PaneZoomCommand::Off,
         };
         let Some(outcome) = self.state.apply_pane_zoom(ws_idx, pane_id, command) else {

@@ -116,7 +116,10 @@ impl App {
             crate::api::schema::SplitDirection::Down => Direction::Vertical,
         };
         let new_pane_placement = if placement == PluginPanePlacement::Zoomed {
-            crate::ui::NewPanePlacement::ZoomedOverlay
+            crate::ui::NewPanePlacement::ZoomedOverlay {
+                ws_idx,
+                over: target_pane,
+            }
         } else {
             crate::ui::NewPanePlacement::Split {
                 ws_idx,

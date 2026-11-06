@@ -542,6 +542,7 @@ impl App {
             pane_outer_borders: config.ui.pane_outer_borders,
             pane_scrollbars: config.ui.pane_scrollbars,
             pane_gaps: config.ui.pane_gaps,
+            zoom_margins: crate::layout::ZoomMargins::default(),
             show_agent_labels_on_pane_borders: config.ui.show_agent_labels_on_pane_borders,
             tab_bar_right: Vec::new(),
             tab_bar_right_separator: String::new(),

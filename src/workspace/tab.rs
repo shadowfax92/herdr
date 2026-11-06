@@ -6,7 +6,7 @@ use ratatui::layout::Direction;
 use tokio::sync::{mpsc, Notify};
 
 use crate::events::AppEvent;
-use crate::layout::{Node, PaneId, TileLayout};
+use crate::layout::{Node, PaneId, TileLayout, ZoomWidth};
 use crate::pane::{PaneLaunchEnv, PaneState};
 use crate::render_signal::RenderSignal;
 use crate::terminal::{TerminalId, TerminalRuntime, TerminalRuntimeRegistry, TerminalState};
@@ -45,7 +45,13 @@ pub struct Tab {
     pub panes: HashMap<PaneId, PaneState>,
     #[cfg(test)]
     pub runtimes: HashMap<PaneId, TerminalRuntime>,
+    /// Whether the tab shows only its focused pane. This is the shared fact
+    /// the wire snapshot and the saved session carry.
     pub zoomed: bool,
+    /// How wide that zoom is drawn. Meaningful only while `zoomed`; afterwards
+    /// it keeps the last zoom's width, which an overlay's zoom reuses (see
+    /// `ZoomWidth`).
+    pub zoom_width: ZoomWidth,
     pub events: mpsc::Sender<AppEvent>,
     pub(crate) render_notify: Arc<Notify>,
     pub(crate) render_dirty: Arc<RenderSignal>,
@@ -188,6 +194,7 @@ impl Tab {
                 #[cfg(test)]
                 runtimes: HashMap::new(),
                 zoomed: false,
+                zoom_width: ZoomWidth::default(),
                 events,
                 render_notify,
                 render_dirty,
@@ -451,6 +458,7 @@ impl Tab {
             #[cfg(test)]
             runtimes: HashMap::new(),
             zoomed: false,
+            zoom_width: ZoomWidth::default(),
             events,
             render_notify,
             render_dirty,

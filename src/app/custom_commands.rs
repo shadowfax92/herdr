@@ -381,9 +381,18 @@ impl App {
             return Err(std::io::Error::other("no active workspace"));
         };
         let previous_focus_target = self.state.current_pane_focus_target();
+        let previous_focus = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(crate::workspace::Workspace::focused_pane_id)
+            .ok_or_else(|| std::io::Error::other("no focused pane"))?;
         let (rows, cols) = self
             .state
-            .new_pane_size(crate::ui::NewPanePlacement::ZoomedOverlay);
+            .new_pane_size(crate::ui::NewPanePlacement::ZoomedOverlay {
+                ws_idx,
+                over: previous_focus,
+            });
         let (env, _) = self.custom_command_env();
 
         let ws = self
@@ -392,9 +401,6 @@ impl App {
             .get_mut(ws_idx)
             .ok_or_else(|| std::io::Error::other("active workspace disappeared"))?;
         let tab_idx = ws.active_tab_index();
-        let previous_focus = ws
-            .focused_pane_id()
-            .ok_or_else(|| std::io::Error::other("no focused pane"))?;
         let previous_zoomed = ws.active_tab().map(|tab| tab.zoomed).unwrap_or(false);
         let cwd = ws.active_tab().and_then(|tab| {
             tab.cwd_for_pane(
@@ -460,18 +466,24 @@ impl App {
             return Err(std::io::Error::other("no active workspace"));
         };
         let previous_focus_target = self.state.current_pane_focus_target();
+        let previous_focus = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(crate::workspace::Workspace::focused_pane_id)
+            .ok_or_else(|| std::io::Error::other("no focused pane"))?;
         let (rows, cols) = self
             .state
-            .new_pane_size(crate::ui::NewPanePlacement::ZoomedOverlay);
+            .new_pane_size(crate::ui::NewPanePlacement::ZoomedOverlay {
+                ws_idx,
+                over: previous_focus,
+            });
 
         let ws = self
             .state
             .workspaces
             .get(ws_idx)
             .ok_or_else(|| std::io::Error::other("active workspace disappeared"))?;
-        let previous_focus = ws
-            .focused_pane_id()
-            .ok_or_else(|| std::io::Error::other("no focused pane"))?;
         let cwd = cwd.or_else(|| {
             ws.active_tab().and_then(|tab| {
                 tab.cwd_for_pane(

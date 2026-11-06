@@ -840,6 +840,8 @@ pub struct AppState {
     pub pane_outer_borders: bool,
     pub pane_scrollbars: bool,
     pub pane_gaps: bool,
+    /// Side margins of a `ZoomWidth::Fitted` zoom, from `[ui]`.
+    pub zoom_margins: crate::layout::ZoomMargins,
     pub show_agent_labels_on_pane_borders: bool,
     pub tab_bar_right: Vec<TabBarStatusSegment>,
     pub tab_bar_right_separator: String,
@@ -1083,6 +1085,7 @@ impl AppState {
             pane_outer_borders: true,
             pane_scrollbars: true,
             pane_gaps: false,
+            zoom_margins: crate::layout::ZoomMargins::default(),
             show_agent_labels_on_pane_borders: false,
             tab_bar_right: Vec::new(),
             tab_bar_right_separator: " ".into(),

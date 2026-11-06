@@ -7,9 +7,9 @@ use tracing::warn;
 
 use crate::detect::{Agent, AgentState};
 use crate::events::AppEvent;
-use crate::layout::PaneId;
 #[cfg(test)]
 use crate::layout::{find_in_direction, NavDirection};
+use crate::layout::{PaneId, ZoomWidth};
 use crate::terminal::{EffectiveStateChange, TerminalStateMutation};
 use crate::workspace::WorkspaceGitStatus;
 
@@ -714,11 +714,36 @@ impl AppState {
 // Pane operations
 // ---------------------------------------------------------------------------
 
+/// A zoom request for one pane's tab. A request to zoom names its width;
+/// unzooming does not need one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PaneZoomCommand {
-    Toggle,
-    On,
+    Toggle(ZoomWidth),
+    On(ZoomWidth),
     Off,
+}
+
+impl PaneZoomCommand {
+    /// The tab's next zoom, `None` meaning unzoomed, or why the request
+    /// changes nothing.
+    ///
+    /// A zoom at least as wide as the request already meets it. So a fitted
+    /// toggle unzooms a zoom of either width, while a full toggle widens a
+    /// fitted zoom and unzooms only a full one.
+    fn next_zoom(
+        self,
+        current: Option<ZoomWidth>,
+    ) -> Result<Option<ZoomWidth>, PaneZoomNoopReason> {
+        let covers = |width| current.is_some_and(|current| current >= width);
+        match self {
+            Self::Toggle(width) if covers(width) => Ok(None),
+            Self::Toggle(width) => Ok(Some(width)),
+            Self::On(width) if covers(width) => Err(PaneZoomNoopReason::AlreadyZoomed),
+            Self::On(width) => Ok(Some(width)),
+            Self::Off if current.is_none() => Err(PaneZoomNoopReason::AlreadyUnzoomed),
+            Self::Off => Ok(None),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -837,26 +862,22 @@ impl AppState {
             });
         }
 
-        let desired = match command {
-            PaneZoomCommand::Toggle => !tab.zoomed,
-            PaneZoomCommand::On => true,
-            PaneZoomCommand::Off => false,
+        let next = match command.next_zoom(tab.zoomed.then_some(tab.zoom_width)) {
+            Ok(next) => next,
+            Err(reason) => {
+                return Some(PaneZoomOutcome {
+                    changed: false,
+                    focus_changed,
+                    reason: Some(reason),
+                    zoomed: tab.zoomed,
+                });
+            }
         };
-        let reason = match (command, tab.zoomed) {
-            (PaneZoomCommand::On, true) => Some(PaneZoomNoopReason::AlreadyZoomed),
-            (PaneZoomCommand::Off, false) => Some(PaneZoomNoopReason::AlreadyUnzoomed),
-            _ => None,
-        };
-        if reason.is_some() {
-            return Some(PaneZoomOutcome {
-                changed: false,
-                focus_changed,
-                reason,
-                zoomed: tab.zoomed,
-            });
-        }
 
-        tab.zoomed = desired;
+        tab.zoomed = next.is_some();
+        if let Some(width) = next {
+            tab.zoom_width = width;
+        }
         let zoomed = tab.zoomed;
         self.mark_session_dirty();
         Some(PaneZoomOutcome {
@@ -879,7 +900,7 @@ impl AppState {
         else {
             return;
         };
-        self.apply_pane_zoom(ws_idx, pane_id, PaneZoomCommand::Toggle);
+        self.apply_pane_zoom(ws_idx, pane_id, PaneZoomCommand::Toggle(ZoomWidth::Fitted));
     }
 
     pub(crate) fn workspace_close_indices(&self, ws_idx: usize) -> Vec<usize> {
@@ -4373,6 +4394,76 @@ mod tests {
     fn toggle_zoom_single_pane_noop() {
         let mut state = app_with_workspaces(&["test"]);
         state.toggle_zoom();
+        assert!(!state.workspaces[0].zoomed);
+    }
+
+    /// Applies `command` to the focused pane and returns the tab's zoom after.
+    fn zoom_after(state: &mut AppState, command: PaneZoomCommand) -> Option<ZoomWidth> {
+        let pane = state.workspaces[0].focused_pane_id().unwrap();
+        state.apply_pane_zoom(0, pane, command).unwrap();
+        let tab = &state.workspaces[0].tabs[0];
+        tab.zoomed.then_some(tab.zoom_width)
+    }
+
+    #[test]
+    fn zoom_and_zoom_full_keys_move_between_widths() {
+        use PaneZoomCommand::Toggle;
+        use ZoomWidth::{Fitted, Full};
+        let zoom = Toggle(Fitted);
+        let zoom_full = Toggle(Full);
+        let mut state = app_with_workspaces(&["test"]);
+        state.workspaces[0].test_split(Direction::Horizontal);
+
+        assert_eq!(zoom_after(&mut state, zoom), Some(Fitted));
+        assert_eq!(zoom_after(&mut state, zoom), None);
+
+        assert_eq!(zoom_after(&mut state, zoom_full), Some(Full));
+        assert_eq!(zoom_after(&mut state, zoom_full), None);
+
+        assert_eq!(zoom_after(&mut state, zoom), Some(Fitted));
+        assert_eq!(zoom_after(&mut state, zoom_full), Some(Full));
+        assert_eq!(
+            zoom_after(&mut state, zoom),
+            None,
+            "zoom unzooms a full zoom"
+        );
+
+        // An unzoomed tab keeps its last width, and the next zoom names its own.
+        assert_eq!(state.workspaces[0].tabs[0].zoom_width, Full);
+        assert_eq!(zoom_after(&mut state, zoom), Some(Fitted));
+    }
+
+    #[test]
+    fn zoom_on_is_met_by_a_zoom_at_least_as_wide() {
+        use PaneZoomCommand::{Off, On};
+        use ZoomWidth::{Fitted, Full};
+        let mut state = app_with_workspaces(&["test"]);
+        state.workspaces[0].test_split(Direction::Horizontal);
+        let pane = state.workspaces[0].focused_pane_id().unwrap();
+
+        assert_eq!(zoom_after(&mut state, On(Full)), Some(Full));
+        let outcome = state.apply_pane_zoom(0, pane, On(Fitted)).unwrap();
+        assert_eq!(outcome.reason, Some(PaneZoomNoopReason::AlreadyZoomed));
+        assert!(!outcome.changed);
+        assert_eq!(state.workspaces[0].tabs[0].zoom_width, Full);
+
+        assert_eq!(zoom_after(&mut state, Off), None);
+        assert_eq!(zoom_after(&mut state, On(Fitted)), Some(Fitted));
+        assert_eq!(zoom_after(&mut state, On(Full)), Some(Full), "on widens");
+        let outcome = state.apply_pane_zoom(0, pane, Off).unwrap();
+        assert!(outcome.changed && !outcome.zoomed);
+        let outcome = state.apply_pane_zoom(0, pane, Off).unwrap();
+        assert_eq!(outcome.reason, Some(PaneZoomNoopReason::AlreadyUnzoomed));
+    }
+
+    #[test]
+    fn zoom_full_in_a_single_pane_tab_is_a_noop() {
+        let mut state = app_with_workspaces(&["test"]);
+        let pane = state.workspaces[0].focused_pane_id().unwrap();
+        let outcome = state
+            .apply_pane_zoom(0, pane, PaneZoomCommand::Toggle(ZoomWidth::Full))
+            .unwrap();
+        assert_eq!(outcome.reason, Some(PaneZoomNoopReason::SinglePane));
         assert!(!state.workspaces[0].zoomed);
     }
 

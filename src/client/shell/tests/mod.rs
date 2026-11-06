@@ -255,6 +255,7 @@ mod copy;
 mod copy_hints;
 mod endpoint_requests;
 mod endpoints;
+mod fitted_zoom;
 mod graphics;
 mod hidden_workspaces;
 mod input_conformance;
