@@ -242,6 +242,32 @@ description = "apply layout"
 
 在 Windows 上，自定义命令字符串使用 `cmd.exe /d /c`，因此环境变量应采用 `%HERDR_BIN_PATH%` 语法。若要运行 PowerShell 语法，请显式调用它，例如 `powershell.exe -NoProfile -Command "..."`。
 
+## 智能体按键规则
+
+有些智能体绑定了你无法更改的按键。例如 Claude Code 按下 `ctrl+d` 就会退出，而你可能出于习惯按它来滚动。`[agent_key_rules]` 可以在 Herdr 把这类按键发给智能体之前丢弃它，或把它换成另一个按键：
+
+```toml
+[agent_key_rules.claude]
+"ctrl+d" = "drop"
+"ctrl+t" = "drop"
+
+[agent_key_rules.codex]
+"ctrl+p" = { remap = "up" }   # Codex 改为收到 Up
+```
+
+每张表按 `herdr agent list` 显示的智能体名称命名，例如 `claude`、`codex`、`agy` 或 `copilot`。大小写不同的写法，以及 Herdr 检测所接受的别名（例如 `claude-code`），都指同一个智能体。按键使用去掉 `prefix+` 的[按键绑定语法](#按键绑定)。会输入文字的按键（除 Shift 外不带其他修饰键的字符）不能作为规则按键，因为有些终端会把它作为文本发送，不经过按键处理。
+
+被丢弃的按键会在剪贴板反馈 toast 中显示一条简短通知，例如“ctrl+d is disabled for claude”。设置 `ui.toast.clipboard.enabled = false` 会把它和复制 toast 一起关闭。重映射（remap）会在每次按下和每次重复时，发送另一个按键的一次完整按下与松开；重映射目标可以是按键绑定语法接受的任何按键。
+
+规则只会改变 Herdr 原本要发送给聚焦窗格中程序的按键：
+
+- Herdr 自身不带 `prefix+` 的按键绑定和前缀键优先，因此针对这些按键的规则不会生效。连按两次前缀键仍会把前缀键发送给窗格。
+- 复制模式、复制标签（`prefix+f`）、输入框、弹窗、侧边栏和调整大小模式保留各自的按键。在复制模式中，`ctrl+d` 仍然移动半页。
+- 规则跟随智能体检测。在 Herdr 识别出智能体之前（通常在启动后一秒内），以及智能体退出之后，所有按键都会原样传递，因此 `ctrl+d` 仍会作为输入结束信号到达普通 shell。
+- 规则始终来自本地的 `config.toml`，使用 `herdr --remote` 时也一样，无论 `--remote-keybindings` 取哪个值。
+
+`herdr config check` 会报告未知的智能体、按键或动作。错误的条目只会使它自己的规则失效，其他规则和设置在启动和重载时都照常生效。
+
 ## 主题
 
 选择内置主题：

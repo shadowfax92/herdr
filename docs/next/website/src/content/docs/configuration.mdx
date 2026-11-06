@@ -246,6 +246,32 @@ Custom commands receive `HERDR_SOCKET_PATH`, `HERDR_BIN_PATH`, `HERDR_ACTIVE_WOR
 
 On Windows, custom command strings use `cmd.exe /d /c`, so environment variables use `%HERDR_BIN_PATH%` syntax. To run PowerShell syntax, invoke it explicitly, for example `powershell.exe -NoProfile -Command "..."`.
 
+## Agent key rules
+
+Some agents bind keys you cannot change. Claude Code, for one, exits on `ctrl+d`, which you might press out of habit to scroll. `[agent_key_rules]` drops such a key, or replaces it with another key, before Herdr sends it to the agent:
+
+```toml
+[agent_key_rules.claude]
+"ctrl+d" = "drop"
+"ctrl+t" = "drop"
+
+[agent_key_rules.codex]
+"ctrl+p" = { remap = "up" }   # Codex receives Up instead
+```
+
+Name each table the way `herdr agent list` names the agent, such as `claude`, `codex`, `agy` or `copilot`. Letter case and the aliases Herdr's detector accepts, such as `claude-code`, name the same agent. Keys use the [keybinding syntax](#keybindings) without `prefix+`. A key that types text, meaning a character with at most Shift, cannot be a rule key, because some terminals send it as text that never passes through key handling.
+
+A dropped key shows a short notice such as "ctrl+d is disabled for claude" in the clipboard feedback toast; `ui.toast.clipboard.enabled = false` turns it off along with the copy toast. A remap sends a whole press and release of the other key for each press and each repeat, and it can name any key the keybinding syntax accepts.
+
+Rules change only the keys Herdr would send to the focused pane's program:
+
+- Herdr's direct keybindings (those without `prefix+`) and the prefix come first, so a rule on one of those keys never applies. Pressing the prefix twice still sends the prefix key to the pane.
+- Copy mode, copy hints (`prefix+f`), prompts, popups, the sidebar and resize mode keep their keys. In copy mode, `ctrl+d` still moves half a page.
+- Rules follow agent detection. Until Herdr identifies the agent, usually within a second of it starting, and once it exits, every key passes through, so `ctrl+d` still reaches a plain shell as end of input.
+- Rules always come from your local `config.toml`, also with `herdr --remote` and either `--remote-keybindings` value.
+
+`herdr config check` reports an unknown agent, key or action. A bad entry costs only its own rule; every other rule and setting still applies, at startup and on reload.
+
 ## Theme
 
 Choose a built-in theme:
