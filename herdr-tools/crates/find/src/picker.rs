@@ -16,11 +16,16 @@ use crate::{
 use anyhow::Result;
 use ratatui::{
     crossterm::{
-        event::{self, DisableBracketedPaste, EnableBracketedPaste, Event},
+        event::{
+            self, DisableBracketedPaste, EnableBracketedPaste, Event, MouseButton, MouseEvent,
+            MouseEventKind,
+        },
         execute,
     },
+    layout::Rect,
     DefaultTerminal,
 };
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -51,6 +56,7 @@ pub(crate) fn run(host: Host, source: String) -> Result<()> {
     });
     catalog.submit(app.request_catalog());
     session(|terminal| {
+        let _mouse = MouseGuard::enable()?;
         let mut dirty = true;
         let mut generation = app.generation;
         let mut selected_at = Instant::now();
@@ -78,7 +84,26 @@ pub(crate) fn run(host: Host, source: String) -> Result<()> {
                         terminal.autoresize()?;
                     }
                     let previous_mode = app.mode();
-                    match app.handle(event) {
+                    // A left click on a header pill shows its list; only the
+                    // layout knows where pills are, so it is resolved here
+                    // against the frame's size rather than inside `App`.
+                    let action = match event {
+                        Event::Mouse(MouseEvent {
+                            kind: MouseEventKind::Down(MouseButton::Left),
+                            column,
+                            row,
+                            ..
+                        }) => {
+                            let size = terminal.size()?;
+                            let area = Rect::new(0, 0, size.width, size.height);
+                            if let Some(pill) = ui::pill_at(&app, area, column, row) {
+                                app.show(pill);
+                            }
+                            Action::None
+                        }
+                        event => app.handle(event),
+                    };
+                    match action {
                         Action::Cancel => return Ok(()),
                         Action::Refresh => catalog.submit(app.request_catalog()),
                         Action::Jump => {
@@ -287,5 +312,28 @@ struct PasteGuard;
 impl Drop for PasteGuard {
     fn drop(&mut self) {
         let _ = execute!(std::io::stdout(), DisableBracketedPaste);
+    }
+}
+
+/// Mouse reporting for the navigator, so its header pills can be clicked:
+/// press and release only (1000), in SGR form (1006). Crossterm's
+/// `EnableMouseCapture` also turns on motion reports (1003), which would wake
+/// the loop on every move over the popup. While it is on, Herdr sends the
+/// wheel as mouse events rather than arrow keys, which `App` handles.
+/// Line pickers leave it off and keep the arrow-key wheel.
+struct MouseGuard;
+impl MouseGuard {
+    fn enable() -> std::io::Result<Self> {
+        let mut out = std::io::stdout();
+        out.write_all(b"\x1b[?1000h\x1b[?1006h")?;
+        out.flush()?;
+        Ok(Self)
+    }
+}
+impl Drop for MouseGuard {
+    fn drop(&mut self) {
+        let mut out = std::io::stdout();
+        let _ = out.write_all(b"\x1b[?1006l\x1b[?1000l");
+        let _ = out.flush();
     }
 }

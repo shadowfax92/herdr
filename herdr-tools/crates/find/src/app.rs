@@ -7,7 +7,7 @@
 //! count is always what it would list.
 use crate::catalog::{self, AgentState, Candidate, Hit, Listing};
 use crate::prompt;
-use ratatui::crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 
 /// Whether the list honors Herdr's focus/hide scope. Each popup opens in
 /// `Scope`, as Find always behaved; `Everything` is a peek outside the scope
@@ -19,7 +19,7 @@ pub(crate) enum Reach {
 }
 impl Reach {
     pub const BOTH: [Reach; 2] = [Self::Scope, Self::Everything];
-    fn other(self) -> Self {
+    pub fn other(self) -> Self {
         match self {
             Self::Scope => Self::Everything,
             Self::Everything => Self::Scope,
@@ -56,6 +56,15 @@ impl View {
             Self::Idle => state == AgentState::Idle,
         }
     }
+}
+
+/// A header pill, which a click shows: a reach (ctrl-o's list) or a status
+/// view (ctrl-e's filter). `ui::pill_at` resolves a click to one, since only
+/// the layout knows where each pill is drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Pill {
+    Reach(Reach),
+    View(View),
 }
 
 /// Confirmation is a separate input state so ordinary typing cannot authorize
@@ -190,24 +199,15 @@ impl App {
                             self.leave_kill();
                         }
                     }
-                    KeyCode::Char('e') if ctrl => {
-                        let selected = self.selected().cloned();
-                        self.view = self.view.next();
-                        self.rebuild(selected.as_ref());
-                        self.message = None;
-                        self.jump_armed = true;
-                    }
-                    // Herdr's own focus picker switches focus with Ctrl-o, and
-                    // Herdr binds no direct ctrl+o, so it reaches this popup.
+                    KeyCode::Char('e') if ctrl => self.show(Pill::View(self.view.next())),
+                    // Every Herdr picker switches its main list with Ctrl-o
+                    // (the focus picker's Focus/Hide too), and Herdr binds no
+                    // direct ctrl+o, so it reaches this popup.
                     KeyCode::Char('o') if ctrl => {
                         // Pressed ahead of the first catalog, it still counts
                         // and applies once rows arrive, as a typed query does.
                         if self.reach_toggles() || (self.loading && self.candidates.is_empty()) {
-                            let selected = self.selected().cloned();
-                            self.reach = self.reach.other();
-                            self.rebuild(selected.as_ref());
-                            self.message = None;
-                            self.jump_armed = true;
+                            self.show(Pill::Reach(self.reach.other()));
                         } else {
                             self.message = Some("Every pane is already listed".into());
                         }
@@ -267,9 +267,36 @@ impl App {
                     }
                 }
             }
+            // The picker turns mouse reporting on for pill clicks, which
+            // makes Herdr send the wheel as mouse events instead of the
+            // arrow keys it sends otherwise; keep the wheel moving the
+            // selection. Clicks arrive through `show`, resolved by the loop.
+            Event::Mouse(mouse) => match mouse.kind {
+                MouseEventKind::ScrollUp => self.move_selection(-1),
+                MouseEventKind::ScrollDown => self.move_selection(1),
+                _ => {}
+            },
             _ => {}
         }
         Action::None
+    }
+
+    /// Lists `pill`'s reach or view, keeping the selected row when it is
+    /// still listed. ctrl-o and ctrl-e land here, and so does a click on a
+    /// header pill, so a click does exactly what its key does. A kill review
+    /// freezes membership, so it ignores clicks as it ignores those keys.
+    pub fn show(&mut self, pill: Pill) {
+        if self.mode == Mode::Confirm {
+            return;
+        }
+        let selected = self.selected().cloned();
+        match pill {
+            Pill::Reach(reach) => self.reach = reach,
+            Pill::View(view) => self.view = view,
+        }
+        self.rebuild(selected.as_ref());
+        self.message = None;
+        self.jump_armed = true;
     }
 
     /// The foreground owner advances this revision before every catalog read.
@@ -719,6 +746,70 @@ mod tests {
         app.handle(key(KeyCode::Char('j')));
         assert_eq!(app.query, "j");
         assert_eq!(app.handle(key(KeyCode::Esc)), Action::Cancel);
+    }
+
+    fn mouse(kind: MouseEventKind) -> Event {
+        Event::Mouse(ratatui::crossterm::event::MouseEvent {
+            kind,
+            column: 10,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    /// With mouse reporting on, Herdr sends the wheel as mouse events, not
+    /// the arrow keys alternate scroll sends; they still move the selection,
+    /// one row a notch, and a click alone (no pill under it) does nothing.
+    #[test]
+    fn the_wheel_moves_the_selection_like_the_arrows() {
+        let mut app = App::new();
+        app.loaded(rows());
+        app.handle(mouse(MouseEventKind::ScrollDown));
+        assert_eq!(app.selected().unwrap().pane_id, "w1:p2");
+        app.handle(mouse(MouseEventKind::ScrollDown));
+        assert_eq!(
+            app.selected().unwrap().pane_id,
+            "w1:p2",
+            "clamped at the end"
+        );
+        app.handle(mouse(MouseEventKind::ScrollUp));
+        assert_eq!(app.selected().unwrap().pane_id, "w1:p1");
+        let before = (app.query.clone(), app.selected, app.view(), app.reach());
+        use ratatui::crossterm::event::MouseButton;
+        app.handle(mouse(MouseEventKind::Down(MouseButton::Left)));
+        app.handle(mouse(MouseEventKind::Up(MouseButton::Left)));
+        assert_eq!(
+            (app.query.clone(), app.selected, app.view(), app.reach()),
+            before
+        );
+    }
+
+    /// A click on a pill and its key reach the same state: `show` is the one
+    /// path for both.
+    #[test]
+    fn show_lists_a_pill_exactly_as_ctrl_o_and_ctrl_e_do() {
+        let ctrl = |ch| Event::Key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL));
+        let state = |app: &App| {
+            let rows: Vec<_> = app.hits.iter().map(|hit| hit.index).collect();
+            (
+                app.reach(),
+                app.view(),
+                rows,
+                app.selected().map(|c| c.pane_id.clone()),
+            )
+        };
+        let (mut by_key, mut by_click) = (scoped_app(true), scoped_app(true));
+        for app in [&mut by_key, &mut by_click] {
+            app.handle(key(KeyCode::Down));
+        }
+        by_key.handle(ctrl('o'));
+        by_click.show(Pill::Reach(Reach::Everything));
+        assert_eq!(state(&by_click), state(&by_key));
+        by_key.handle(ctrl('e'));
+        by_click.show(Pill::View(View::InProgress));
+        assert_eq!(state(&by_click), state(&by_key));
+        assert_eq!(by_click.reach(), Reach::Everything);
+        assert_eq!(by_click.view(), View::InProgress);
     }
 
     #[test]

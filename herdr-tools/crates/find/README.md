@@ -93,6 +93,8 @@ archived conversations and other Herdr servers are outside its scope.
 | Enter | Jump to the selected pane and close |
 | Ctrl-e | Next view: All → In progress → Unread/Blocked → Idle |
 | Ctrl-o | Switch between the panes in focus (or not hidden) and every pane |
+| Click a header pill | Show that list or view, as Ctrl-o and Ctrl-e do; the lone pill of a narrow header does what its key does |
+| Mouse wheel | Select the previous or next result |
 | Ctrl-x | Enter or leave kill mode (leaving clears marks) |
 | Ctrl-space | Toggle the selected pane's terminal preview |
 | Ctrl-u | Clear the query |
@@ -102,6 +104,12 @@ archived conversations and other Herdr servers are outside its scope.
 
 Ctrl-k is deliberately unbound: it is commonly a global shortcut (for example,
 system-wide up/down), so it may never reach the popup.
+
+Ctrl-o for the list and Ctrl-e for the filter are the keys every Herdr picker
+uses, Herdr's own focus picker included (its Focus/Hide on Ctrl-o). The pane
+navigator turns on mouse reporting (button presses only, no motion) so its
+pills can be clicked; that is also why the wheel arrives as mouse events, which
+it maps to the selection as the arrow keys would.
 
 In kill mode:
 

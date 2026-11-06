@@ -22,7 +22,7 @@ use std::ops::Range;
 
 use crate::{
     age,
-    app::{App, Mode, Reach, View},
+    app::{App, Mode, Pill, Reach, View},
     catalog::{AgentState, Candidate, Hit, Reason, ReasonKind},
 };
 use ratatui::{
@@ -146,7 +146,7 @@ fn render_at(app: &App, frame: &mut Frame<'_>, now_ms: i64) {
     .areas(inner);
     let reviewing = app.mode() == Mode::Confirm;
     frame.render_widget(
-        Paragraph::new(heading_line(app, heading.width as usize)),
+        Paragraph::new(heading_line(app, heading.width as usize).0),
         heading,
     );
     render_query(app, frame, query);
@@ -280,21 +280,33 @@ enum Strip {
 /// (not just the pill) keeps segment positions fixed, so ctrl-e visibly slides
 /// the pill along.
 fn strip_spans(app: &App, form: Strip, active: View, reach: Reach) -> Vec<Span<'static>> {
-    let mut spans = Vec::new();
+    joined(strip_segments(app, form, active, reach))
+}
+
+/// The view strip as segments, each with the pill a click on it picks: its
+/// own view, or, when the strip shows only the active one, the view ctrl-e
+/// would go to, so the lone pill still does what its key does.
+fn strip_segments(app: &App, form: Strip, active: View, reach: Reach) -> Vec<Segment> {
+    let mut segments = Vec::new();
     for view in View::CYCLE {
         if form == Strip::Active && view != active {
             continue;
         }
-        if !spans.is_empty() {
-            spans.push(Span::raw(" "));
-        }
+        let pick = Pill::View(if form == Strip::Active {
+            active.next()
+        } else {
+            view
+        });
         let count = app.view_count_in(view, reach);
         if view == active {
             let pill = Style::default()
                 .bg(ACCENT)
                 .fg(Color::Black)
                 .add_modifier(Modifier::BOLD);
-            spans.push(Span::styled(format!(" {} {count} ", view.label()), pill));
+            segments.push((
+                pick,
+                vec![Span::styled(format!(" {} {count} ", view.label()), pill)],
+            ));
             continue;
         }
         let muted = Style::default().fg(MUTED);
@@ -304,6 +316,7 @@ fn strip_spans(app: &App, form: Strip, active: View, reach: Reach) -> Vec<Span<'
             View::Idle => &[AgentState::Idle],
             View::All => &[],
         };
+        let mut spans = Vec::new();
         if form == Strip::Compact && !glyphs.is_empty() {
             spans.push(Span::raw(" "));
             for state in glyphs {
@@ -314,8 +327,41 @@ fn strip_spans(app: &App, form: Strip, active: View, reach: Reach) -> Vec<Span<'
         } else {
             spans.push(Span::styled(format!(" {} {count} ", view.label()), muted));
         }
+        segments.push((pick, spans));
+    }
+    segments
+}
+
+/// A header segment: what a click on it picks, and the spans that draw it.
+type Segment = (Pill, Vec<Span<'static>>);
+
+/// Segments as one span run, a space between neighbours.
+fn joined(segments: Vec<Segment>) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for (_, segment) in segments {
+        if !spans.is_empty() {
+            spans.push(Span::raw(" "));
+        }
+        spans.extend(segment);
     }
     spans
+}
+
+/// Appends `segments` to `line` as [`joined`] lays them out, recording the
+/// cells each one covers so a click can find its pill.
+fn push_segments(
+    line: &mut Vec<Span<'static>>,
+    hits: &mut Vec<(Range<usize>, Pill)>,
+    segments: Vec<Segment>,
+) {
+    for (index, (pick, segment)) in segments.into_iter().enumerate() {
+        if index > 0 {
+            line.push(Span::raw(" "));
+        }
+        let start = spans_width(line);
+        line.extend(segment);
+        hits.push((start..spans_width(line), pick));
+    }
 }
 
 pub(crate) fn spans_width(spans: &[Span<'_>]) -> usize {
@@ -335,17 +381,25 @@ enum ReachStrip {
 /// switch beside the yellow status pill. Empty when ctrl-o has nothing to
 /// switch, which removes the control rather than showing a dead one.
 fn reach_spans(app: &App, form: ReachStrip, active: Reach) -> Vec<Span<'static>> {
-    let mut spans = Vec::new();
+    joined(reach_segments(app, form, active))
+}
+
+/// The reach strip as segments. Each picks its own reach; the active one
+/// alone picks the other, as ctrl-o does.
+fn reach_segments(app: &App, form: ReachStrip, active: Reach) -> Vec<Segment> {
+    let mut segments = Vec::new();
     if !app.reach_toggles() {
-        return spans;
+        return segments;
     }
     for reach in Reach::BOTH {
         if form == ReachStrip::Active && reach != active {
             continue;
         }
-        if !spans.is_empty() {
-            spans.push(Span::raw(" "));
-        }
+        let pick = Pill::Reach(if form == ReachStrip::Active {
+            active.other()
+        } else {
+            reach
+        });
         let label = match reach {
             Reach::Scope => app.scope_label(),
             Reach::Everything => EVERYTHING,
@@ -358,12 +412,15 @@ fn reach_spans(app: &App, form: ReachStrip, active: Reach) -> Vec<Span<'static>>
         } else {
             Style::default().fg(MUTED)
         };
-        spans.push(Span::styled(
-            format!(" {label} {} ", app.reach_count(reach)),
-            style,
+        segments.push((
+            pick,
+            vec![Span::styled(
+                format!(" {label} {} ", app.reach_count(reach)),
+                style,
+            )],
         ));
     }
-    spans
+    segments
 }
 
 /// The strip forms depend on width alone — their widest variants over every
@@ -371,7 +428,10 @@ fn reach_spans(app: &App, form: ReachStrip, active: Reach) -> Vec<Span<'static>>
 /// kill mode never reflow the header. Kill titles shorten first, then the view
 /// strip narrows (labels, glyph counts, the active view only), then the reach
 /// strip (both reaches, the active one only), and last the browse title.
-fn heading_line(app: &App, width: usize) -> Line<'static> {
+///
+/// Returns the line and the cells of every pill on it, so a click resolves
+/// against the same layout the frame drew.
+fn heading_line(app: &App, width: usize) -> (Line<'static>, Vec<(Range<usize>, Pill)>) {
     let titles = titles(app);
     let first_fitting = |room: usize| {
         titles
@@ -408,19 +468,45 @@ fn heading_line(app: &App, width: usize) -> Line<'static> {
                 continue;
             }
             if let Some(mut spans) = first_fitting(2 + widest) {
+                let mut hits = Vec::new();
                 if reach > 0 {
                     spans.push(Span::raw("  "));
-                    spans.extend(reach_spans(app, reach_form, app.reach()));
+                    push_segments(
+                        &mut spans,
+                        &mut hits,
+                        reach_segments(app, reach_form, app.reach()),
+                    );
                 }
-                let strip = strip_spans(app, form, app.view(), app.reach());
-                let gap = width.saturating_sub(spans_width(&spans) + spans_width(&strip));
+                let strip = strip_segments(app, form, app.view(), app.reach());
+                let gap =
+                    width.saturating_sub(spans_width(&spans) + spans_width(&joined(strip.clone())));
                 spans.push(Span::raw(" ".repeat(gap)));
-                spans.extend(strip);
-                return Line::from(spans);
+                push_segments(&mut spans, &mut hits, strip);
+                return (Line::from(spans), hits);
             }
         }
     }
-    Line::from(first_fitting(0).unwrap_or_else(|| titles[titles.len() - 1].clone()))
+    (
+        Line::from(first_fitting(0).unwrap_or_else(|| titles[titles.len() - 1].clone())),
+        Vec::new(),
+    )
+}
+
+/// The pill under a click at (`column`, `row`) in a popup of `area`, read
+/// from the layout [`render`] draws there. Only the heading row has pills, and
+/// it has none while a kill review or the first load is up.
+pub(crate) fn pill_at(app: &App, area: Rect, column: u16, row: u16) -> Option<Pill> {
+    if area.width < 6 || area.height < 5 || row != area.y {
+        return None;
+    }
+    // The heading spans the inner width, one cell in from each side, as in
+    // `render_at`.
+    let x = usize::from(column.checked_sub(area.x + 1)?);
+    heading_line(app, usize::from(area.width - 2))
+        .1
+        .into_iter()
+        .find(|(cells, _)| cells.contains(&x))
+        .map(|(_, pill)| pill)
 }
 
 fn render_query(app: &App, frame: &mut Frame<'_>, area: Rect) {
@@ -2754,6 +2840,122 @@ mod tests {
         let revision = app.request_catalog();
         assert!(app.catalog_finished(revision, Ok(crate::catalog::Listing { rows, focus: true })));
         app
+    }
+
+    /// The heading row's text and the pill a click on each of its cells picks.
+    fn pills(app: &App, width: u16) -> (String, Vec<Option<Pill>>) {
+        let area = Rect::new(0, 0, width, 30);
+        let header = text(&draw(app, width, 30)).remove(0);
+        let picks = (0..width).map(|x| pill_at(app, area, x, 0)).collect();
+        (header, picks)
+    }
+
+    /// What the popup lists, to compare a click with its key.
+    fn listing(app: &App) -> (Reach, View, Vec<usize>, usize) {
+        let rows = app.hits.iter().map(|hit| hit.index).collect();
+        (app.reach(), app.view(), rows, app.selected)
+    }
+
+    #[test]
+    fn tests_that_a_click_on_a_pill_shows_its_list_as_its_key_would() {
+        use ratatui::crossterm::event::KeyCode;
+        for width in [70, 110, 132] {
+            let (header, picks) = pills(&scoped_fixture(), width);
+            // Every cell of a segment picks it, and the gaps pick nothing.
+            for (segment, pill) in [
+                ("In focus 6", Pill::Reach(Reach::Scope)),
+                ("Everything 8", Pill::Reach(Reach::Everything)),
+            ] {
+                // The padded segment: a space each side of the text.
+                let start = col(&header, segment) - 1;
+                let cells = &picks[start..start + segment.len() + 2];
+                assert!(
+                    cells.iter().all(|pick| *pick == Some(pill)),
+                    "{segment} at {width}: {header}"
+                );
+            }
+            assert_eq!(picks[col(&header, TITLE)], None);
+            assert_eq!(picks[usize::from(width) - 1], None, "the border");
+
+            // A click lists exactly what the key does, the selection included.
+            let mut key = scoped_fixture();
+            key.handle(press(KeyCode::Down));
+            let mut click = scoped_fixture();
+            click.handle(press(KeyCode::Down));
+            key.handle(ctrl('o'));
+            let x = col(&header, "Everything 8") as u16;
+            click.show(pill_at(&click, Rect::new(0, 0, width, 30), x, 0).unwrap());
+            assert_eq!(listing(&click), listing(&key), "{width}");
+            assert_eq!(click.reach(), Reach::Everything);
+        }
+
+        // Every view segment picks its own view at a width that names them all.
+        let (header, picks) = pills(&scoped_fixture(), 132);
+        for (segment, view) in [
+            ("All 6", View::All),
+            ("In progress 2", View::InProgress),
+            ("Unread/Blocked 2", View::Attention),
+            ("Idle 1", View::Idle),
+        ] {
+            assert_eq!(
+                picks[col(&header, segment)],
+                Some(Pill::View(view)),
+                "{segment}"
+            );
+        }
+        let mut key = scoped_fixture();
+        let mut click = scoped_fixture();
+        key.handle(ctrl('e'));
+        click.show(picks[col(&header, "In progress 2")].unwrap());
+        assert_eq!(listing(&click), listing(&key));
+        // Glyph-count segments pick their view too.
+        let (header, picks) = pills(&scoped_fixture(), 90);
+        assert_eq!(
+            picks[col(&header, "×✓ 2")],
+            Some(Pill::View(View::Attention))
+        );
+
+        // Where only the active pill fits, it does what its key does.
+        let (header, picks) = pills(&scoped_fixture(), 64);
+        assert!(
+            !header.contains("Everything") && !header.contains("Idle"),
+            "{header}"
+        );
+        assert_eq!(
+            picks[col(&header, "In focus 6")],
+            Some(Pill::Reach(Reach::Everything))
+        );
+        assert_eq!(
+            picks[col(&header, "All 6")],
+            Some(Pill::View(View::InProgress))
+        );
+    }
+
+    #[test]
+    fn tests_that_clicks_pick_nothing_off_the_header_or_while_it_has_no_pills() {
+        // Below the heading there are no pills, only rows.
+        let app = scoped_fixture();
+        let area = Rect::new(0, 0, 132, 30);
+        assert!((0..132).all(|x| pill_at(&app, area, x, 1).is_none()));
+        // No reach toggle, no reach pills; the views stay clickable.
+        let (header, picks) = pills(&fixture(), 132);
+        assert!(!header.contains("Everything"), "{header}");
+        assert!(picks
+            .iter()
+            .flatten()
+            .all(|pill| matches!(pill, Pill::View(_))));
+        // The first load and the kill review draw no strips, so nothing picks.
+        let loading = App::new();
+        assert!((0..132).all(|x| pill_at(&loading, area, x, 0).is_none()));
+        let mut review = scoped_fixture();
+        mark_two(&mut review);
+        review.handle(press(ratatui::crossterm::event::KeyCode::Enter));
+        assert_eq!(review.mode(), Mode::Confirm);
+        assert!((0..132).all(|x| pill_at(&review, area, x, 0).is_none()));
+        // A pill picked anyway (a click racing the review) changes nothing.
+        let before = listing(&review);
+        review.show(Pill::Reach(Reach::Everything));
+        assert_eq!(listing(&review), before);
     }
 
     #[test]
