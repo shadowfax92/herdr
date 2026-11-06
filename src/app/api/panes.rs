@@ -1406,7 +1406,12 @@ impl App {
         self.schedule_session_save();
     }
 
-    pub(super) fn handle_pane_zoom(&mut self, id: String, params: PaneZoomParams) -> String {
+    pub(super) fn handle_pane_zoom(
+        &mut self,
+        id: String,
+        params: PaneZoomParams,
+        width: ZoomWidth,
+    ) -> String {
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
@@ -1420,8 +1425,8 @@ impl App {
             return encode_error(id, "pane_not_found", "pane not found");
         };
         let command = match params.mode {
-            PaneZoomMode::Toggle => PaneZoomCommand::Toggle(ZoomWidth::Fitted),
-            PaneZoomMode::On => PaneZoomCommand::On(ZoomWidth::Fitted),
+            PaneZoomMode::Toggle => PaneZoomCommand::Toggle(width),
+            PaneZoomMode::On => PaneZoomCommand::On(width),
             PaneZoomMode::Off => PaneZoomCommand::Off,
         };
         let Some(outcome) = self.state.apply_pane_zoom(ws_idx, pane_id, command) else {
@@ -3907,7 +3912,8 @@ mod tests {
         app.state.workspaces[0].tabs[0].layout.focus_pane(root);
         let root_public = app.public_pane_id(0, root).unwrap();
 
-        let response = app.handle_pane_zoom("req".into(), PaneZoomParams::default());
+        let response =
+            app.handle_pane_zoom("req".into(), PaneZoomParams::default(), ZoomWidth::Fitted);
 
         let success: SuccessResponse = serde_json::from_str(&response).unwrap();
         let ResponseResult::PaneZoom { zoom } = success.result else {
@@ -3927,7 +3933,8 @@ mod tests {
                 if layout.tab_id == app.public_tab_id(0, 0).unwrap() && layout.zoomed
         ));
 
-        let response = app.handle_pane_zoom("req".into(), PaneZoomParams::default());
+        let response =
+            app.handle_pane_zoom("req".into(), PaneZoomParams::default(), ZoomWidth::Fitted);
         let success: SuccessResponse = serde_json::from_str(&response).unwrap();
         let ResponseResult::PaneZoom { zoom } = success.result else {
             panic!("expected pane zoom response");
@@ -3958,6 +3965,7 @@ mod tests {
                 pane_id: Some(root_public.clone()),
                 mode: PaneZoomMode::Toggle,
             },
+            ZoomWidth::Fitted,
         );
 
         let success: SuccessResponse = serde_json::from_str(&response).unwrap();
@@ -3989,6 +3997,7 @@ mod tests {
                 pane_id: Some(root_public.clone()),
                 mode: PaneZoomMode::On,
             },
+            ZoomWidth::Fitted,
         );
         let success: SuccessResponse = serde_json::from_str(&response).unwrap();
         let ResponseResult::PaneZoom { zoom } = success.result else {
@@ -4005,6 +4014,7 @@ mod tests {
                 pane_id: Some(root_public.clone()),
                 mode: PaneZoomMode::On,
             },
+            ZoomWidth::Fitted,
         );
         let success: SuccessResponse = serde_json::from_str(&response).unwrap();
         let ResponseResult::PaneZoom { zoom } = success.result else {
@@ -4022,6 +4032,7 @@ mod tests {
                 pane_id: Some(root_public),
                 mode: PaneZoomMode::Off,
             },
+            ZoomWidth::Fitted,
         );
         let success: SuccessResponse = serde_json::from_str(&response).unwrap();
         let ResponseResult::PaneZoom { zoom } = success.result else {
@@ -4038,6 +4049,7 @@ mod tests {
                 pane_id: None,
                 mode: PaneZoomMode::Off,
             },
+            ZoomWidth::Fitted,
         );
         let success: SuccessResponse = serde_json::from_str(&response).unwrap();
         let ResponseResult::PaneZoom { zoom } = success.result else {
@@ -4067,6 +4079,7 @@ mod tests {
                 pane_id: Some(right_public),
                 mode: PaneZoomMode::On,
             },
+            ZoomWidth::Fitted,
         );
 
         let success: SuccessResponse = serde_json::from_str(&response).unwrap();
@@ -4084,6 +4097,36 @@ mod tests {
             EventData::LayoutUpdated { layout }
                 if layout.focused_pane_id == app.public_pane_id(0, right).unwrap()
         ));
+    }
+
+    #[test]
+    fn api_pane_zoom_full_widens_a_fitted_zoom_and_toggles_a_full_one() {
+        let mut app = app_with_linked_worktree();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+        let mut send = |method: &str| {
+            let request: crate::api::schema::Request = serde_json::from_value(serde_json::json!({
+                "id": "req",
+                "method": method,
+                "params": {},
+            }))
+            .unwrap();
+            let response = app.handle_api_request(request);
+            let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+            let ResponseResult::PaneZoom { zoom } = success.result else {
+                panic!("expected pane zoom response to {method}");
+            };
+            let tab = &app.state.workspaces[0].tabs[0];
+            assert_eq!(zoom.zoomed, tab.zoomed);
+            tab.zoomed.then_some(tab.zoom_width)
+        };
+
+        assert_eq!(send("pane.zoom"), Some(ZoomWidth::Fitted));
+        assert_eq!(send("pane.zoom_full"), Some(ZoomWidth::Full));
+        assert_eq!(send("pane.zoom_full"), None);
+        assert_eq!(send("pane.zoom_full"), Some(ZoomWidth::Full));
+        assert_eq!(send("pane.zoom"), None);
     }
 
     #[test]

@@ -1182,13 +1182,30 @@ impl ClientShellState {
                     pane_id: pane_id.clone(),
                 }))
             }
-            // A server without margins zooms every pane to the full width, so
-            // its plain toggle is already what zoom_full asks for.
-            KeybindAction::Zoom | KeybindAction::ZoomFull => {
-                Some(Method::PaneZoom(PaneZoomParams {
+            KeybindAction::Zoom => Some(Method::PaneZoom(PaneZoomParams {
+                pane_id: focused_pane,
+                mode: PaneZoomMode::Toggle,
+            })),
+            // pane.zoom_full is sent only to a server that lists it. One that
+            // does not predates zoom margins, so its plain toggle already zooms
+            // to the full width. An endpoint with no method list is treated
+            // as such an older server rather than probed.
+            KeybindAction::ZoomFull => {
+                let params = PaneZoomParams {
                     pane_id: focused_pane,
                     mode: PaneZoomMode::Toggle,
-                }))
+                };
+                let advertised = self
+                    .endpoints
+                    .iter()
+                    .find(|endpoint| endpoint.endpoint_id == self.active_endpoint_id)
+                    .and_then(|endpoint| endpoint.methods.as_ref())
+                    .is_some_and(|methods| methods.contains("pane.zoom_full"));
+                Some(if advertised {
+                    Method::PaneZoomFull(params)
+                } else {
+                    Method::PaneZoom(params)
+                })
             }
             KeybindAction::ClearPane => Some(Method::PaneClear(PaneTarget {
                 pane_id: focused_pane?,

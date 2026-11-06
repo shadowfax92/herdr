@@ -5758,6 +5758,23 @@
           "type": "object"
         },
         {
+          "description": "`pane.zoom` at the full tab width, without the `[ui]` zoom margins.\nA separate method so `pane.zoom`'s published shape stays frozen.",
+          "properties": {
+            "method": {
+              "const": "pane.zoom_full",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneZoomParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
           "properties": {
             "method": {
               "const": "pane.layout",

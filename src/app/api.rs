@@ -16,6 +16,7 @@ mod worktrees;
 
 use super::{api_helpers::pane_agent_status, App, Mode, OverlayPaneState, ToastKind};
 use crate::events::AppEvent;
+use crate::layout::ZoomWidth;
 
 const API_NOTIFICATION_RATE_LIMIT: Duration = Duration::from_secs(1);
 #[cfg(windows)]
@@ -1151,7 +1152,12 @@ impl App {
             Method::PaneSplit(params) => return self.handle_pane_split(request.id, params),
             Method::PaneSwap(params) => return self.handle_pane_swap(request.id, params),
             Method::PaneMove(params) => return self.handle_pane_move(request.id, params),
-            Method::PaneZoom(params) => return self.handle_pane_zoom(request.id, params),
+            Method::PaneZoom(params) => {
+                return self.handle_pane_zoom(request.id, params, ZoomWidth::Fitted);
+            }
+            Method::PaneZoomFull(params) => {
+                return self.handle_pane_zoom(request.id, params, ZoomWidth::Full);
+            }
             Method::PaneLayout(params) => return self.handle_pane_layout(request.id, params),
             Method::PaneProcessInfo(params) => {
                 return self.handle_pane_process_info(request.id, params);

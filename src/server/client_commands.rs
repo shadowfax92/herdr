@@ -35,6 +35,9 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "pane.split",
     "pane.swap",
     "pane.zoom",
+    // Additive: the client sends it only to a server that lists it, and
+    // falls back to pane.zoom (see `KeybindAction::ZoomFull`).
+    "pane.zoom_full",
     "product_announcement.dismiss",
     "release_notes.dismiss",
     // Additive methods; the local client sends them to Local even while another
@@ -303,6 +306,10 @@ mod tests {
         assert_eq!(
             actual.remove("pane.link.resolve").as_deref(),
             Some("f5e4a3e01453ae7b188f127ce951c12c20e0bebcc17cc364eeb6d1a01fd5bf81")
+        );
+        assert_eq!(
+            actual.remove("pane.zoom_full").as_deref(),
+            Some("278748dc69526efbb2b69702ba47a3866b203f08c27fae03b5b947b86be7f1e3")
         );
         assert_eq!(
             actual.remove("scope.get").as_deref(),

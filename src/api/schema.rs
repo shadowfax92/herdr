@@ -167,6 +167,10 @@ pub enum Method {
     PaneMove(PaneMoveParams),
     #[serde(rename = "pane.zoom")]
     PaneZoom(PaneZoomParams),
+    /// `pane.zoom` at the full tab width, without the `[ui]` zoom margins.
+    /// A separate method so `pane.zoom`'s published shape stays frozen.
+    #[serde(rename = "pane.zoom_full")]
+    PaneZoomFull(PaneZoomParams),
     #[serde(rename = "pane.layout")]
     PaneLayout(PaneLayoutParams),
     #[serde(rename = "pane.process_info")]
