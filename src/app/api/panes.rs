@@ -3952,7 +3952,7 @@ mod tests {
     }
 
     #[test]
-    fn api_pane_zoom_single_pane_returns_noop() {
+    fn api_pane_zoom_full_of_a_single_pane_returns_noop() {
         let mut app = app_with_linked_worktree();
         app.state.active = Some(0);
         app.state.selected = 0;
@@ -3965,7 +3965,7 @@ mod tests {
                 pane_id: Some(root_public.clone()),
                 mode: PaneZoomMode::Toggle,
             },
-            ZoomWidth::Fitted,
+            ZoomWidth::Full,
         );
 
         let success: SuccessResponse = serde_json::from_str(&response).unwrap();

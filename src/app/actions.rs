@@ -853,16 +853,8 @@ impl AppState {
             .workspaces
             .get_mut(ws_idx)
             .and_then(|ws| ws.tabs.get_mut(tab_idx))?;
-        if tab.layout.pane_count() <= 1 {
-            return Some(PaneZoomOutcome {
-                changed: false,
-                focus_changed,
-                reason: Some(PaneZoomNoopReason::SinglePane),
-                zoomed: tab.zoomed,
-            });
-        }
-
-        let next = match command.next_zoom(tab.zoomed.then_some(tab.zoom_width)) {
+        let current = tab.zoomed.then_some(tab.zoom_width);
+        let next = match command.next_zoom(current) {
             Ok(next) => next,
             Err(reason) => {
                 return Some(PaneZoomOutcome {
@@ -873,6 +865,20 @@ impl AppState {
                 });
             }
         };
+        // A lone pane still zooms Fitted, because on a wide client the
+        // margins centre it, which is the point of the zoom. A Full zoom of a
+        // lone pane would cover exactly the area it already has, so it stays
+        // a no-op. A split or a close back to one pane clears the zoom
+        // (`Tab::split_pane_with_runtime`, `Tab::detach_pane`), so a one-pane
+        // zoom never outlives the layout it was made for.
+        if tab.layout.pane_count() <= 1 && current.is_none() && next == Some(ZoomWidth::Full) {
+            return Some(PaneZoomOutcome {
+                changed: false,
+                focus_changed,
+                reason: Some(PaneZoomNoopReason::SinglePane),
+                zoomed: tab.zoomed,
+            });
+        }
 
         tab.zoomed = next.is_some();
         if let Some(width) = next {
@@ -4391,10 +4397,21 @@ mod tests {
     }
 
     #[test]
-    fn toggle_zoom_single_pane_noop() {
+    fn a_single_pane_zooms_fitted_and_back() {
         let mut state = app_with_workspaces(&["test"]);
-        state.toggle_zoom();
-        assert!(!state.workspaces[0].zoomed);
+        assert_eq!(
+            zoom_after(&mut state, PaneZoomCommand::Toggle(ZoomWidth::Fitted)),
+            Some(ZoomWidth::Fitted)
+        );
+        assert_eq!(
+            zoom_after(&mut state, PaneZoomCommand::Toggle(ZoomWidth::Full)),
+            Some(ZoomWidth::Full),
+            "zoom_full widens a lone pane's fitted zoom"
+        );
+        assert_eq!(
+            zoom_after(&mut state, PaneZoomCommand::Toggle(ZoomWidth::Fitted)),
+            None
+        );
     }
 
     /// Applies `command` to the focused pane and returns the tab's zoom after.
