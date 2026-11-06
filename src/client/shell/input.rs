@@ -701,7 +701,11 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return None;
                 }
-                self.focused_pane_id().map(ClientInputTarget::Pane)
+                let pane_id = self.focused_pane_id()?;
+                if self.apply_agent_key_rule(&pane_id, key, outcome) {
+                    return None;
+                }
+                Some(ClientInputTarget::Pane(pane_id))
             }
             ClientShellMode::Prefix => {
                 let return_mode = if self.copy_mode.as_ref().is_some_and(|copy_mode| {
@@ -756,6 +760,73 @@ impl ClientShellState {
                 None
             }
         }
+    }
+
+    /// Agent key rules (`[agent_key_rules]`), the last owner of a Terminal-mode
+    /// key before the focused pane. Every overlay, popup and other mode
+    /// returned earlier, and herdr's own bindings and the prefix were checked
+    /// just before, so herdr's keys always win and a rule only ever sees a key
+    /// herdr was about to forward. Copy mode, copy hints and the literal prefix
+    /// (the prefix pressed twice, sent from the Prefix arm) never come here.
+    ///
+    /// A matched key is herdr's, exactly like a bound key. The caller returns
+    /// no target, so `handle_key` records a consumed press: its repeats are
+    /// reprocessed through `route_key_press` and land here again, and its
+    /// release stays with herdr. That is why a remap sends a whole keystroke
+    /// of its own on the press and on every reprocessed repeat: the pane never
+    /// saw the user's press, so the user's release has nothing there to pair
+    /// with, and the lease table stays the only owner of hold state.
+    ///
+    /// The agent comes from the same snapshot as the focused pane id, as
+    /// `herdr agent list` names it. Before detection identifies the agent, and
+    /// once it has exited, the pane has no label and keeps every key, so
+    /// ctrl+d still reaches a plain shell as EOF.
+    ///
+    /// Returns true when a rule took the key.
+    fn apply_agent_key_rule(
+        &mut self,
+        pane_id: &str,
+        key: &crate::input::TerminalKey,
+        outcome: &mut ClientShellInput,
+    ) -> bool {
+        // Without rules this branch is the whole cost of the feature.
+        if self.config.agent_key_rules.is_empty() {
+            return false;
+        }
+        let Some(rule) = self
+            .snapshot
+            .as_deref()
+            .and_then(|snapshot| {
+                snapshot
+                    .agents
+                    .iter()
+                    .find(|agent| agent.pane_id == pane_id)
+            })
+            .and_then(|agent| agent.agent.as_deref())
+            .and_then(|label| self.config.agent_key_rules.find(label, key))
+        else {
+            return false;
+        };
+        match rule.action {
+            crate::config::KeyAction::Drop => {
+                // Once per keystroke: a held key's repeats drop quietly, so the
+                // notice does not churn. A silently swallowed key would look
+                // like a hung pane.
+                if key.kind == KeyEventKind::Press {
+                    let notice = format!(
+                        "{} is disabled for {}",
+                        crate::config::format_key_combo(rule.key),
+                        crate::detect::agent_label(rule.agent)
+                    );
+                    outcome.repaint |=
+                        self.show_clipboard_notice(&notice, std::time::Instant::now());
+                }
+            }
+            crate::config::KeyAction::Remap(substitute) => {
+                super::push_key_stroke(pane_id.to_owned(), substitute, 1, outcome);
+            }
+        }
+        true
     }
 
     pub(super) fn copy_or_terminal_mode(&self) -> ClientShellMode {

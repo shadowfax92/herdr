@@ -20,9 +20,10 @@ pub use self::{
         upsert_section_value,
     },
     keybinds::{
-        format_prefix_combos, normalize_key_combo, terminal_key_matches_combo, ActionKeybinds,
-        BindingConfig, CommandKeybindConfig, CommandKeybindMode, CustomCommandAction,
-        CustomCommandKeybind, IndexedKeybind, KeyCombo, Keybinds, LiveKeybindConfig,
+        format_key_combo, format_prefix_combos, normalize_key_combo, terminal_key_matches_combo,
+        ActionKeybinds, BindingConfig, CommandKeybindConfig, CommandKeybindMode,
+        CustomCommandAction, CustomCommandKeybind, IndexedKeybind, KeyCombo, Keybinds,
+        LiveKeybindConfig,
     },
     model::{
         validated_sidebar_bounds, AgentPanelSortConfig, Config, ConfigReloadReport,
@@ -45,7 +46,7 @@ pub use self::agent_key_rules::AgentKeyRulesConfig;
 pub use self::copy_hints::CopyHintsConfig;
 pub use self::landing_glow::LandingGlowConfig;
 
-pub(crate) use self::agent_key_rules::AgentKeyRules;
+pub(crate) use self::agent_key_rules::{AgentKeyRules, KeyAction};
 pub(crate) use self::keybinds::parse_key_combo;
 pub(crate) use self::write::{update_file_at, write_edit, ConfigEdit};
 pub(crate) use self::{

@@ -128,6 +128,32 @@ fn push_target_event(
     }
 }
 
+/// Sends `count` whole keystrokes of `key` to a pane, as if typed: a press and
+/// its release each. This is how herdr answers a key it consumed with a
+/// different key, as copy mode does when it pages a fullscreen app and an
+/// agent key rule does when it remaps. The user's own release stays with
+/// herdr's consumed lease, so the substitute's release is synthesized here, in
+/// the same batch as its press, and the server is left holding nothing. Panes
+/// without key-release reporting encode the release as nothing.
+fn push_key_stroke(
+    pane_id: String,
+    (code, modifiers): crate::config::KeyCombo,
+    count: u32,
+    outcome: &mut ClientShellInput,
+) {
+    let press = crate::input::TerminalKey::new(code, modifiers);
+    let release = press
+        .clone()
+        .with_kind(crossterm::event::KeyEventKind::Release);
+    for _ in 0..count {
+        for key in [press.clone(), release.clone()] {
+            if let Some(event) = ClientPaneInputEvent::from_terminal_key(key) {
+                push_target_event(ClientInputTarget::Pane(pane_id.clone()), event, outcome);
+            }
+        }
+    }
+}
+
 fn contains(rect: Rect, point: (u16, u16)) -> bool {
     rect.width > 0
         && rect.height > 0

@@ -152,8 +152,9 @@ impl ClientShellConfig {
             right_click_passthrough_modifiers: config.ui.right_click_passthrough_modifiers(),
             redraw_on_focus_gained: config.ui.redraw_on_focus_gained,
             landing_glow: config.ui.landing_glow,
-            // The startup diagnostics for this table came from Config::load.
+            // The startup diagnostics for these tables came from Config::load.
             copy_hint_rules: crate::copy_hints::HintRules::compile(&config.copy_hints).0,
+            agent_key_rules: crate::config::AgentKeyRules::compile(&config.agent_key_rules).0,
             switch_ascii_input_source_in_prefix: config
                 .experimental
                 .switch_ascii_input_source_in_prefix,
@@ -391,6 +392,13 @@ impl ClientShellConfig {
         // hint session keeps the labels it was captured with.
         if !invalid_section("copy_hints") {
             self.copy_hint_rules = crate::copy_hints::HintRules::compile(&config.copy_hints).0;
+        }
+        // Also reported by load_live_config. Unlike [keys], this is not gated on
+        // keybinding_source: rules have no server half, and the keymap profile
+        // a server ships under --remote-keybindings server carries only [keys],
+        // so the person at this keyboard keeps their rules on every endpoint.
+        if !invalid_section("agent_key_rules") {
+            self.agent_key_rules = crate::config::AgentKeyRules::compile(&config.agent_key_rules).0;
         }
         if !invalid_section("experimental") {
             self.switch_ascii_input_source_in_prefix =

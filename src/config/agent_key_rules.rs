@@ -25,13 +25,6 @@
 //! The section is a tuple struct on purpose: `scripts/config_reference_check.py`
 //! then treats `agent_key_rules` as one documented key instead of an
 //! open-ended table of tables.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the client's key routing, the only reader of compiled rules, lands in a later commit"
-    )
-)]
 
 use serde::Deserialize;
 

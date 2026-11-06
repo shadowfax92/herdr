@@ -641,7 +641,7 @@ impl ClientShellState {
         } else {
             KeyCode::PageDown
         };
-        push_app_key_stroke(pane_id, code, 1, outcome);
+        super::push_key_stroke(pane_id, (code, KeyModifiers::empty()), 1, outcome);
         outcome.repaint = true;
         true
     }
@@ -918,9 +918,9 @@ impl ClientShellState {
         // scrolled up. Only while the pane is still on the alternate screen; once
         // the app has quit, these keys would reach the shell instead.
         if copy_mode.alternate_screen_active && copy_mode.app_pages_up > 0 {
-            push_app_key_stroke(
+            super::push_key_stroke(
                 copy_mode.pane_id.clone(),
-                KeyCode::PageDown,
+                (KeyCode::PageDown, KeyModifiers::empty()),
                 copy_mode.app_pages_up,
                 outcome,
             );
@@ -932,23 +932,5 @@ impl ClientShellState {
         );
         self.mode = ClientShellMode::Terminal;
         outcome.repaint = true;
-    }
-}
-
-/// Sends `count` full keystrokes of `code` to a pane, as if typed. Copy mode
-/// consumed the user's own key, so the press and its release are both
-/// synthesized here; panes without key-release reporting encode the release
-/// as nothing.
-fn push_app_key_stroke(pane_id: String, code: KeyCode, count: u32, outcome: &mut ClientShellInput) {
-    let press = crate::input::TerminalKey::new(code, KeyModifiers::empty());
-    let release = press
-        .clone()
-        .with_kind(crossterm::event::KeyEventKind::Release);
-    for _ in 0..count {
-        for key in [press.clone(), release.clone()] {
-            if let Some(event) = ClientPaneInputEvent::from_terminal_key(key) {
-                super::push_target_event(ClientInputTarget::Pane(pane_id.clone()), event, outcome);
-            }
-        }
     }
 }

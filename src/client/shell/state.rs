@@ -48,6 +48,9 @@ pub(crate) struct ClientShellConfig {
     pub(super) landing_glow: crate::config::LandingGlowConfig,
     /// `[copy_hints]` compiled at load and on live reload, never per scan.
     pub(super) copy_hint_rules: crate::copy_hints::HintRules,
+    /// `[agent_key_rules]` compiled at load and on live reload, never per key.
+    /// Always the local config's, whichever keybinding source is active.
+    pub(super) agent_key_rules: crate::config::AgentKeyRules,
     pub(super) switch_ascii_input_source_in_prefix: bool,
     pub(super) local_config_path: std::path::PathBuf,
     pub(super) preferences_path: Option<std::path::PathBuf>,
