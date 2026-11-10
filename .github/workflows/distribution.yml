@@ -70,6 +70,13 @@ jobs:
           python3 scripts/agent_detection_manifest_check.py --require-published
           python3 scripts/config_reference_check.py
           python3 scripts/docs_translation_parity.py --docs-root docs/next/website/src/content/docs
+
+      # Published snapshots name upstream release tags, which this private fork
+      # does not publish. Current catalog/config/docs validation still runs above;
+      # publication provenance is checked in the repository that owns those tags.
+      - name: Validate published documentation snapshots
+        if: github.repository == 'herdrdev/herdr'
+        run: |
           node scripts/docs/versions.mjs check
           node scripts/docs/preview.mjs check
 
