@@ -715,7 +715,12 @@ async function runNativeHook(
   options: { boundary?: boolean; boundaryTimeout?: boolean; slowFirstRead?: boolean } = {},
 ) {
   const shellPid = options.boundary === false ? undefined : 90;
-  const requests = await startRecordingServer(`${agent}-${runtime}`, shellPid, options.boundaryTimeout);
+  // PowerShell reports through the CLI, whose argv we capture below. It needs
+  // no socket listener; the real Unix socket exercises the shell asset only.
+  const requests = runtime === "sh"
+    ? await startRecordingServer(`${agent}-${runtime}`, shellPid, options.boundaryTimeout)
+    : [];
+  if (runtime === "ps1") configureIntegrationEnvironment("unused-hook-test.sock");
   const directory = await mkdtemp(join(tmpdir(), "herdr-hook-test-"));
   hookDirectories.push(directory);
   const env = { ...process.env };
