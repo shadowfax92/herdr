@@ -14,6 +14,9 @@ use crate::api::schema::{AgentPromptParams, NotificationShowParams, ResponseResu
 use crate::terminal::prompt_gate::{AgentReadiness, GateAction, HumanInput, PromptId};
 use crate::terminal::TerminalId;
 
+/// An accepted request's payload and caller ownership, kept outside the pure
+/// gate. An absent response channel means a no-wait caller already received its
+/// held acknowledgement; later failures must reach the human notification lane.
 struct PendingPrompt {
     validated: ValidatedAgentPrompt,
     params: AgentPromptParams,
@@ -26,6 +29,7 @@ struct PendingPrompt {
 pub(crate) struct PromptDelivery {
     next_id: PromptId,
     pending: HashMap<PromptId, PendingPrompt>,
+    // Index only held work so an idle session never scans its pane fleet.
     terminals: HashSet<TerminalId>,
     pub(crate) notifications: Vec<NotificationShowParams>,
 }
@@ -48,6 +52,7 @@ impl App {
     ) {
         self.configure_prompt_gate(terminal_id);
         if let Some(terminal) = self.state.terminals.get_mut(terminal_id) {
+            // Dialog replies do not imply a draft in the prompt composer.
             if terminal.state != crate::detect::AgentState::Blocked {
                 for input in inputs {
                     terminal.prompt_gate.human_input(*input, now);

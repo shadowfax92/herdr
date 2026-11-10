@@ -844,6 +844,7 @@ fn agent_prompt(args: &[String]) -> std::io::Result<i32> {
                 until,
                 timeout_ms,
                 submission_deadline: None,
+                submission_baseline: None,
             }),
         }),
     })?;

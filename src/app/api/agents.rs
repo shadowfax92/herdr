@@ -105,6 +105,20 @@ impl App {
         respond_to: std::sync::mpsc::Sender<String>,
         owned_prompt: Option<(String, String)>,
     ) {
+        if let Some(baseline) = params
+            .wait
+            .as_ref()
+            .and_then(|wait| wait.submission_baseline.as_ref())
+        {
+            // Both the held and immediate paths arrive here on the server loop.
+            // Capture before enqueue, not when the caller originally requested
+            // the prompt: pre-release human activity must not complete its wait.
+            let _ = baseline.set(crate::api::schema::AgentPromptSubmissionBaseline {
+                event_sequence: self.event_hub.current_sequence(),
+                started_working: validated.agent.agent_status
+                    == crate::api::schema::AgentStatus::Working,
+            });
+        }
         // Start the completion waiter before submitting, so a refused thread
         // fails the request while nothing has been sent yet.
         let (handoff_tx, handoff_rx) = std::sync::mpsc::channel::<(
@@ -467,6 +481,8 @@ impl App {
     }
 }
 
+/// Target snapshot valid for synchronous enqueue on the server loop. Held
+/// delivery revalidates terminal identity before using its current pane address.
 pub(crate) struct ValidatedAgentPrompt {
     pub(crate) id: String,
     pub(crate) ws_idx: usize,

@@ -31,6 +31,14 @@ pub struct AgentWaitParams {
     pub timeout_ms: Option<u64>,
 }
 
+/// In-process correlation handoff from the app's actual PTY enqueue point to
+/// the socket waiter. This never enters JSON or a client endpoint codec.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AgentPromptSubmissionBaseline {
+    pub event_sequence: u64,
+    pub started_working: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentPromptWaitOptions {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -40,6 +48,10 @@ pub struct AgentPromptWaitOptions {
     #[serde(skip)]
     #[schemars(skip)]
     pub(crate) submission_deadline: Option<std::time::Instant>,
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub(crate) submission_baseline:
+        Option<std::sync::Arc<std::sync::OnceLock<AgentPromptSubmissionBaseline>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

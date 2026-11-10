@@ -135,6 +135,7 @@ async fn prompt_hold_wait_timeout_withdraws_without_typing() {
             until: Vec::new(),
             timeout_ms: Some(1000),
             submission_deadline: Some(deadline),
+            submission_baseline: None,
         }),
     );
     assert!(response.try_recv().is_err());
@@ -292,5 +293,74 @@ async fn prompt_hold_owned_submission_failure_returns_to_notification_lane() {
                 .body
                 .as_ref()
                 .is_some_and(|text| text.contains("owned-text-write-failed"))));
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn prompt_hold_wait_publishes_its_baseline_only_at_release() {
+    let (mut server, mut input, target, _) = prompt_test_server();
+    human(
+        &mut server,
+        &target,
+        ClientPaneInputEvent::TextCommit("abc".to_owned()),
+    );
+    input.try_recv().unwrap();
+    let baseline = std::sync::Arc::new(std::sync::OnceLock::new());
+    let response = prompt(
+        &mut server,
+        &target,
+        "wait-for-new-activity",
+        Some(AgentPromptWaitOptions {
+            until: Vec::new(),
+            timeout_ms: None,
+            submission_deadline: None,
+            submission_baseline: Some(std::sync::Arc::clone(&baseline)),
+        }),
+    );
+    assert!(baseline.get().is_none(), "holding is not submission");
+    for status in [
+        crate::api::schema::AgentStatus::Working,
+        crate::api::schema::AgentStatus::Idle,
+    ] {
+        server
+            .app
+            .event_hub
+            .push(crate::api::schema::EventEnvelope {
+                event: crate::api::schema::EventKind::PaneAgentStatusChanged,
+                data: crate::api::schema::EventData::PaneAgentStatusChanged {
+                    pane_id: target.clone(),
+                    workspace_id: "w1".into(),
+                    agent_status: status,
+                    agent: Some("opencode".into()),
+                    title: None,
+                    display_agent: None,
+                    state_labels: Default::default(),
+                },
+            });
+    }
+    human(&mut server, &target, enter());
+    input.try_recv().unwrap();
+    let release_sequence = server.app.event_hub.current_sequence();
+    server
+        .app
+        .poll_due_prompt_gates(server.app.next_prompt_gate_deadline().unwrap());
+    let baseline = baseline
+        .get()
+        .expect("release publishes correlation before enqueue");
+    assert_eq!(baseline.event_sequence, release_sequence);
+    assert!(!baseline.started_working);
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), input.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .as_ref(),
+        b"wait-for-new-activity"
+    );
+    tokio::time::timeout(Duration::from_secs(1), input.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    response.recv_timeout(Duration::from_secs(1)).unwrap();
     shutdown_test_runtimes(&mut server);
 }
