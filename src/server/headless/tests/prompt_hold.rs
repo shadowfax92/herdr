@@ -244,7 +244,10 @@ async fn prompt_hold_graceful_shutdown_reports_acknowledged_text_before_disconne
                 assert!(body.contains("server shutdown"));
                 loss_notice = true;
             }
-            ServerMessage::ServerShutdown { .. } => {
+            ServerMessage::ServerShutdown { reason } => {
+                let reason = reason.unwrap();
+                assert!(reason.contains("must-not-disappear-on-stop"));
+                assert!(reason.contains("1 held prompt(s) undelivered"));
                 assert!(loss_notice, "held text must be surfaced before disconnect");
                 break;
             }
@@ -363,4 +366,23 @@ async fn prompt_hold_wait_publishes_its_baseline_only_at_release() {
         .unwrap();
     response.recv_timeout(Duration::from_secs(1)).unwrap();
     shutdown_test_runtimes(&mut server);
+}
+
+#[test]
+fn prompt_hold_shutdown_reason_is_bounded_and_terminal_safe() {
+    let notice = crate::api::schema::NotificationShowParams {
+        title: "Prompt undeliverable".into(),
+        body: Some("\x1b[31msecret\ntext".repeat(100)),
+        position: None,
+        sound: Default::default(),
+    };
+    let reason = crate::server::headless::notifications::prompt_shutdown_reason(&vec![notice; 100]);
+    assert!(reason.contains("100 held prompt(s) undelivered"));
+    assert!(reason.contains("see server log"));
+    assert!(!reason.contains('\x1b') && !reason.contains('\n'));
+    assert!(reason.chars().count() < 4300);
+    assert_eq!(
+        crate::server::headless::notifications::prompt_shutdown_reason(&[]),
+        "server is shutting down"
+    );
 }

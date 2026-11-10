@@ -321,15 +321,19 @@ impl HeadlessServer {
         // Notify while clients are still connected. Held no-wait requests have
         // already been acknowledged, so dropping their text here would be silent
         // data loss even though the server itself exits gracefully.
+        let loss_notice_start = self.app.prompt_delivery.notifications.len();
         self.app
             .discard_all_prompt_gates("server shutdown while prompt was held");
+        let shutdown_reason = super::notifications::prompt_shutdown_reason(
+            &self.app.prompt_delivery.notifications[loss_notice_start..],
+        );
         self.flush_prompt_notifications();
 
         self.shutting_down = true;
 
         // Clear client-local host graphics, then send ServerShutdown to all connected clients.
         let shutdown_msg = ServerMessage::ServerShutdown {
-            reason: Some("server is shutting down".to_owned()),
+            reason: Some(shutdown_reason),
         };
         self.send_to_all_clients(shutdown_msg);
 
