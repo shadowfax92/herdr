@@ -188,6 +188,17 @@ fn apply_scroll(
 /// treating a newline inside pasted text as submission would recreate the splice.
 pub(super) fn classify_attach_input(data: &[u8]) -> crate::terminal::prompt_gate::HumanInput {
     use crate::terminal::prompt_gate::HumanInput;
+    if let Some(key) = std::str::from_utf8(data)
+        .ok()
+        .and_then(crate::input::parse_terminal_key_sequence)
+    {
+        // Direct attaches preserve the child's keyboard protocol. In Kitty
+        // report-all mode Enter and key releases are CSI-u, not raw CR/bytes.
+        return crate::terminal::prompt_gate::classify(
+            &crate::raw_input::RawInputEvent::Key(key),
+            false,
+        );
+    }
     match data {
         b"\r" => HumanInput::Clear,
         b"" | b"\x1b" => HumanInput::Neutral,
@@ -387,6 +398,30 @@ pub(super) fn apply_client_terminal_input_events(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prompt_hold_attach_classifies_complete_encoded_keys() {
+        use crate::terminal::prompt_gate::HumanInput::{Clear, Edit, Neutral};
+        for (bytes, expected) in [
+            (b"\r".as_slice(), Clear),
+            (b"\n", Edit),
+            (b"\x1b\r", Edit),
+            (b"\x1b[13;1;13u", Clear),
+            (b"\x1b[13;1:2u", Clear),
+            (b"\x1b[13;1:3u", Neutral),
+            (b"\x1b[97;1:3u", Neutral),
+            (b"\x1b[13;2u", Edit),
+            (b"\x1b[13;3u", Edit),
+            (b"\x1b[99;5u", Edit),
+            (b"\x03", Edit),
+            (b"\x1b", Neutral),
+            (b"abc\r", Edit),
+            (b"\x1b[13;1uabc", Edit),
+            (b"\x1b[200~abc\r\x1b[201~", Edit),
+        ] {
+            assert_eq!(classify_attach_input(bytes), expected, "{bytes:?}");
+        }
+    }
 
     #[tokio::test]
     async fn terminal_attach_stale_geometry_falls_back_to_the_canonical_cell() {
