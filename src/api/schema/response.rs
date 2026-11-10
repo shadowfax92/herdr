@@ -132,6 +132,9 @@ pub enum ResponseResult {
     PaneList {
         panes: Vec<PaneInfo>,
     },
+    PaneUnflag {
+        changed: bool,
+    },
     PaneCurrent {
         pane: PaneInfo,
     },

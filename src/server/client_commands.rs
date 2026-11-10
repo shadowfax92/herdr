@@ -23,6 +23,7 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "pane.copy_motion",
     "pane.copy_search",
     "pane.edit_scrollback",
+    "pane.flag",
     "pane.focus",
     "pane.focus_direction",
     "pane.input.set",
@@ -34,6 +35,7 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "pane.selection.read",
     "pane.split",
     "pane.swap",
+    "pane.unflag",
     "pane.zoom",
     // Additive: the client sends it only to a server that lists it, and
     // falls back to pane.zoom (see `KeybindAction::ZoomFull`).
@@ -298,6 +300,15 @@ mod tests {
         )))
         .expect("endpoint method shape fixture");
         let mut actual = endpoint_method_shape_digests();
+        // New capabilities have independent shapes; the published V1 map stays frozen.
+        assert_eq!(
+            actual.remove("pane.flag").as_deref(),
+            Some("1f292595a714e32b0ddb4b4fc50497224e60f900f2a9ca769fc95b64503bed79")
+        );
+        assert_eq!(
+            actual.remove("pane.unflag").as_deref(),
+            Some("3692d68ba4e17cffe6837a6766c30fe0d902c8e88dec2485db0986b2ac78c995")
+        );
         // Freeze additive methods separately without rewriting the published fixture.
         assert_eq!(
             actual.remove("pane.clear").as_deref(),

@@ -163,6 +163,43 @@ impl App {
         encode_success(id, ResponseResult::PaneCurrent { pane })
     }
 
+    pub(super) fn handle_pane_flag(
+        &mut self,
+        id: String,
+        params: crate::api::schema::PaneFlagParams,
+    ) -> String {
+        let Some((ws, pane)) = self.parse_pane_id(&params.pane_id) else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        if self.state.set_pane_flag(ws, pane, params.message).is_none() {
+            return encode_error(
+                id,
+                "flag_unavailable",
+                "terminal missing or flag sequence exhausted",
+            );
+        }
+        self.handle_pane_get(
+            id,
+            PaneTarget {
+                pane_id: params.pane_id,
+            },
+        )
+    }
+
+    pub(super) fn handle_pane_unflag(
+        &mut self,
+        id: String,
+        target: crate::api::schema::PaneUnflagParams,
+    ) -> String {
+        let Some((ws, pane)) = self.parse_pane_id(&target.pane_id) else {
+            return pane_not_found(id, &target.pane_id);
+        };
+        let Some(changed) = self.state.clear_pane_flag(ws, pane, target.expected_seq) else {
+            return pane_not_found(id, &target.pane_id);
+        };
+        encode_success(id, ResponseResult::PaneUnflag { changed })
+    }
+
     pub(super) fn handle_pane_get(&mut self, id: String, target: PaneTarget) -> String {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
             return pane_not_found(id, &target.pane_id);

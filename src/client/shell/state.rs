@@ -638,6 +638,9 @@ impl ClientShellOverlay {
 #[derive(Debug)]
 pub(super) enum PendingEndpointKind {
     Generic,
+    /// Passive acknowledgement of a visit, never an owner-requested action.
+    /// Its result must not create, replace, or reset endpoint notices.
+    AutomaticPaneUnflag,
     ProductAnnouncementDismiss {
         version: String,
         id: String,
@@ -1017,6 +1020,7 @@ pub(crate) struct ClientShellState {
     pub(super) endpoint_error: Option<String>,
     pub(super) endpoint_error_deadline: Option<std::time::Instant>,
     pub(super) dismissed_product_announcement: Option<(String, String)>,
+    pub(super) pane_flags: super::pane_flags::PaneFlags,
     pub(super) landing_glow: super::landing_glow::LandingGlow,
     /// The Local endpoint's projected focus/hide scope (`crate::scope`); `None`
     /// until one arrives or when Local cannot project one. Read it through
@@ -1220,6 +1224,7 @@ impl ClientShellState {
             endpoint_error_deadline: None,
             dismissed_product_announcement: None,
             landing_glow: Default::default(),
+            pane_flags: Default::default(),
             scope_projection: None,
             #[cfg(test)]
             scope_set_requests: Vec::new(),
@@ -1712,6 +1717,7 @@ impl ClientShellState {
             }
         }
         self.snapshot = Some(snapshot);
+        self.reconcile_pane_flag_visit(None);
         self.reconcile_pending_workspace_highlight();
         let pending_surface = self.pending_pane_surface.take();
         if let Some(surface) = pending_surface {
@@ -1943,6 +1949,7 @@ impl ClientShellState {
             .set_scene(std::mem::take(&mut surface.graphics));
         self.pane_surface = Some(surface);
         self.pane_surface_generation = self.active_snapshot_generation;
+        self.reconcile_pane_flag_visit(None);
         self.invalidate_link_hover();
         self.reconcile_copy_hints();
         self.resume_mobile_switcher_if_ready();
@@ -2050,6 +2057,7 @@ impl ClientShellState {
             .chain(self.selection_repaint_deadline)
             .chain(self.landing_glow.next_deadline())
             .chain(self.next_read_settle_deadline())
+            .chain(self.pane_flags.next_deadline())
             .min()
             .map(|deadline| deadline.saturating_duration_since(now).min(default))
             .unwrap_or(default)

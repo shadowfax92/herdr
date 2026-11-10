@@ -91,9 +91,10 @@ async fn attach_sends_the_scope_before_anything_else() {
     let controls = drain_controls(&shell);
     let kinds: Vec<&str> = controls.iter().map(|(kind, _)| kind.as_str()).collect();
     assert_eq!(
-        kinds[..3],
+        kinds[..4],
         [
             protocol::endpoint::SCOPE_PROJECTION_KIND,
+            protocol::endpoint::PANE_FLAGS_KIND,
             protocol::endpoint::AGENT_COMPLETIONS_KIND,
             protocol::endpoint::ENDPOINT_SNAPSHOT_KIND,
         ]
@@ -561,5 +562,125 @@ mod mirror {
         assert!(!changed);
         assert_eq!(response["error"]["code"], "connection_local_only");
         assert!(server.clients[&65].scope_mirror.is_none());
+    }
+}
+
+#[tokio::test]
+async fn pane_flags_projection_connect_change_and_api_optional_field() {
+    use api::schema::{EmptyParams, Method, PaneFlagParams, PaneListParams, PaneTarget};
+    let mut server = test_headless_server();
+    server.app.state.workspaces = vec![crate::workspace::Workspace::test_new("flags")];
+    server.app.state.active = Some(0);
+    server.app.state.ensure_test_terminals();
+    let pane = server.app.state.workspaces[0].focused_pane_id().unwrap();
+    let id = server.app.public_pane_id(0, pane).unwrap();
+    let (_, before) = api(
+        &mut server,
+        Method::PaneGet(PaneTarget {
+            pane_id: id.clone(),
+        }),
+    );
+    assert!(before["result"]["pane"].get("flag").is_none());
+    let (changed, response) = api(
+        &mut server,
+        Method::PaneFlag(PaneFlagParams {
+            pane_id: id.clone(),
+            message: Some(" ready\n ".into()),
+        }),
+    );
+    assert!(changed);
+    assert_eq!(response["result"]["pane"]["flag"]["message"], "ready");
+    let first = response["result"]["pane"]["flag"]["seq"].as_u64().unwrap();
+    let active = attach(&mut server, 901, true);
+    let inactive = attach(&mut server, 902, false);
+    let projected = |shell: &TestShell| -> Vec<protocol::endpoint::EndpointPaneFlags> {
+        drain_controls(shell)
+            .into_iter()
+            .filter(|(kind, _)| kind == protocol::endpoint::PANE_FLAGS_KIND)
+            .map(|(_, data)| serde_json::from_str(&data).unwrap())
+            .collect()
+    };
+    for shell in [&active, &inactive] {
+        let flags = projected(shell);
+        assert_eq!(flags.len(), 1);
+        assert_eq!(flags[0].flags[0].pane_id, id);
+        assert_eq!(flags[0].flags[0].flag.seq, first);
+    }
+    let (_, replaced) = api(
+        &mut server,
+        Method::PaneFlag(PaneFlagParams {
+            pane_id: id.clone(),
+            message: None,
+        }),
+    );
+    let second = replaced["result"]["pane"]["flag"]["seq"].as_u64().unwrap();
+    assert!(second > first);
+    server.render_and_stream();
+    for shell in [&active, &inactive] {
+        let flags = projected(shell);
+        assert_eq!(flags.len(), 1);
+        assert_eq!(flags[0].flags[0].flag.seq, second);
+    }
+    for method in [
+        Method::PaneList(PaneListParams::default()),
+        Method::SessionSnapshot(EmptyParams {}),
+    ] {
+        let (_, response) = api(&mut server, method);
+        let panes = response["result"]["panes"]
+            .as_array()
+            .or_else(|| response["result"]["snapshot"]["panes"].as_array())
+            .unwrap();
+        assert_eq!(panes[0]["flag"]["seq"], second);
+    }
+    let (_, stale_clear) = api(
+        &mut server,
+        Method::PaneUnflag(api::schema::PaneUnflagParams {
+            pane_id: id.clone(),
+            expected_seq: Some(first),
+        }),
+    );
+    assert_eq!(stale_clear["result"]["changed"], false);
+    let (_, current) = api(
+        &mut server,
+        Method::PaneGet(PaneTarget {
+            pane_id: id.clone(),
+        }),
+    );
+    assert_eq!(current["result"]["pane"]["flag"]["seq"], second);
+    let (_, matched_clear) = api(
+        &mut server,
+        Method::PaneUnflag(api::schema::PaneUnflagParams {
+            pane_id: id.clone(),
+            expected_seq: Some(second),
+        }),
+    );
+    assert_eq!(matched_clear["result"]["changed"], true);
+    // Put a flag back to exercise manual, unconditional idempotency too.
+    api(
+        &mut server,
+        Method::PaneFlag(PaneFlagParams {
+            pane_id: id.clone(),
+            message: None,
+        }),
+    );
+    for expected in [true, false] {
+        let (_, response) = api(
+            &mut server,
+            Method::PaneUnflag(api::schema::PaneUnflagParams {
+                pane_id: id.clone(),
+                expected_seq: None,
+            }),
+        );
+        assert_eq!(response["result"]["changed"], expected);
+    }
+    server.render_and_stream();
+    for shell in [&active, &inactive] {
+        assert!(projected(shell)[0].flags.is_empty());
+    }
+    let (_, response) = api(&mut server, Method::PaneGet(PaneTarget { pane_id: id }));
+    assert!(response["result"]["pane"].get("flag").is_none());
+    server.render_and_stream();
+    for shell in [&active, &inactive] {
+        assert!(projected(shell).is_empty());
     }
 }

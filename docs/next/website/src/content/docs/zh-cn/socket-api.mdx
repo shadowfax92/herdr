@@ -99,7 +99,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | 工作区 | `workspace.create`、`workspace.list`、`workspace.get`、`workspace.focus`、`workspace.rename`、`workspace.move`、`workspace.move_block`、`workspace.report_metadata`、`workspace.close` |
 | Worktree | `worktree.list`、`worktree.create`、`worktree.open`、`worktree.remove` |
 | 标签页 | `tab.create`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.close` |
-| 窗格 | `pane.split`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.zoom_full`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
+| 窗格 | `pane.split`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.zoom_full`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.flag`、`pane.unflag`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
 | 弹窗 | `popup.close` |
 | 布局 | `layout.export`、`layout.apply`、`layout.set_split_ratio` |
 | 智能体 | `agent.list`、`agent.get`、`agent.read`、`agent.explain`、`agent.send_keys`、`agent.prompt`、`agent.wait`、`agent.rename`、`agent.focus`、`agent.start` |
@@ -860,3 +860,11 @@ herdr agent wait w1:p1 --until blocked
 `agent prompt` 会在用户有未发送的草稿时暂缓提交。不带 `--wait` 时立即返回 `delivery: "held"`，由 Herdr 负责投递。`agent get` 和 `agent list` 仅在有保留提示时返回 `held_prompts`。按下无修饰键的 Enter 后，若 1500 ms 内没有新编辑，保留提示会在用户消息之后按到达顺序分别提交。`--wait --timeout` 包含保留时间；超时后撤回提示且不输入文本。期间变为 blocked 的代理会等到准备好再投递。投递前已完成的活动不会满足等待；与立即提交相同，投递时仍在进行的轮次完成后可能满足按状态匹配的等待。
 
 CLI 弹层可能消耗 Ctrl+C 而保留草稿，因此 Ctrl+C 保守地视为编辑。退格删空仍视为草稿。用于弹窗选择或续行的 Enter 可能被误判为清空。原始 pane 写入不受保护。最后一次编辑后 600 秒解除废弃草稿的保护。保留文本仅存于内存；关闭、交接或代理消失时会通知并记录日志，崩溃会丢失内容。正常关闭时，最终终端消息还会显示未投递提示的摘要，完整文本保留在服务器日志中。
+
+
+## 窗格标记
+
+`pane.flag { "pane_id": "…", "message": "review ready" }` 设置或替换标记。可选的 `message` 与元数据值使用相同规范化规则：去除首尾空白和控制字符并限制长度。响应中的 `pane` 包含 `flag: { "message": "review ready", "seq": 1 }`，每次设置都会递增服务器全局序号。`pane.unflag { "pane_id": "…" }` 幂等清除标记，仅在删除标记时返回 `changed: true`。`pane.get`、`pane.list` 和 `session.snapshot` 仅为已标记窗格包含可选的 `flag` 字段。标记也支持普通 shell 窗格，仅保存在内存中。客户端通过 `pane_flags` 能力和 `endpoint.pane-flags.v1` JSON 控制接收完整列表，并在访问时调用已公布的 `pane.unflag` 方法。仅显示标签页不会清除其他窗格的标记。
+
+
+`pane.unflag` 还接受可选的 `expected_seq`。提供该字段时，如果标记不存在或当前序号不同，会返回 `changed: false`，保持标记不变。客户端自动清除时始终发送当前显示标记的序号，防止延迟请求清除更新的标记。CLI 的 `pane unflag` 不发送该字段，执行无条件清除。

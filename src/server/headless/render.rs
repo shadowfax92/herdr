@@ -477,6 +477,58 @@ impl HeadlessServer {
         true
     }
 
+    /// Optional metadata travels even when this connection is presenting another
+    /// endpoint. It is control-plane state, not a reason to render a surface.
+    fn project_pane_flags_to_client(
+        &mut self,
+        client_id: u64,
+        flags: Option<&crate::protocol::endpoint::EndpointPaneFlags>,
+    ) -> bool {
+        let Some(client) = self.clients.get_mut(&client_id) else {
+            return true;
+        };
+        if flags.is_none()
+            && client
+                .shell_pane_flags
+                .as_ref()
+                .is_some_and(|projection| projection.flags.is_empty())
+        {
+            return true;
+        }
+        let empty;
+        let flags = match flags {
+            Some(flags) => flags,
+            None => {
+                empty = crate::protocol::endpoint::EndpointPaneFlags {
+                    boot_id: self.client_shell_boot_id.clone(),
+                    flags: Vec::new(),
+                };
+                &empty
+            }
+        };
+        if client.shell_pane_flags.as_ref() == Some(flags) {
+            return true;
+        }
+        let framed = match crate::protocol::endpoint::pane_flags_message(flags)
+            .map_err(std::io::Error::other)
+            .and_then(|message| Self::frame_server_message(&message).map_err(std::io::Error::other))
+        {
+            Ok(framed) => framed,
+            Err(err) => {
+                warn!(client_id, err = %err, "failed to frame pane flags");
+                return false;
+            }
+        };
+        let Some(writer) = client.writer.as_ref() else {
+            return false;
+        };
+        if writer.control.send(framed).is_err() {
+            return false;
+        }
+        client.shell_pane_flags = Some(flags.clone());
+        true
+    }
+
     pub(super) fn render_and_stream(&mut self) {
         self.render_and_stream_with_graphics_limit(MAX_GRAPHICS_FRAME_SIZE);
     }
@@ -593,6 +645,8 @@ impl HeadlessServer {
         }
 
         let mut broken_clients: Vec<u64> = Vec::new();
+        let pane_flags = (!self.app.state.flagged_terminals.is_empty())
+            .then(|| self.app.pane_flags_projection(&self.client_shell_boot_id));
         for (client_id, (cols, rows), cell_size, _is_foreground, mode) in render_targets {
             #[cfg(unix)]
             if matches!(mode, ClientConnectionMode::TerminalObserve { .. })
@@ -609,7 +663,8 @@ impl HeadlessServer {
             // composes its next snapshot with the new scope. Inactive surfaces
             // (a client viewing another machine) get it too.
             if matches!(mode, ClientConnectionMode::ClientShell)
-                && !self.project_scope_to_client(client_id)
+                && (!self.project_scope_to_client(client_id)
+                    || !self.project_pane_flags_to_client(client_id, pane_flags.as_ref()))
             {
                 broken_clients.push(client_id);
                 continue;

@@ -387,6 +387,7 @@ impl ClientShellState {
         kind: PendingEndpointKind,
         outcome: &mut ClientShellInput,
     ) -> bool {
+        let automatic_clear = matches!(kind, PendingEndpointKind::AutomaticPaneUnflag);
         let changes_focus = match &method {
             crate::api::schema::Method::WorkspaceFocus(_)
             | crate::api::schema::Method::TabFocus(_)
@@ -401,20 +402,25 @@ impl ClientShellState {
             outcome.repaint |= self.pending_workspace_highlight.take().is_some();
         }
         if !self.endpoint_is_online(&self.active_endpoint_id) {
-            let label = self.active_endpoint_label().to_owned();
-            outcome.repaint |= self.receive_endpoint_unavailable(format!("{label} is not ready"));
+            if !automatic_clear {
+                let label = self.active_endpoint_label().to_owned();
+                outcome.repaint |=
+                    self.receive_endpoint_unavailable(format!("{label} is not ready"));
+            }
             return false;
         }
         let method_name = crate::api::api_method_name(&method).to_owned();
         if !self.supports_endpoint_method(&method) {
-            outcome.repaint |= self.push_endpoint_notice(
-                ClientEndpointNoticeKind::Unsupported,
-                method_name.clone(),
-                "Action unavailable",
-                format!(
-                    "This server does not support {method_name} yet. Update and restart it to enable this action."
-                ),
-            );
+            if !automatic_clear {
+                outcome.repaint |= self.push_endpoint_notice(
+                    ClientEndpointNoticeKind::Unsupported,
+                    method_name.clone(),
+                    "Action unavailable",
+                    format!(
+                        "This server does not support {method_name} yet. Update and restart it to enable this action."
+                    ),
+                );
+            }
             return false;
         }
         let Some(snapshot) = self.snapshot.as_deref() else {
@@ -543,6 +549,7 @@ impl ClientShellState {
         if self.owns_scope_request(request_id) {
             return (self.finish_scope_request(request_id, &result), Vec::new());
         }
+        self.pane_flag_request_finished(request_id);
         let Some(pending) = self.pending_requests.remove(request_id) else {
             return (false, Vec::new());
         };
@@ -552,6 +559,12 @@ impl ClientShellState {
                 .as_deref()
                 .is_none_or(|snapshot| snapshot.boot_id != boot_id)
         {
+            return (false, Vec::new());
+        }
+        // In-flight suppression was released above. The visit acknowledgement
+        // is otherwise silent, including success: do not alter an existing
+        // notice or its deduplication state for this background request.
+        if matches!(pending.kind, PendingEndpointKind::AutomaticPaneUnflag) {
             return (false, Vec::new());
         }
         if let PendingEndpointKind::PaneLinkResolve { target } = pending.kind {
@@ -609,7 +622,8 @@ impl ClientShellState {
         }
         match pending.kind {
             PendingEndpointKind::Generic => {}
-            PendingEndpointKind::PaneLinkResolve { .. } => unreachable!("handled above"),
+            PendingEndpointKind::PaneLinkResolve { .. }
+            | PendingEndpointKind::AutomaticPaneUnflag => unreachable!("handled above"),
             PendingEndpointKind::ProductAnnouncementDismiss { version, id } => {
                 return match result {
                     Ok(_) => (false, Vec::new()),

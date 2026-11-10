@@ -899,6 +899,10 @@ pub struct AppState {
     /// Recent plugin action/event command executions.
     pub(crate) plugin_command_logs: Vec<crate::api::schema::PluginCommandLogInfo>,
     pub(crate) next_plugin_command_log_id: u64,
+    /// Ephemeral server-wide flag generations; excluded from saved sessions.
+    pub(crate) pane_flag_seq: u64,
+    /// Index keeps the empty flag projection independent of pane count.
+    pub(crate) flagged_terminals: std::collections::HashSet<crate::terminal::TerminalId>,
     pub(crate) plugin_commands_in_flight: usize,
     /// Resolved host terminal default colors for theming embedded panes.
     pub host_terminal_theme: TerminalTheme,
@@ -1139,6 +1143,8 @@ impl AppState {
             popup_pane: None,
             plugin_command_logs: Vec::new(),
             next_plugin_command_log_id: 1,
+            pane_flag_seq: 0,
+            flagged_terminals: Default::default(),
             plugin_commands_in_flight: 0,
             host_terminal_theme: TerminalTheme::default(),
             host_cell_size: crate::kitty_graphics::HostCellSize::default(),

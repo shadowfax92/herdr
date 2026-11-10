@@ -689,6 +689,8 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::PaneList(_) => "pane.list",
         Method::PaneCurrent(_) => "pane.current",
         Method::PaneGet(_) => "pane.get",
+        Method::PaneFlag(_) => "pane.flag",
+        Method::PaneUnflag(_) => "pane.unflag",
         Method::PaneFocus(_) => "pane.focus",
         Method::PaneInputSet(_) => "pane.input.set",
         Method::PaneLinkActivate(_) => "pane.link.activate",
@@ -1256,6 +1258,7 @@ mod tests {
         agent_status: crate::api::schema::AgentStatus,
     ) -> crate::api::schema::PaneInfo {
         crate::api::schema::PaneInfo {
+            flag: None,
             pane_id: pane_id.into(),
             terminal_id: "term_1".into(),
             workspace_id: "ws_1".into(),

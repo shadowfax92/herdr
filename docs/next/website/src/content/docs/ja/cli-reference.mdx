@@ -221,6 +221,8 @@ herdr tab close <tab_id>
 herdr pane list [--workspace <workspace_id>]
 herdr pane current [--pane ID|--current]
 herdr pane get <pane_id>
+herdr pane flag [PANE_ID] [--message TEXT]
+herdr pane unflag [PANE_ID]
 herdr pane layout [--pane ID|--current]
 herdr pane process-info [--pane ID|--current]
 herdr pane neighbor --direction left|right|up|down [--pane ID|--current]
@@ -237,6 +239,8 @@ herdr pane move <pane_id> --new-tab [--workspace ID] [--label TEXT] [--focus|--n
 herdr pane move <pane_id> --new-workspace [--label TEXT] [--tab-label TEXT] [--focus|--no-focus]
 herdr pane close <pane_id>
 ```
+
+`pane flag` は、必要に応じてメッセージを添えて黄色の訪問フラグを設定または置換します。`pane unflag` はフラグを冪等に解除します。省略時は `pane current` と同じ呼び出し元ペイン（Herdr 外ではフォーカス中のペイン）が対象です。対象への入力、またはホスト端末がフォーカスされた状態で移動後 1 秒留まると解除します。通過やタブの表示だけでは他のペインのフラグは解除されません。既にフォーカス中のペインへの新しいフラグは入力または再訪問を待ちます。フラグはメモリ内のみで、サーバー再起動やライブハンドオフでは失われます。
 
 `--current` を受け付けるペインコマンドは、Herdr ペイン内から実行した場合、呼び出し元の `HERDR_PANE_ID` を使います。`pane split` では、明示したペイン ID または `--pane ID` がそのペインを分割します。対象を省略すると `HERDR_PANE_ID` があれば呼び出し元ペインを、なければフォーカス中のペインを使います。`--current` は呼び出し元ペインを必須とし、`HERDR_PANE_ID` がない場合はエラーになります。分割レスポンスでは、新しいペイン ID は `.result.pane.pane_id` にあります。
 

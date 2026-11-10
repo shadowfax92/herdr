@@ -31,6 +31,10 @@ pub const AGENT_VIEW_PROJECTION_CAPABILITY: &str = "agent_view_projection";
 pub const AGENT_VIEW_PROJECTION_KIND: &str = "endpoint.agent-view.v1";
 pub const AGENT_COMPLETIONS_CAPABILITY: &str = "agent_completions";
 pub const AGENT_COMPLETIONS_KIND: &str = "endpoint.agent-completions.v1";
+/// Terminal-owned visit requests projected by every endpoint, including flags
+/// on plain shell panes that have no detected agent.
+pub const PANE_FLAGS_CAPABILITY: &str = "pane_flags";
+pub const PANE_FLAGS_KIND: &str = "endpoint.pane-flags.v1";
 /// Focus and hide (`crate::scope`): the server's whole scope, sent on attach and
 /// on every change, ahead of the snapshot it belongs with. Clients read it
 /// only from their Local endpoint.
@@ -112,6 +116,29 @@ pub struct EndpointScopeProjection {
     pub boot_id: String,
     pub revision: u64,
     pub scope: crate::scope::ScopeState,
+}
+
+/// Complete replacement of a server's pane flags, including plain shell panes.
+/// This optional JSON companion leaves the generation-1 binary codecs frozen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointPaneFlags {
+    pub boot_id: String,
+    pub flags: Vec<EndpointPaneFlag>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Public pane identity paired with its terminal-owned flag generation.
+pub struct EndpointPaneFlag {
+    pub pane_id: String,
+    #[serde(flatten)]
+    pub flag: crate::api::schema::PaneFlag,
+}
+
+pub fn pane_flags_message(projection: &EndpointPaneFlags) -> serde_json::Result<ServerMessage> {
+    Ok(ServerMessage::EndpointControl {
+        kind: PANE_FLAGS_KIND.into(),
+        data: serde_json::to_string(projection)?,
+    })
 }
 
 /// Optional control advertised by `SCOPE_PICK_CAPABILITY`.
@@ -240,6 +267,7 @@ impl EndpointServerWelcome {
                 AGENT_VIEW_PROJECTION_CAPABILITY.into(),
                 AGENT_COMPLETIONS_CAPABILITY.into(),
                 SCOPE_PROJECTION_CAPABILITY.into(),
+                PANE_FLAGS_CAPABILITY.into(),
                 SCOPE_PICK_CAPABILITY.into(),
                 SCOPE_TOGGLE_CAPABILITY.into(),
             ],
@@ -458,6 +486,7 @@ mod tests {
                 AGENT_VIEW_PROJECTION_CAPABILITY.to_string(),
                 AGENT_COMPLETIONS_CAPABILITY.to_string(),
                 SCOPE_PROJECTION_CAPABILITY.to_string(),
+                PANE_FLAGS_CAPABILITY.to_string(),
                 SCOPE_PICK_CAPABILITY.to_string(),
                 SCOPE_TOGGLE_CAPABILITY.to_string(),
             ]

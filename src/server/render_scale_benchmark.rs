@@ -74,6 +74,12 @@ impl RenderPipeline {
     fn render_once(&mut self) -> (Duration, Duration) {
         let surface_size = self.client.surface_size(COLS, ROWS);
         let started = Instant::now();
+        // The headless fanout constructs this once per pass when flags exist.
+        // Include it in the server cost without pretending an unchanged
+        // projection is resent to the client on every frame.
+        if !self.app.state.flagged_terminals.is_empty() {
+            black_box(self.app.pane_flags_projection("bench-boot"));
+        }
         let target = self
             .app
             .state
@@ -641,6 +647,7 @@ async fn render_scale_profile() {
     print_surface_reuse_profiles();
     print_surface_damage_profiles();
     print_trailing_slot_profiles();
+    print_pane_flag_profiles();
 }
 
 /// Dirty-row collection while output scrolls a large pane, the host's hot path
@@ -677,4 +684,49 @@ async fn dirty_scroll_collection_profile() {
         at(1.0),
         rows / 2_000
     );
+}
+
+/// Compare the same populated geometry with no flags and every pane flagged.
+/// Measures client paint cost without depending on wall-clock CI thresholds.
+fn print_pane_flag_profiles() {
+    for (label, build) in [
+        (
+            "background workspaces",
+            workspaces as fn(usize) -> Vec<Workspace>,
+        ),
+        ("active panes", active_panes),
+    ] {
+        println!("pane flags: {label}, fixed {COLS}x{ROWS}");
+        for count in [1, 15] {
+            for flagged in [false, true] {
+                let mut pipeline = RenderPipeline::new(build(count));
+                pipeline.app.state.ensure_test_terminals();
+                if flagged {
+                    let panes: Vec<_> = pipeline
+                        .app
+                        .state
+                        .workspaces
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(ws, workspace)| {
+                            workspace
+                                .tabs
+                                .iter()
+                                .flat_map(move |tab| tab.panes.keys().map(move |pane| (ws, *pane)))
+                        })
+                        .collect();
+                    for (ws, pane) in panes {
+                        pipeline.app.state.set_pane_flag(ws, pane, None);
+                    }
+                }
+                pipeline.client.set_endpoint_pane_flags(
+                    &crate::client::endpoint::ClientEndpointId::Local,
+                    1,
+                    pipeline.app.pane_flags_projection("bench-boot"),
+                );
+                let stats = profile_pipeline(pipeline);
+                println!("  panes={count} flagged={flagged} client_median_us={} client_p95_us={} total_median_us={}", stats.client.median_us, stats.client.p95_us, stats.total.median_us);
+            }
+        }
+    }
 }

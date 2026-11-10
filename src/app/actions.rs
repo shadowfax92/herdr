@@ -641,6 +641,7 @@ impl AppState {
                 && self.terminals.remove(&terminal_id).is_some()
                 && !self.terminal_runtime_shutdowns.contains(&terminal_id)
             {
+                self.flagged_terminals.remove(&terminal_id);
                 self.terminal_runtime_shutdowns.push(terminal_id);
             }
         }

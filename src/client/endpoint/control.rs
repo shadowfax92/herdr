@@ -10,6 +10,7 @@ pub(crate) enum EndpointControlMessage {
     HealthPong,
     AgentViewProjection(DecodedAgentViewProjection),
     AgentCompletions(crate::protocol::endpoint::EndpointAgentCompletions),
+    PaneFlags(crate::protocol::endpoint::EndpointPaneFlags),
     /// Focus and hide; see `ScopeControl` for which endpoints each applies from.
     Scope(ScopeControl),
     Snapshot(Box<crate::protocol::ClientShellSnapshot>),
@@ -33,6 +34,11 @@ pub(crate) fn decode_endpoint_control(
 ) -> Result<EndpointControlMessage, String> {
     if kind == crate::protocol::endpoint::HEALTH_PONG_KIND {
         return Ok(EndpointControlMessage::HealthPong);
+    }
+    if kind == crate::protocol::endpoint::PANE_FLAGS_KIND {
+        return Ok(serde_json::from_str(data)
+            .map(EndpointControlMessage::PaneFlags)
+            .unwrap_or(EndpointControlMessage::Ignored));
     }
     if kind == crate::protocol::endpoint::AGENT_COMPLETIONS_KIND {
         return Ok(serde_json::from_str(data)

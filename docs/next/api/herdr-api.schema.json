@@ -757,6 +757,26 @@
           ],
           "type": "string"
         },
+        "PaneFlag": {
+          "description": "An ephemeral request for the owner to visit a terminal. The server-wide\nsequence distinguishes a fresh request even when the message is unchanged.",
+          "properties": {
+            "message": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "seq": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "seq"
+          ],
+          "type": "object"
+        },
         "PaneInfo": {
           "properties": {
             "agent": {
@@ -788,6 +808,16 @@
               "type": [
                 "string",
                 "null"
+              ]
+            },
+            "flag": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/event/$defs/PaneFlag"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "focused": {
@@ -2581,6 +2611,23 @@
           },
           "type": "object"
         },
+        "PaneFlagParams": {
+          "properties": {
+            "message": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id"
+          ],
+          "type": "object"
+        },
         "PaneFocusDirectionParams": {
           "properties": {
             "direction": {
@@ -3338,6 +3385,26 @@
           "required": [
             "start",
             "end"
+          ],
+          "type": "object"
+        },
+        "PaneUnflagParams": {
+          "description": "Manual clears are unconditional; automatic visits compare the flag sequence\nso a queued clear cannot erase a newer request for the owner's attention.",
+          "properties": {
+            "expected_seq": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id"
           ],
           "type": "object"
         },
@@ -6049,6 +6116,38 @@
         {
           "properties": {
             "method": {
+              "const": "pane.flag",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneFlagParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.unflag",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneUnflagParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "pane.get",
               "type": "string"
             },
@@ -8109,6 +8208,26 @@
           ],
           "type": "object"
         },
+        "PaneFlag": {
+          "description": "An ephemeral request for the owner to visit a terminal. The server-wide\nsequence distinguishes a fresh request even when the message is unchanged.",
+          "properties": {
+            "message": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "seq": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "seq"
+          ],
+          "type": "object"
+        },
         "PaneFocusDirectionReason": {
           "enum": [
             "no_neighbor"
@@ -8181,6 +8300,16 @@
               "type": [
                 "string",
                 "null"
+              ]
+            },
+            "flag": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/PaneFlag"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "focused": {
@@ -9883,6 +10012,22 @@
               "required": [
                 "type",
                 "panes"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "changed": {
+                  "type": "boolean"
+                },
+                "type": {
+                  "const": "pane_unflag",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "changed"
               ],
               "type": "object"
             },

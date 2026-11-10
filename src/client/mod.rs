@@ -823,8 +823,9 @@ async fn run_client_loop(
         }
         let timer_delay = state
             .shell
-            .as_ref()
+            .as_mut()
             .map_or(Duration::from_millis(100), |shell| {
+                shell.set_pane_flag_input_available(write_stream.active_surface_available());
                 shell.timer_delay(std::time::Instant::now())
             });
         let timer_deadline = client_timer.deadline(std::time::Instant::now(), timer_delay);
@@ -2145,6 +2146,28 @@ async fn run_client_loop(
                                 }
                                 continue;
                             }
+                            Ok(endpoint::EndpointControlMessage::PaneFlags(projection)) => {
+                                let frame = state.shell.as_mut().and_then(|shell| {
+                                    shell.set_endpoint_pane_flags(
+                                        &endpoint_id,
+                                        generation,
+                                        projection,
+                                    );
+                                    shell
+                                        .endpoint_is_active(&endpoint_id)
+                                        .then(|| {
+                                            shell.compose(
+                                                state.reported_size.0,
+                                                state.reported_size.1,
+                                            )
+                                        })
+                                        .flatten()
+                                });
+                                if let Some(frame) = frame {
+                                    state.present_frame(frame);
+                                }
+                                continue;
+                            }
                             Ok(endpoint::EndpointControlMessage::Scope(control)) => {
                                 if finish_scope_control(
                                     &mut state,
@@ -2378,6 +2401,7 @@ async fn run_client_loop(
                             outcome.repaint |= repaint;
                             outcome.actions.extend(actions);
                         }
+                        shell.tick_pane_flags(now, &mut outcome);
                         let (effects, notification_repaint) = shell.tick_notifications(now);
                         outcome.repaint |= notification_repaint
                             | shell.tick_copy_feedback(now)

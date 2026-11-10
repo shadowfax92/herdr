@@ -136,6 +136,8 @@ pub struct TerminalState {
     fallback_observed_at: Option<Instant>,
     pub hook_authority: Option<HookAuthority>,
     pub agent_metadata: HashMap<String, AgentMetadata>,
+    /// Memory-only visit request; owned by the terminal so pane moves retain it.
+    pub flag: Option<crate::api::schema::PaneFlag>,
     pub metadata_tokens: crate::metadata_tokens::MetadataTokens,
     pub persisted_agent_session: Option<crate::agent_resume::PersistedAgentSession>,
     reported_resume: Option<crate::agent_resume::ReportedAgentResume>,
@@ -177,6 +179,7 @@ impl TerminalState {
             fallback_observed_at: None,
             hook_authority: None,
             agent_metadata: HashMap::new(),
+            flag: None,
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
             persisted_agent_session: None,
             reported_resume: None,

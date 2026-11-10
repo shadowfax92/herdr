@@ -2165,11 +2165,21 @@ impl HeadlessServer {
                 connection.shell_agent_completions = Some(completion_projection);
                 connection.shell_agent_view = agent_view;
                 connection.shell_scope = Some(scope);
+                let flags = self.app.pane_flags_projection(&self.client_shell_boot_id);
+                let flags_message = match crate::protocol::endpoint::pane_flags_message(&flags) {
+                    Ok(message) => message,
+                    Err(err) => {
+                        warn!(client_id, err = %err, "failed to encode pane flags");
+                        return false;
+                    }
+                };
+                connection.shell_pane_flags = Some(flags);
                 self.clients.insert(client_id, connection);
                 if self.app.state.popup_pane.is_some() && self.popup_owner_tab_id.is_none() {
                     self.popup_owner_tab_id = self.shell_tab_id_for_client(client_id);
                 }
                 self.send_to_client(client_id, scope_message);
+                self.send_to_client(client_id, flags_message);
                 if let Some(message) = projection_message {
                     self.send_to_client(client_id, message);
                 }

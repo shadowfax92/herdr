@@ -99,7 +99,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | ワークスペース | `workspace.create`、`workspace.list`、`workspace.get`、`workspace.focus`、`workspace.rename`、`workspace.move`、`workspace.move_block`、`workspace.report_metadata`、`workspace.close` |
 | Worktree | `worktree.list`、`worktree.create`、`worktree.open`、`worktree.remove` |
 | タブ | `tab.create`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.close` |
-| ペイン | `pane.split`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.zoom_full`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
+| ペイン | `pane.split`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.zoom_full`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.flag`、`pane.unflag`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
 | ポップアップ | `popup.close` |
 | レイアウト | `layout.export`、`layout.apply`、`layout.set_split_ratio` |
 | エージェント | `agent.list`、`agent.get`、`agent.read`、`agent.explain`、`agent.send_keys`、`agent.prompt`、`agent.wait`、`agent.rename`、`agent.focus`、`agent.start` |
@@ -880,3 +880,11 @@ herdr agent wait w1:p1 --until blocked
 `agent prompt` は人間の未送信の下書きがある間、送信を保留します。`--wait` がなければ `delivery: "held"` を返し、Herdr が配信を引き受けます。`agent get` と `agent list` は保留中のみ `held_prompts` を返します。修飾キーなしの Enter の後、追加編集がないまま 1500 ms 経過すると、人間のメッセージに続いて到着順に個別送信します。`--wait --timeout` は保留時間も含み、期限切れのプロンプトは入力せず撤回します。途中で blocked になった場合は準備完了まで保留します。配信前に完了した処理は待機を満たしませんが、配信時点で進行中のターンの完了は、即時送信と同様に待機を満たす場合があります。
 
 CLI の表示が Ctrl+C を消費して下書きが残る場合があるため、Ctrl+C は編集扱いです。空になるまで削除しても下書き扱いです。ポップアップ選択や改行継続の Enter は誤って下書きを解除する場合があります。生の pane 入力は対象外です。最後の編集から 600 秒で放置された下書きの保護を解除します。保留内容はメモリ内のみで、終了・ハンドオフ・エージェント消失時は通知とログに残しますが、クラッシュ時は失われます。通常終了時は、TUI を閉じた後にも読めるよう、終了メッセージにも未配信内容の要約を表示します。全文はサーバーログに残ります。
+
+
+## ペインフラグ
+
+`pane.flag { "pane_id": "…", "message": "review ready" }` はフラグを設定または置換します。省略可能な `message` はメタデータトークンと同じく前後の空白と制御文字を除去し、長さを制限します。応答の `pane` に `flag: { "message": "review ready", "seq": 1 }` が含まれ、設定ごとにサーバー全体の連番が増加します。`pane.unflag { "pane_id": "…" }` は解除時のみ `changed: true` を返す冪等操作です。`pane.get`、`pane.list`、`session.snapshot` は設定中のみペインの `flag` を含みます。シェルペインにも対応し、メモリ内のみで保持します。クライアントは `pane_flags` 機能の `endpoint.pane-flags.v1` JSON 制御で全件置換を受信し、訪問時に公開された `pane.unflag` を呼びます。タブの表示だけでは他のペインを解除しません。
+
+
+`pane.unflag` は省略可能な `expected_seq` も受け付けます。フラグが存在しないか現在の連番が異なる場合、変更せず `changed: false` を返します。クライアントの自動解除は表示中の連番を必ず送信するため、遅延した解除が新しいフラグを消すことはありません。CLI の `pane unflag` はこの条件を省略し、無条件で解除します。

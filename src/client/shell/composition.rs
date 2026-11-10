@@ -370,6 +370,7 @@ impl ClientShellState {
             &self.config,
             self.host_background,
         );
+        self.paint_pane_flags(&mut frame, surface, layout.pane_surface);
         restore_mode_bar(&mut frame, mode_bar, mode_bar_cells.as_deref());
         let mut occlusion = crate::kitty_graphics::surface::Occlusion::default();
         let has_selection = self

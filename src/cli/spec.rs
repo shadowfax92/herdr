@@ -478,6 +478,17 @@ fn pane_command() -> Command {
         )
         .subcommand(id_command("get", "pane_id", "Show a pane"))
         .subcommand(
+            Command::new("flag")
+                .about("Flag a pane for the owner to visit (defaults to caller's pane)")
+                .arg(Arg::new("pane_id").value_name("PANE_ID"))
+                .arg(option("message", "TEXT")),
+        )
+        .subcommand(
+            Command::new("unflag")
+                .about("Clear a pane flag (defaults to caller's pane)")
+                .arg(Arg::new("pane_id").value_name("PANE_ID")),
+        )
+        .subcommand(
             Command::new("layout")
                 .about("Show pane layout information")
                 .args(current_pane_args()),

@@ -327,6 +327,7 @@ impl ClientShellState {
                 RawInputEvent::Mouse(mouse) => self.handle_mouse(mouse, &mut outcome),
                 RawInputEvent::OuterFocusGained => {
                     self.outer_focused = Some(true);
+                    self.reconcile_pane_flag_visit(None);
                     outcome.query_host_appearance = true;
                     outcome.repaint |= self.config.redraw_on_focus_gained;
                     if let Some(surface) = self.pane_surface.clone() {
@@ -339,6 +340,7 @@ impl ClientShellState {
                 RawInputEvent::OuterFocusLost => {
                     outcome.repaint |= self.clear_link_hover();
                     self.outer_focused = Some(false);
+                    self.reconcile_pane_flag_visit(None);
                     self.release_input_leases(&mut outcome);
                     outcome
                         .requests
@@ -385,6 +387,7 @@ impl ClientShellState {
         }
         outcome.repaint |= self.resume_mobile_switcher_if_ready();
         outcome.repaint |= self.landing_glow.clear_static_on_input(&outcome.requests);
+        self.clear_pane_flag_on_input(&mut outcome);
         outcome
     }
 

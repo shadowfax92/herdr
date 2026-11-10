@@ -30,9 +30,12 @@ fn client_shell_projection(
         ) else {
             panic!("expected endpoint control {expected}");
         };
-        // Every attach (and scope change) sends the focus/hide scope first; the
-        // scope tests read it with `client_scope_projection`.
-        if kind == protocol::endpoint::SCOPE_PROJECTION_KIND {
+        // Optional metadata arrives before the coherent snapshot pair. Dedicated
+        // scope and pane-flag tests assert those controls separately.
+        if matches!(
+            kind.as_str(),
+            protocol::endpoint::SCOPE_PROJECTION_KIND | protocol::endpoint::PANE_FLAGS_KIND
+        ) {
             continue;
         }
         assert_eq!(kind, expected);

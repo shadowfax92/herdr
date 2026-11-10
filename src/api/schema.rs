@@ -205,6 +205,10 @@ pub enum Method {
     PaneList(PaneListParams),
     #[serde(rename = "pane.current")]
     PaneCurrent(PaneCurrentParams),
+    #[serde(rename = "pane.flag")]
+    PaneFlag(PaneFlagParams),
+    #[serde(rename = "pane.unflag")]
+    PaneUnflag(PaneUnflagParams),
     #[serde(rename = "pane.get")]
     PaneGet(PaneTarget),
     #[serde(rename = "pane.focus")]

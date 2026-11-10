@@ -19,6 +19,7 @@ mod creation;
 mod custom_commands;
 mod git_refresh;
 mod ids;
+mod pane_flags;
 mod popup;
 mod prompt_hold;
 mod runtime;
@@ -577,6 +578,8 @@ impl App {
             popup_pane: None,
             plugin_command_logs: Vec::new(),
             next_plugin_command_log_id: 1,
+            pane_flag_seq: 0,
+            flagged_terminals: Default::default(),
             plugin_commands_in_flight: 0,
             host_terminal_theme: crate::terminal_theme::TerminalTheme::default(),
             host_cell_size: crate::kitty_graphics::HostCellSize::default(),

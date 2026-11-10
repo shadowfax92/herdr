@@ -19,6 +19,8 @@ pub(super) fn run_pane_command(args: &[String]) -> std::io::Result<i32> {
         "list" => pane_list(&args[1..]),
         "current" => pane_current(&args[1..]),
         "get" => pane_get(&args[1..]),
+        "flag" => pane_flag(&args[1..], true),
+        "unflag" => pane_flag(&args[1..], false),
         "layout" => pane_layout(&args[1..]),
         "process-info" => pane_process_info(&args[1..]),
         "neighbor" => pane_neighbor(&args[1..]),
@@ -94,6 +96,78 @@ fn pane_get(args: &[String]) -> std::io::Result<i32> {
         method: Method::PaneGet(PaneTarget {
             pane_id: super::normalize_pane_id(raw_pane_id),
         }),
+    })?)
+}
+
+fn parse_pane_flag_args(
+    args: &[String],
+    setting: bool,
+) -> Result<(Option<String>, Option<String>), String> {
+    let mut pane = None;
+    let mut message = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--message" if setting => {
+                index += 1;
+                message = Some(
+                    args.get(index)
+                        .ok_or("missing value for --message")?
+                        .clone(),
+                );
+            }
+            value if !value.starts_with('-') && pane.is_none() => {
+                pane = Some(super::normalize_pane_id(value))
+            }
+            value => return Err(format!("unexpected argument: {value}")),
+        }
+        index += 1;
+    }
+    Ok((pane, message))
+}
+
+fn pane_flag(args: &[String], setting: bool) -> std::io::Result<i32> {
+    let (pane, message) = match parse_pane_flag_args(args, setting) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            eprintln!("{error}");
+            return Ok(2);
+        }
+    };
+    // Match `pane current`: prefer Herdr's caller identity, otherwise resolve
+    // the focused pane on the selected server before sending the mutation.
+    let pane_id = match pane {
+        Some(pane) => pane,
+        None => {
+            let response = super::send_request(&Request {
+                id: "cli:pane:current".into(),
+                method: Method::PaneCurrent(PaneCurrentParams {
+                    caller_pane_id: super::target::caller_pane_id()
+                        .map(|pane| super::normalize_pane_id(&pane)),
+                }),
+            })?;
+            let Ok(success) =
+                serde_json::from_value::<crate::api::schema::SuccessResponse>(response.clone())
+            else {
+                return super::print_response(&response);
+            };
+            let crate::api::schema::ResponseResult::PaneCurrent { pane } = success.result else {
+                return Err(std::io::Error::other("unexpected pane.current response"));
+            };
+            pane.pane_id
+        }
+    };
+    let method = if setting {
+        Method::PaneFlag(crate::api::schema::PaneFlagParams { pane_id, message })
+    } else {
+        Method::PaneUnflag(crate::api::schema::PaneUnflagParams {
+            pane_id,
+            expected_seq: None,
+        })
+    };
+    super::print_response(&super::send_request(&Request {
+        id: "cli:pane:flag".into(),
+        method,
     })?)
 }
 
@@ -1674,6 +1748,8 @@ fn print_pane_help() {
     eprintln!("  herdr pane list [--workspace <workspace_id>]");
     eprintln!("  herdr pane current [--pane ID|--current]");
     eprintln!("  herdr pane get <pane_id>");
+    eprintln!("  herdr pane flag [PANE_ID] [--message TEXT]");
+    eprintln!("  herdr pane unflag [PANE_ID]");
     eprintln!("  herdr pane layout [--pane ID|--current]");
     eprintln!("  herdr pane process-info [--pane ID|--current]");
     eprintln!("  herdr pane neighbor --direction left|right|up|down [--pane ID|--current]");
@@ -1707,6 +1783,30 @@ fn print_pane_help() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pane_flags_cli_optional_target_and_message() {
+        let args = |values: &[&str]| {
+            values
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            super::parse_pane_flag_args(&[], true).unwrap(),
+            (None, None)
+        );
+        assert_eq!(
+            super::parse_pane_flag_args(&args(&["--message", "review ready"]), true).unwrap(),
+            (None, Some("review ready".into()))
+        );
+        assert_eq!(
+            super::parse_pane_flag_args(&args(&["w1:p2"]), false).unwrap(),
+            (Some("w1:p2".into()), None)
+        );
+        assert!(super::parse_pane_flag_args(&args(&["--message"]), true).is_err());
+        assert!(super::parse_pane_flag_args(&args(&["--message", "x"]), false).is_err());
+        assert!(super::parse_pane_flag_args(&args(&["w1:p2", "w1:p3"]), true).is_err());
+    }
     use super::*;
 
     fn args(values: &[&str]) -> Vec<String> {

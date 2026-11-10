@@ -264,18 +264,22 @@ pub(super) fn normalize_metadata_tokens(
             {
                 return Err(format!("invalid metadata token key: {key}"));
             }
-            let value = value.and_then(|value| {
-                let normalized = value
-                    .trim()
-                    .chars()
-                    .filter(|ch| !ch.is_control())
-                    .take(MAX_METADATA_TOKEN_VALUE_LEN)
-                    .collect::<String>();
-                (!normalized.trim().is_empty()).then(|| normalized.trim().to_string())
-            });
+            let value = normalize_metadata_value(value);
             Ok((key, value))
         })
         .collect()
+}
+
+pub(super) fn normalize_metadata_value(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let normalized = value
+            .trim()
+            .chars()
+            .filter(|ch| !ch.is_control())
+            .take(MAX_METADATA_TOKEN_VALUE_LEN)
+            .collect::<String>();
+        (!normalized.trim().is_empty()).then(|| normalized.trim().to_string())
+    })
 }
 
 #[cfg(test)]

@@ -21,6 +21,11 @@ pub(super) fn dispatch_client_shell_actions(
                 request,
             } => {
                 if let Some(connection) = endpoints.connection(&endpoint_id).filter(|connection| {
+                    if matches!(request.method, crate::api::schema::Method::PaneUnflag(_))
+                        && !connection.negotiation.supports_method("pane.unflag")
+                    {
+                        return false;
+                    }
                     (endpoints.active_id() == &endpoint_id
                         && (endpoints.active_surface_available()
                             // The coherent target is visible before its input fence opens.
@@ -995,6 +1000,54 @@ pub(super) fn finish_client_shell_input(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pane_flags_registry_never_sends_an_unadvertised_unflag() {
+        #[derive(Clone)]
+        struct Capture(std::sync::Arc<std::sync::Mutex<Vec<ClientMessage>>>);
+        impl endpoint::EndpointTransport for Capture {
+            fn send(&mut self, message: &ClientMessage) -> std::io::Result<()> {
+                self.0.lock().unwrap().push(message.clone());
+                Ok(())
+            }
+        }
+        for supported in [false, true] {
+            let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let methods = if supported {
+                vec!["pane.unflag".into()]
+            } else {
+                Vec::new()
+            };
+            let mut endpoints = endpoint::EndpointRegistry::new(
+                Capture(sent.clone()),
+                1,
+                endpoint::EndpointNegotiation::new(methods, Vec::new()),
+            );
+            let action = shell::ClientShellAction::Endpoint {
+                endpoint_id: endpoint::ClientEndpointId::Local,
+                boot_id: "test-boot".into(),
+                request: Box::new(crate::api::schema::Request {
+                    id: "clear-flag".into(),
+                    method: crate::api::schema::Method::PaneUnflag(
+                        crate::api::schema::PaneUnflagParams {
+                            pane_id: "pane_1".into(),
+                            expected_seq: Some(1),
+                        },
+                    ),
+                }),
+            };
+            dispatch_client_shell_actions(
+                vec![action],
+                &mut endpoint_commands::EndpointCommands::default(),
+                &mut endpoints,
+                None,
+                &mut Vec::new(),
+                &mut None,
+            )
+            .unwrap();
+            assert_eq!(!sent.lock().unwrap().is_empty(), supported);
+        }
+    }
 
     #[test]
     fn host_color_reaches_server_before_first_snapshot() {

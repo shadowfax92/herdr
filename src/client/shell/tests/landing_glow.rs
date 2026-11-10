@@ -63,7 +63,7 @@ fn glow_state(style: LandingGlowConfig, start: Instant) -> ClientShellState {
 }
 
 /// One tab with three agent panes side by side, `focused` holding focus.
-fn tab_snapshot(revision: u64, focused: &str) -> ClientShellSnapshot {
+pub(super) fn tab_snapshot(revision: u64, focused: &str) -> ClientShellSnapshot {
     let mut snapshot = snapshot();
     snapshot.revision = revision;
     snapshot.focused_pane_id = Some(focused.into());
@@ -91,7 +91,12 @@ fn tab_snapshot(revision: u64, focused: &str) -> ClientShellSnapshot {
 /// The server-rendered surface for `pane_ids`, each its own bordered box as
 /// with `pane_gaps = true`: accent border on the focused pane, overlay0 on
 /// the rest, and no background colors.
-fn tab_surface(boot_id: &str, revision: u64, pane_ids: &[&str], focused: &str) -> PaneSurfaceFrame {
+pub(super) fn tab_surface(
+    boot_id: &str,
+    revision: u64,
+    pane_ids: &[&str],
+    focused: &str,
+) -> PaneSurfaceFrame {
     const WIDTH: u16 = 12;
     const HEIGHT: u16 = 6;
     let palette = crate::app::state::Palette::gruvbox();

@@ -221,6 +221,8 @@ herdr tab close <tab_id>
 herdr pane list [--workspace <workspace_id>]
 herdr pane current [--pane ID|--current]
 herdr pane get <pane_id>
+herdr pane flag [PANE_ID] [--message TEXT]
+herdr pane unflag [PANE_ID]
 herdr pane layout [--pane ID|--current]
 herdr pane process-info [--pane ID|--current]
 herdr pane neighbor --direction left|right|up|down [--pane ID|--current]
@@ -237,6 +239,8 @@ herdr pane move <pane_id> --new-tab [--workspace ID] [--label TEXT] [--focus|--n
 herdr pane move <pane_id> --new-workspace [--label TEXT] [--tab-label TEXT] [--focus|--no-focus]
 herdr pane close <pane_id>
 ```
+
+`pane flag` 设置或替换黄色访问标记，可附带消息。`pane unflag` 幂等地清除标记。默认目标与 `pane current` 一致：调用方窗格，或在 Herdr 外调用时当前聚焦的窗格。向该窗格输入会立即清除标记；进入后停留一秒且宿主终端保持焦点也会清除。短暂经过或显示标签页不会清除其他窗格的标记。在已聚焦窗格上新设置的标记会等待输入或再次进入。标记仅保存在内存中，不跨服务器重启或实时交接保留。
 
 接受 `--current` 的窗格命令在 Herdr 窗格内运行时使用调用方的 `HERDR_PANE_ID`。对 `pane split` 而言，显式窗格 ID 或 `--pane ID` 拆分指定窗格。省略目标时，若存在 `HERDR_PANE_ID` 则拆分调用方窗格，否则使用当前聚焦的窗格。`--current` 必须有调用方窗格；缺少 `HERDR_PANE_ID` 时会报错。拆分响应中的新窗格 ID 位于 `.result.pane.pane_id`。
 

@@ -315,6 +315,31 @@ pub struct PaneCurrentParams {
     pub caller_pane_id: Option<String>,
 }
 
+/// An ephemeral request for the owner to visit a terminal. The server-wide
+/// sequence distinguishes a fresh request even when the message is unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneFlag {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    pub seq: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneFlagParams {
+    pub pane_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// Manual clears are unconditional; automatic visits compare the flag sequence
+/// so a queued clear cannot erase a newer request for the owner's attention.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneUnflagParams {
+    pub pane_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_seq: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PaneRenameParams {
     pub pane_id: String,
@@ -447,6 +472,8 @@ pub struct PaneReleaseAgentParams {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PaneInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flag: Option<PaneFlag>,
     pub pane_id: String,
     pub terminal_id: String,
     pub workspace_id: String,

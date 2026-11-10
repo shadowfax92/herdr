@@ -20,6 +20,7 @@ mod endpoint_sidebar;
 mod endpoints;
 mod fuzzy;
 mod landing_glow;
+mod pane_flags;
 pub(super) use endpoints::*;
 mod global_menu;
 mod graphics;

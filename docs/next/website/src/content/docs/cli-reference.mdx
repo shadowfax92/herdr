@@ -225,6 +225,8 @@ Workspace and tab creation, and pane splitting, leave focus unchanged by default
 herdr pane list [--workspace <workspace_id>]
 herdr pane current [--pane ID|--current]
 herdr pane get <pane_id>
+herdr pane flag [PANE_ID] [--message TEXT]
+herdr pane unflag [PANE_ID]
 herdr pane layout [--pane ID|--current]
 herdr pane process-info [--pane ID|--current]
 herdr pane neighbor --direction left|right|up|down [--pane ID|--current]
@@ -242,6 +244,8 @@ herdr pane move <pane_id> --new-tab [--workspace ID] [--label TEXT] [--focus|--n
 herdr pane move <pane_id> --new-workspace [--label TEXT] [--tab-label TEXT] [--focus|--no-focus]
 herdr pane close <pane_id>
 ```
+
+`pane flag` sets or replaces a yellow visit flag, optionally with a message. `pane unflag` clears it idempotently. Both default to the caller's pane as resolved by `pane current`, or the focused pane outside Herdr. Input into that pane clears the flag immediately; arriving and staying for one second also clears it while the host terminal has focus. Passing through a pane or showing its tab does not clear other panes. A flag set on the already focused pane waits for input or a new visit. Flags are memory-only and do not survive a server restart or live handoff.
 
 For pane commands that accept `--current`, Herdr uses the calling pane's
 `HERDR_PANE_ID` when the command runs inside a Herdr pane. For `pane split`,

@@ -184,6 +184,7 @@ pub(crate) struct ClientConnection {
     /// `AppState.scope` whenever it differs, whether or not the surface is active,
     /// so a client viewing another machine still filters by the current scope.
     pub(crate) shell_scope: Option<crate::scope::ScopeState>,
+    pub(crate) shell_pane_flags: Option<crate::protocol::endpoint::EndpointPaneFlags>,
     /// The scope this client filters by, as it last handed it to this server
     /// with `scope.mirror` (a remote machine never owns the client's scope).
     /// Plugin `scope.get` judges local tabs by it while this client is the one
@@ -260,6 +261,7 @@ impl ClientConnection {
             shell_agent_completions: None,
             shell_agent_view: None,
             shell_scope: None,
+            shell_pane_flags: None,
             scope_mirror: None,
             shell_projection_revision: 0,
             shell_endpoint_command_in_flight: false,
