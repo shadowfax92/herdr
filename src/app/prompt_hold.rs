@@ -267,6 +267,15 @@ impl App {
             reason,
             "held agent prompt could not be delivered"
         );
+        self.notify_held_prompt_failure(target, text, reason);
+    }
+
+    pub(crate) fn notify_held_prompt_failure(
+        &mut self,
+        target: String,
+        text: String,
+        reason: &str,
+    ) {
         self.prompt_delivery.notifications.push(notification(
             format!("Prompt undeliverable for {target}"),
             format!("{reason}: {text}"),
@@ -287,7 +296,6 @@ impl App {
     }
 
     pub(crate) fn discard_prompt_gate(&mut self, terminal_id: &TerminalId, reason: &str) {
-        self.reset_prompt_gate(terminal_id, Instant::now());
         let ids = self
             .prompt_delivery
             .pending
@@ -296,10 +304,15 @@ impl App {
                 (prompt.validated.agent.terminal_id == terminal_id.as_str()).then_some(*id)
             })
             .collect::<Vec<_>>();
-        for id in ids {
-            if let Some(prompt) = self.prompt_delivery.pending.remove(&id) {
-                self.fail_held_prompt(prompt, reason);
-            }
+        // Detach payloads before resetting the pure gate, preserving the actual
+        // close/handoff reason instead of misreporting a generic agent exit.
+        let prompts = ids
+            .into_iter()
+            .filter_map(|id| self.prompt_delivery.pending.remove(&id))
+            .collect::<Vec<_>>();
+        self.reset_prompt_gate(terminal_id, Instant::now());
+        for prompt in prompts {
+            self.fail_held_prompt(prompt, reason);
         }
     }
 

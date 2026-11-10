@@ -137,6 +137,11 @@ impl App {
                 if let Ok(failed) =
                     serde_json::from_str::<crate::api::schema::ErrorResponse>(&response)
                 {
+                    // Shutdown can stop the app loop before this event is read.
+                    // Log the owned text here, before the async notification
+                    // handoff, so an acknowledged prompt never disappears silently.
+                    tracing::warn!(target, text, reason = %failed.error.message,
+                        "held agent prompt could not be delivered");
                     let _ =
                         event_tx.blocking_send(crate::events::AppEvent::HeldPromptDeliveryFailed {
                             target,

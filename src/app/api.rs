@@ -36,7 +36,7 @@ impl App {
                 text,
                 reason,
             } => {
-                self.report_held_prompt_failure(target, text, &reason);
+                self.notify_held_prompt_failure(target, text, &reason);
                 false
             }
 

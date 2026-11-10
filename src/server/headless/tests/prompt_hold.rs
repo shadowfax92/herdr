@@ -213,3 +213,84 @@ async fn prompt_hold_ctrl_c_cannot_release_a_draft_consumed_by_an_overlay() {
     assert!(input.try_recv().is_err());
     shutdown_test_runtimes(&mut server);
 }
+
+#[tokio::test]
+async fn prompt_hold_graceful_shutdown_reports_acknowledged_text_before_disconnect() {
+    let (mut server, mut input, target, terminal_id) = prompt_test_server();
+    human(
+        &mut server,
+        &target,
+        ClientPaneInputEvent::TextCommit("abc".to_owned()),
+    );
+    input.try_recv().unwrap();
+    let response = prompt(&mut server, &target, "must-not-disappear-on-stop", None);
+    let held: serde_json::Value = serde_json::from_str(&response.try_recv().unwrap()).unwrap();
+    assert_eq!(held["result"]["delivery"], "held");
+    let (control, _render) = connect_matching_test_shell(&mut server, 2);
+    server.initiate_shutdown();
+    let mut loss_notice = false;
+    loop {
+        match read_server_message(
+            control
+                .recv_timeout(Duration::from_secs(1))
+                .expect("shutdown reaches client"),
+        ) {
+            ServerMessage::SemanticNotification(notice)
+                if notice.title.starts_with("Prompt undeliverable") =>
+            {
+                let body = notice.body.as_deref().unwrap();
+                assert!(body.contains("must-not-disappear-on-stop"));
+                assert!(body.contains("server shutdown"));
+                loss_notice = true;
+            }
+            ServerMessage::ServerShutdown { .. } => {
+                assert!(loss_notice, "held text must be surfaced before disconnect");
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        server.app.state.terminals[&terminal_id].prompt_gate.held(),
+        0
+    );
+    assert!(input.try_recv().is_err(), "shutdown never types held text");
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn prompt_hold_owned_submission_failure_returns_to_notification_lane() {
+    let (mut server, mut input, target, terminal_id) = prompt_test_server();
+    human(
+        &mut server,
+        &target,
+        ClientPaneInputEvent::TextCommit("abc".to_owned()),
+    );
+    input.try_recv().unwrap();
+    prompt(&mut server, &target, "owned-text-write-failed", None)
+        .try_recv()
+        .unwrap();
+    drop(input);
+    server.app.state.agent_prompt_config.hold_while_drafting = false;
+    server.app.configure_prompt_gate(&terminal_id);
+    server.app.poll_prompt_gate(&terminal_id, Instant::now());
+    let event = tokio::time::timeout(Duration::from_secs(1), server.app.event_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(&event, crate::events::AppEvent::HeldPromptDeliveryFailed { text, .. } if text == "owned-text-write-failed")
+    );
+    server.app.handle_internal_event_with_render_impact(event);
+    assert!(server
+        .app
+        .prompt_delivery
+        .notifications
+        .iter()
+        .any(|notice| notice.title.starts_with("Prompt undeliverable")
+            && notice
+                .body
+                .as_ref()
+                .is_some_and(|text| text.contains("owned-text-write-failed"))));
+    shutdown_test_runtimes(&mut server);
+}

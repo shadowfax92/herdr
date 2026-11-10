@@ -230,9 +230,6 @@ impl HeadlessServer {
     }
 
     pub(super) fn finish_live_handoff_shutdown(&mut self) {
-        self.app
-            .discard_all_prompt_gates("server shutdown while prompt was held");
-        self.flush_prompt_notifications();
         self.shutting_down = true;
         self.app.state.should_quit = true;
         self.app.policy.persist_session = false;
@@ -321,6 +318,13 @@ impl HeadlessServer {
                 .unwrap_or(ShutdownReason::Unknown)
         };
         info!(%reason, "server shutdown initiated");
+        // Notify while clients are still connected. Held no-wait requests have
+        // already been acknowledged, so dropping their text here would be silent
+        // data loss even though the server itself exits gracefully.
+        self.app
+            .discard_all_prompt_gates("server shutdown while prompt was held");
+        self.flush_prompt_notifications();
+
         self.shutting_down = true;
 
         // Clear client-local host graphics, then send ServerShutdown to all connected clients.
