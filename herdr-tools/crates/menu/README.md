@@ -48,6 +48,11 @@ CLAUDE_SECURESTORAGE_CONFIG_DIR=/path/from/rtr \
   herdr integration install claude
 ```
 
+Repeat this installation for every new RTR profile home. For Codex, an RTR
+`copy` mapping from `~/.codex/hooks.json` to `hooks.json` makes new profiles
+inherit the hook automatically: that file points to the hook script by absolute
+path, so the script does not need copying into each profile.
+
 Without hooks the menu still works, but opens `rtr fork --here` so you can
 select the source session.
 
