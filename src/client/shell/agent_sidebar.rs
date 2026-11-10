@@ -82,6 +82,7 @@ pub(super) fn render_agent_panel(
     config: &ClientShellConfig,
     scope: &super::scope::EndpointScope<'_>,
     settle: &super::read_settle::ReadSettle,
+    pane_flags: &super::pane_flag_paint::PaneFlagMarks,
     agent_scroll: &mut usize,
     hits: &mut ShellHitMap,
 ) {
@@ -110,7 +111,7 @@ pub(super) fn render_agent_panel(
         |row| row.rows.len(),
         |buffer, rect, row, hits| {
             hits.agents.push((rect, row.pane_id.clone()));
-            render_agent_row(buffer, rect, row, config);
+            render_agent_row(buffer, rect, row, config, Some(pane_flags));
         },
     );
 }
@@ -351,11 +352,14 @@ pub(super) fn agent_row(
     })
 }
 
+/// Draws one agent row. `pane_flags` is None for a row from an endpoint other
+/// than the presented one, whose flags this client does not render.
 pub(super) fn render_agent_row(
     buffer: &mut Buffer,
     rect: Rect,
     row: &AgentRow,
     config: &ClientShellConfig,
+    pane_flags: Option<&super::pane_flag_paint::PaneFlagMarks>,
 ) {
     let palette = &config.palette;
     let row_style = if row.focused {
@@ -403,6 +407,11 @@ pub(super) fn render_agent_row(
             Rect::new(rect.x, rect.y + index as u16, rect.width, 1),
             buffer,
         );
+    }
+    if let Some((pane_flags, message)) =
+        pane_flags.and_then(|flags| flags.pane(&row.pane_id).map(|message| (flags, message)))
+    {
+        super::pane_flag_paint::mark_agent_row(buffer, rect, row.focused, message, pane_flags);
     }
 }
 

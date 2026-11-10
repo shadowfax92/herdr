@@ -1,3 +1,4 @@
+use super::pane_flag_paint::{flagged_tab_label, tab_flag_style};
 use super::*;
 
 const TAB_SCROLL_BUTTON_WIDTH: u16 = 3;
@@ -12,6 +13,7 @@ pub(crate) fn render_tab_bar(
     tab_scroll: &mut usize,
     reveal_focused_tab: &mut bool,
     tab_drag_insert_index: Option<usize>,
+    pane_flags: &super::pane_flag_paint::PaneFlagMarks,
     hits: &mut ShellHitMap,
 ) {
     let palette = &config.palette;
@@ -24,7 +26,7 @@ pub(crate) fn render_tab_bar(
     let desired_widths = tabs
         .iter()
         .map(|tab| {
-            let label = tab_label(tab);
+            let label = flagged_tab_label(tab_label(tab), pane_flags.tab(&tab.tab_id));
             display_width(&label).saturating_add(4).max(MIN_TAB_WIDTH)
         })
         .collect::<Vec<_>>();
@@ -92,7 +94,8 @@ pub(crate) fn render_tab_bar(
     let mut first_visible = None;
     let mut last_visible = None;
     for (index, tab) in tabs.iter().enumerate().skip(*tab_scroll) {
-        let name = tab_label(tab);
+        let flagged = pane_flags.tab(&tab.tab_id);
+        let name = flagged_tab_label(tab_label(tab), flagged);
         let desired = desired_widths[index];
         let remaining = tab_right.saturating_sub(x);
         let width = desired.min(remaining);
@@ -123,6 +126,13 @@ pub(crate) fn render_tab_bar(
             right_padding = padding.saturating_sub(left) as usize,
         );
         put_text(buffer, rect.x, rect.y, rect.width, &text, style);
+        if flagged && left < rect.width {
+            // The flag leads the label; recolor just its cell on the chip.
+            buffer.set_style(
+                Rect::new(rect.x + left, rect.y, 1, 1),
+                tab_flag_style(tab.focused, palette),
+            );
+        }
         hits.tabs.push((rect, tab.tab_id.clone()));
         first_visible.get_or_insert(index);
         last_visible = Some(index);

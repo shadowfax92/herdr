@@ -51,6 +51,7 @@ pub(super) fn render_expanded(
     active_endpoint_id: &ClientEndpointId,
     config: &ClientShellConfig,
     scope: &super::scope::ScopeView<'_>,
+    pane_flags: &super::pane_flag_paint::PaneFlagMarks,
     agent_scroll: &mut usize,
     hits: &mut ShellHitMap,
 ) {
@@ -74,7 +75,9 @@ pub(super) fn render_expanded(
         hits,
         |row| row.agent.rows.len(),
         |buffer, rect, row, hits| {
-            super::agent_sidebar::render_agent_row(buffer, rect, &row.agent, config);
+            // Flags reach the client for the presented endpoint only.
+            let flags = (&row.endpoint_id == active_endpoint_id).then_some(pane_flags);
+            super::agent_sidebar::render_agent_row(buffer, rect, &row.agent, config, flags);
             if row.stale {
                 buffer.set_style(
                     rect,

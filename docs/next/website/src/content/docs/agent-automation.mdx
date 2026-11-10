@@ -135,3 +135,5 @@ Ctrl+C conservatively counts as an edit because CLI overlays can consume it with
 ## Flag a pane for review
 
 When a result needs the owner's attention, run `herdr pane flag --message "review ready"` in your pane, or supply another pane ID as a coordinator. Flag when there is something concrete to review or unblock. The yellow flag remains until the owner inputs into that pane or visits it for one second with the host terminal focused. Showing the tab or passing through is not enough. Use `herdr pane unflag` if the request is no longer relevant.
+
+The owner sees a flagged pane with a light tint of the theme's yellow and a yellow `⚑ message` chip on its top border. A `⚑` also marks the pane's tab in the tab bar, its space in the sidebar, and its agent row, where the message replaces the second line, so a flag in a tab the owner is not looking at can still be found.

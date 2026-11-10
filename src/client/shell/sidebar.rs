@@ -354,6 +354,14 @@ pub(crate) fn render_sidebar(
             scope,
             palette,
         );
+        if state.pane_flags.workspace(&workspace.workspace_id) {
+            super::pane_flag_paint::mark_workspace_row(
+                buffer,
+                rect,
+                group_toggle.is_some(),
+                state.pane_flags,
+            );
+        }
         hits.workspaces.push(WorkspaceHit {
             rect,
             endpoint_id: ClientEndpointId::Local,
@@ -449,6 +457,7 @@ pub(crate) fn render_sidebar(
         config,
         scope,
         super::read_settle::endpoint_read_settle(state.endpoints, state.active_endpoint_id),
+        state.pane_flags,
         state.agent_scroll,
         hits,
     );

@@ -276,4 +276,5 @@ mod scope_mirror;
 mod scope_picker_overlay;
 mod startup_overlays;
 
+mod pane_flag_paint;
 mod pane_flags;

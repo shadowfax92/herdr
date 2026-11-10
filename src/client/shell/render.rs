@@ -264,6 +264,9 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) workspace_drop_indicator_row: Option<u16>,
     /// Focus and hide, judged once for this frame over every endpoint.
     pub(super) scope: &'a super::scope::ScopeView<'a>,
+    /// The presented endpoint's pane flags, resolved once for this frame
+    /// (`super::pane_flag_paint`).
+    pub(super) pane_flags: &'a super::pane_flag_paint::PaneFlagMarks,
 }
 
 pub(super) fn render_shell(
@@ -337,6 +340,7 @@ pub(super) fn render_shell(
             state.tab_scroll,
             state.reveal_focused_tab,
             state.tab_drag_insert_index,
+            state.pane_flags,
             &mut hits,
         );
     }

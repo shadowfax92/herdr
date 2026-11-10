@@ -528,6 +528,15 @@ pub(super) fn render_expanded(
                     endpoint_scope,
                     palette,
                 );
+                // Flags reach the client for the presented endpoint only.
+                if endpoint_active && state.pane_flags.workspace(&workspace.workspace_id) {
+                    super::pane_flag_paint::mark_workspace_row(
+                        buffer,
+                        nested,
+                        group_toggle.is_some(),
+                        state.pane_flags,
+                    );
+                }
                 hits.workspaces.push(WorkspaceHit {
                     rect,
                     endpoint_id: endpoint.endpoint_id.clone(),
@@ -592,6 +601,7 @@ pub(super) fn render_expanded(
         state.active_endpoint_id,
         config,
         scope,
+        state.pane_flags,
         state.agent_scroll,
         hits,
     );

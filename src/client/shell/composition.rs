@@ -56,6 +56,7 @@ impl ClientShellState {
         });
         // Focus and hide, judged once for this frame (`super::scope`).
         let scope = super::scope::ScopeView::new(&self.effective_scope(), &self.endpoints);
+        let pane_flags = self.pane_flag_marks();
         let mut render_state = render::ShellRenderState {
             machine_diagnostics: &self.machine_diagnostics,
             endpoints: &self.endpoints,
@@ -80,6 +81,7 @@ impl ClientShellState {
             dragged_workspace_id: None,
             workspace_drop_indicator_row: None,
             scope: &scope,
+            pane_flags: &pane_flags,
         };
         if let Some(snapshot) = local_snapshot {
             render::render_sidebar(
@@ -214,6 +216,7 @@ impl ClientShellState {
         // Focus and hide, judged once for this frame and shared by the sidebar,
         // the mobile switcher and the navigator (`super::scope`).
         let scope = super::scope::ScopeView::new(&self.effective_scope(), &self.endpoints);
+        let pane_flags = self.pane_flag_marks();
         self.hits = render::render_shell(
             &mut buffer,
             layout,
@@ -243,6 +246,7 @@ impl ClientShellState {
                 dragged_workspace_id,
                 workspace_drop_indicator_row,
                 scope: &scope,
+                pane_flags: &pane_flags,
             },
         );
         self.hits.panes = surface
@@ -370,7 +374,7 @@ impl ClientShellState {
             &self.config,
             self.host_background,
         );
-        self.paint_pane_flags(&mut frame, surface, layout.pane_surface);
+        self.paint_pane_flags(&mut frame, surface, layout.pane_surface, &pane_flags);
         restore_mode_bar(&mut frame, mode_bar, mode_bar_cells.as_deref());
         let mut occlusion = crate::kitty_graphics::surface::Occlusion::default();
         let has_selection = self

@@ -174,24 +174,6 @@ fn pane_flags_old_servers_receive_no_unflag_and_keep_the_flag() {
 }
 
 #[test]
-fn pane_flags_placeholder_colors_only_flagged_borders() {
-    let t = Instant::now();
-    let mut state = shell(t);
-    flags(&mut state, &[("pane_2", 1)], t);
-    let mut surface = tab_surface("boot-1", 1, &["pane_1", "pane_2", "pane_3"], "pane_1");
-    let old = surface.frame.clone();
-    state.paint_pane_flags(
-        &mut surface.frame,
-        &tab_surface("boot-1", 1, &["pane_1", "pane_2", "pane_3"], "pane_1"),
-        Rect::default(),
-    );
-    let yellow = crate::protocol::color_to_u32(state.config.palette.yellow);
-    assert_eq!(surface.frame.cells[12].fg, yellow);
-    assert_eq!(surface.frame.cells[36 + 13], old.cells[36 + 13]);
-    assert_eq!(surface.frame.cells[0], old.cells[0]);
-}
-
-#[test]
 fn pane_flags_tab_and_workspace_arrivals_start_dwell_for_only_the_shown_pane() {
     let t = Instant::now();
     let mut state = shell(t);

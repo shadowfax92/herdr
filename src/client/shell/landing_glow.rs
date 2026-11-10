@@ -33,7 +33,8 @@ use super::*;
 use crate::config::LandingGlowConfig;
 use crate::protocol::CellData;
 
-type Rgb = (u8, u8, u8);
+/// RGB triple. The color helpers below are shared with `super::pane_flag_paint`.
+pub(super) type Rgb = (u8, u8, u8);
 
 /// A landing this soon after the previous one plays Quiet instead of Ring, so
 /// holding a jump key gives a faint tick per pane instead of a strobe.
@@ -523,7 +524,7 @@ fn paint(
     }
 }
 
-fn with_cell(frame: &mut FrameData, x: u16, y: u16, edit: impl Fn(&mut CellData)) {
+pub(super) fn with_cell(frame: &mut FrameData, x: u16, y: u16, edit: impl Fn(&mut CellData)) {
     if x >= frame.width || y >= frame.height {
         return;
     }
@@ -552,7 +553,7 @@ fn for_each_perimeter_cell(frame: &mut FrameData, area: Rect, edit: impl Fn(&mut
     }
 }
 
-fn is_line_glyph(frame: &FrameData, x: u16, y: u16) -> bool {
+pub(super) fn is_line_glyph(frame: &FrameData, x: u16, y: u16) -> bool {
     if x >= frame.width || y >= frame.height {
         return false;
     }
@@ -580,17 +581,17 @@ fn blend_bg(cell: &mut CellData, colors: &Colors, amount: f32) {
 
 /// `CellData` colors use `color_to_u32`'s packing: `Reset` is 0 and RGB is
 /// tagged `0x02` in the top byte.
-const RESET: u32 = 0;
+pub(super) const RESET: u32 = 0;
 
-fn unpack_rgb(packed: u32) -> Option<Rgb> {
+pub(super) fn unpack_rgb(packed: u32) -> Option<Rgb> {
     (packed >> 24 == 0x02).then_some(((packed >> 16) as u8, (packed >> 8) as u8, packed as u8))
 }
 
-fn pack((r, g, b): Rgb) -> u32 {
+pub(super) fn pack((r, g, b): Rgb) -> u32 {
     crate::protocol::color_to_u32(ratatui::style::Color::Rgb(r, g, b))
 }
 
-fn rgb(color: ratatui::style::Color) -> Option<Rgb> {
+pub(super) fn rgb(color: ratatui::style::Color) -> Option<Rgb> {
     match color {
         ratatui::style::Color::Rgb(r, g, b) => Some((r, g, b)),
         _ => None,
@@ -599,7 +600,7 @@ fn rgb(color: ratatui::style::Color) -> Option<Rgb> {
 
 /// Per-channel linear mix with halves rounded away from zero, the same rule as
 /// the server's `mix_rgb` for selection colors.
-fn mix(base: Rgb, target: Rgb, amount: f32) -> Rgb {
+pub(super) fn mix(base: Rgb, target: Rgb, amount: f32) -> Rgb {
     let channel = |base: u8, target: u8| {
         (f32::from(base) + (f32::from(target) - f32::from(base)) * amount).round() as u8
     };
@@ -610,7 +611,7 @@ fn mix(base: Rgb, target: Rgb, amount: f32) -> Rgb {
     )
 }
 
-fn luminance((r, g, b): Rgb) -> f32 {
+pub(super) fn luminance((r, g, b): Rgb) -> f32 {
     (0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b)) / 255.0
 }
 
