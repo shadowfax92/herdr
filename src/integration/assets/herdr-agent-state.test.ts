@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { rm } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import net, { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +18,7 @@ const originalEnvironment = {
 let server: Server | undefined;
 let socketPath: string | undefined;
 let importCounter = 0;
+const hookDirectories: string[] = [];
 
 afterEach(async () => {
   await new Promise<void>((resolve, reject) => {
@@ -33,6 +34,8 @@ afterEach(async () => {
     await rm(socketPath, { force: true });
     socketPath = undefined;
   }
+
+  await Promise.all(hookDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 
   Object.defineProperty(process, "platform", { value: originalPlatform });
   net.createConnection = originalCreateConnection;
@@ -104,7 +107,7 @@ function captureConnectionEndpoint() {
   return () => connectedEndpoint;
 }
 
-async function startRecordingServer(name: string): Promise<unknown[]> {
+async function startRecordingServer(name: string, shellPid?: number, boundaryTimeout = false): Promise<unknown[]> {
   const recordingSocketPath = join(tmpdir(), `herdr-${name}-${process.pid}.sock`);
   socketPath = recordingSocketPath;
   await rm(recordingSocketPath, { force: true });
@@ -119,8 +122,10 @@ async function startRecordingServer(name: string): Promise<unknown[]> {
       if (newline === -1) {
         return;
       }
-      requests.push(JSON.parse(input.slice(0, newline)));
-      socket.end("{}\n");
+      const request = JSON.parse(input.slice(0, newline));
+      requests.push(request);
+      if (request.method === "pane.process_info" && boundaryTimeout) return;
+      socket.end(JSON.stringify(request.method === "pane.process_info" ? { result: { process_info: { shell_pid: shellPid } } } : {}) + "\n");
     });
   });
   server = recordingServer;
@@ -681,4 +686,182 @@ function requestSessionPath(request: unknown): unknown {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+// Run the shipped hooks as subprocesses: environment guards must work before
+// any report reaches the server. Synthetic process tables isolate ancestry from
+// the coding agent that happens to be running this test suite.
+const powershell = process.env.HERDR_TEST_POWERSHELL ?? Bun.which("pwsh") ?? Bun.which("powershell");
+const hookRuntimes = [
+  { name: "sh", available: originalPlatform !== "win32" },
+  { name: "ps1", available: Boolean(powershell) },
+] as const;
+
+type HookProcess = { pid: number; parent: number; name: string };
+const topLevelProcesses: HookProcess[] = [
+  { pid: 100, parent: 90, name: "claude" },
+  { pid: 90, parent: 80, name: "sh" },
+  { pid: 80, parent: 70, name: "herdr" },
+  // Agents outside this Herdr server cannot claim its panes.
+  { pid: 70, parent: 1, name: "codex" },
+];
+
+async function runNativeHook(
+  runtime: "sh" | "ps1",
+  agent: "claude" | "codex",
+  source: string,
+  environment: Record<string, string> = {},
+  processes = topLevelProcesses,
+  options: { boundary?: boolean; boundaryTimeout?: boolean; slowFirstRead?: boolean } = {},
+) {
+  const shellPid = options.boundary === false ? undefined : 90;
+  // PowerShell reports through the CLI, whose argv we capture below. It needs
+  // no socket listener; the real Unix socket exercises the shell asset only.
+  const requests = runtime === "sh"
+    ? await startRecordingServer(`${agent}-${runtime}`, shellPid, options.boundaryTimeout)
+    : [];
+  if (runtime === "ps1") configureIntegrationEnvironment("unused-hook-test.sock");
+  const directory = await mkdtemp(join(tmpdir(), "herdr-hook-test-"));
+  hookDirectories.push(directory);
+  const env = { ...process.env };
+  for (const key of ["CLAUDE_PID", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION", "CLAUDECODE", "CODEX_THREAD_ID", "CURSOR_VERSION"]) {
+    delete env[key];
+  }
+  Object.assign(env, { CLAUDE_PID: agent === "claude" ? "100" : "", ...environment });
+  const hook = join(import.meta.dir, agent, `herdr-agent-state.${runtime}`);
+  const capture = join(directory, "arguments.json");
+  let command: string[];
+  if (runtime === "sh") {
+    const ps = join(directory, "ps");
+    const rows = processes.map(({ pid, parent, name }) => `${pid} ${parent} ${name}`).join("\n");
+    await writeFile(ps, `#!/usr/bin/env python3
+import os, time
+from pathlib import Path
+attempt = Path(${JSON.stringify(join(directory, "ps-attempt"))})
+if ${options.slowFirstRead ? "True" : "False"} and not attempt.exists():
+    attempt.touch()
+    time.sleep(3)
+print(${JSON.stringify(rows)})
+if ${processes.length > 0 ? "True" : "False"}:
+    print(f"{os.getppid()} 100 python3")
+`);
+    await chmod(ps, 0o700);
+    env.PATH = `${directory}:${process.env.PATH}`;
+    command = ["sh", hook, "session"];
+  } else {
+    const fakeHerdr = join(directory, "herdr-capture.ps1");
+    await writeFile(fakeHerdr, `if ($args[1] -eq 'process-info') { ${options.boundaryTimeout ? "Start-Sleep 3;" : ""} '${JSON.stringify({ result: { process_info: { shell_pid: shellPid } } })}'; exit 0 }\n[IO.File]::WriteAllText($env:HERDR_TEST_CAPTURE, (ConvertTo-Json -InputObject @($args)))`);
+    env.HERDR_BIN_PATH = fakeHerdr;
+    env.HERDR_TEST_CAPTURE = capture;
+    const table = processes.map(({ pid, parent, name }) => ({ ProcessId: pid, ParentProcessId: parent, Name: `${name}.exe` }));
+    const wrapper = join(directory, "run.ps1");
+    await writeFile(wrapper, `$script:lookupAttempt = 0
+function Get-CimInstance {
+  $script:lookupAttempt++
+  ${options.slowFirstRead ? 'if ($script:lookupAttempt -eq 1) { throw [TimeoutException]::new("process read timed out") }' : ""}
+  ConvertFrom-Json @'
+${JSON.stringify(table)}
+'@
+  ${processes.length > 0 ? '[pscustomobject]@{ProcessId=$PID;ParentProcessId=100;Name="pwsh.exe"}' : ""}
+}
+& '${hook.replaceAll("'", "''")}' session
+`);
+    command = [powershell!, "-NoProfile", "-File", wrapper];
+  }
+  const child = Bun.spawn(command, {
+    env,
+    stdin: new Blob([JSON.stringify({ hook_event_name: "SessionStart", source, session_id: "current-session", transcript_path: "/transcripts/current.jsonl" })]),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  expect(await child.exited).toBe(0);
+  expect(await new Response(child.stderr).text()).toBe("");
+  if (runtime === "ps1" && await Bun.file(capture).exists()) {
+    const args: string[] = JSON.parse(await readFile(capture, "utf8"));
+    expect(args.slice(0, 3)).toEqual(["pane", "report-agent-session", "test:p1"]);
+    const argument = (flag: string) => args[args.indexOf(flag) + 1];
+    requests.push({ method: "pane.report_agent_session", params: { source: argument("--source"), agent: argument("--agent"), agent_session_id: argument("--agent-session-id"), session_start_source: argument("--session-start-source") } });
+  }
+  return requests.filter((request) => isRecord(request) && request.method === "pane.report_agent_session");
+}
+
+for (const runtime of hookRuntimes) {
+  const hookTest = runtime.available ? test : test.skip;
+  for (const agent of ["claude", "codex"] as const) {
+    for (const source of ["startup", "clear", "resume", "compact"]) {
+      hookTest(`${agent} ${runtime.name} reports top-level ${source}`, async () => {
+        const requests = await runNativeHook(runtime.name, agent, source,
+          agent === "claude"
+            ? { CLAUDE_CODE_SESSION_ID: "current-session", CLAUDE_CODE_CHILD_SESSION: "1" }
+            : { CODEX_THREAD_ID: "current-session" });
+        expect(requests).toHaveLength(1);
+        expect(requests[0]).toMatchObject({ method: "pane.report_agent_session", params: { source: `herdr:${agent}`, agent, agent_session_id: "current-session", session_start_source: source } });
+      });
+    }
+  }
+  for (const parent of ["claude", "codex"]) {
+    hookTest(`claude ${runtime.name} ignores a child in a ${parent} pane`, async () => {
+      const processes = [{ pid: 95, parent: 92, name: "sh" }, { pid: 92, parent: 90, name: parent }, ...topLevelProcesses.map((entry) => entry.pid === 100 ? { ...entry, parent: 95 } : entry)];
+      expect(await runNativeHook(runtime.name, "claude", "startup", { CLAUDE_CODE_SESSION_ID: "current-session", CLAUDE_CODE_CHILD_SESSION: "1" }, processes)).toEqual([]);
+    });
+  }
+  for (const source of ["clear", "resume", "compact"]) {
+    hookTest(`claude ${runtime.name} also ignores nested ${source}`, async () => {
+      const processes = [{ pid: 95, parent: 92, name: "sh" }, { pid: 92, parent: 90, name: "claude" }, ...topLevelProcesses.map((entry) => entry.pid === 100 ? { ...entry, parent: 95 } : entry)];
+      expect(await runNativeHook(runtime.name, "claude", source, {}, processes)).toEqual([]);
+    });
+  }
+  hookTest(`claude ${runtime.name} reports after its pane shell is reparented`, async () => {
+    const processes = topLevelProcesses.map((entry) => entry.pid === 90 ? { ...entry, parent: 1 } : entry);
+    expect(await runNativeHook(runtime.name, "claude", "resume", {}, processes)).toHaveLength(1);
+  });
+  hookTest(`claude ${runtime.name} rejects a nested Nix wrapper`, async () => {
+    const processes = [{ pid: 92, parent: 90, name: ".claude-code-wrapped" }, ...topLevelProcesses.map((entry) => entry.pid === 100 ? { ...entry, parent: 92 } : entry)];
+    expect(await runNativeHook(runtime.name, "claude", "startup", {}, processes)).toEqual([]);
+  });
+  hookTest(`claude ${runtime.name} rejects nested executables named by version`, async () => {
+    const processes = [{ pid: 92, parent: 90, name: "2.1.322" }, ...topLevelProcesses.map((entry) => entry.pid === 100 ? { ...entry, parent: 92, name: "2.1.322" } : entry)];
+    expect(await runNativeHook(runtime.name, "claude", "startup", {}, processes)).toEqual([]);
+  });
+  hookTest(`claude ${runtime.name} accepts an agent exec replacing its pane shell`, async () => {
+    const processes = topLevelProcesses.map((entry) => entry.pid === 90 ? { ...entry, name: "claude" } : entry);
+    expect(await runNativeHook(runtime.name, "claude", "startup", { CLAUDE_PID: "90" }, processes)).toHaveLength(1);
+    expect(await runNativeHook(runtime.name, "claude", "startup", {}, processes)).toEqual([]);
+  });
+  hookTest(`claude ${runtime.name} reports when boundary lookup fails without an outer agent`, async () => {
+    const processes = topLevelProcesses.filter((entry) => entry.pid !== 70);
+    expect(await runNativeHook(runtime.name, "claude", "startup", {}, processes, { boundary: false })).toHaveLength(1);
+  });
+  hookTest(`claude ${runtime.name} rejects an outer agent when boundary lookup fails`, async () => {
+    expect(await runNativeHook(runtime.name, "claude", "startup", {}, topLevelProcesses, { boundary: false })).toEqual([]);
+  });
+  hookTest(`claude ${runtime.name} reports when boundary lookup times out`, async () => {
+    const processes = topLevelProcesses.filter((entry) => entry.pid !== 70);
+    expect(await runNativeHook(runtime.name, "claude", "startup", {}, processes, { boundaryTimeout: true })).toHaveLength(1);
+  });
+  hookTest(`claude ${runtime.name} finds the reporter when CLAUDE_PID is missing`, async () => {
+    expect(await runNativeHook(runtime.name, "claude", "startup", { CLAUDE_PID: "" })).toHaveLength(1);
+  });
+  hookTest(`claude ${runtime.name} finds the reporter when CLAUDE_PID is absent from the table`, async () => {
+    expect(await runNativeHook(runtime.name, "claude", "startup", { CLAUDE_PID: "999999" })).toHaveLength(1);
+  });
+  hookTest(`claude ${runtime.name} still rejects a child without CLAUDE_PID`, async () => {
+    const processes = [{ pid: 92, parent: 90, name: "claude" }, ...topLevelProcesses.map((entry) => entry.pid === 100 ? { ...entry, parent: 92 } : entry)];
+    expect(await runNativeHook(runtime.name, "claude", "startup", { CLAUDE_PID: "" }, processes)).toEqual([]);
+  });
+  hookTest(`claude ${runtime.name} retries a timed out process-table read`, async () => {
+    expect(await runNativeHook(runtime.name, "claude", "startup", {}, topLevelProcesses, { slowFirstRead: true })).toHaveLength(1);
+  });
+  hookTest(`claude ${runtime.name} ignores unavailable process ownership`, async () => {
+    expect(await runNativeHook(runtime.name, "claude", "startup", {}, [])).toEqual([]);
+  });
+  hookTest(`codex ${runtime.name} ignores a child in a Claude pane`, async () => {
+    expect(await runNativeHook(runtime.name, "codex", "startup", { CLAUDE_CODE_SESSION_ID: "outer-claude", CLAUDE_PID: "90" })).toEqual([]);
+  });
+  hookTest(`codex ${runtime.name} accepts a pane with a stale inherited Claude PID`, async () => {
+    expect(await runNativeHook(runtime.name, "codex", "startup", { CLAUDE_PID: "123", CODEX_THREAD_ID: "current-session" })).toHaveLength(1);
+  });
+  hookTest(`codex ${runtime.name} preserves the inherited thread guard`, async () => {
+    expect(await runNativeHook(runtime.name, "codex", "startup", { CODEX_THREAD_ID: "outer-codex" })).toEqual([]);
+  });
 }

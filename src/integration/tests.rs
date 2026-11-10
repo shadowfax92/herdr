@@ -1132,7 +1132,7 @@ fn claude_v9_integration_status_is_outdated_until_reinstalled() {
 
     assert_eq!(claude.path, hook_path);
     assert_eq!(claude.installed_version, Some(9));
-    assert_eq!(claude.expected_version, 11);
+    assert_eq!(claude.expected_version, CLAUDE_INTEGRATION_VERSION);
     assert_eq!(claude.state, IntegrationStatusKind::Outdated);
 
     install_claude().unwrap();
@@ -1141,7 +1141,7 @@ fn claude_v9_integration_status_is_outdated_until_reinstalled() {
         hook_path,
         CLAUDE_INTEGRATION_VERSION,
     );
-    assert_eq!(status.installed_version, Some(11));
+    assert_eq!(status.installed_version, Some(CLAUDE_INTEGRATION_VERSION));
     assert_eq!(status.state, IntegrationStatusKind::Current);
 
     std::env::remove_var("HOME");
@@ -1171,7 +1171,7 @@ fn claude_v2_integration_status_is_outdated() {
 
     assert_eq!(claude.path, hook_path);
     assert_eq!(claude.installed_version, Some(2));
-    assert_eq!(claude.expected_version, 11);
+    assert_eq!(claude.expected_version, CLAUDE_INTEGRATION_VERSION);
     assert_eq!(claude.state, IntegrationStatusKind::Outdated);
 
     std::env::remove_var("HOME");
@@ -1251,7 +1251,7 @@ fn claude_windows_hook_reports_utf8_session_path() {
     let fake_herdr = base.join("herdr-capture.ps1");
     fs::write(
         &fake_herdr,
-        "$capture = $env:HERDR_TEST_CAPTURE\n[System.IO.File]::WriteAllText($capture, ($args -join \"`n\"), [System.Text.UTF8Encoding]::new($false))\n",
+        "if ($args[1] -eq 'process-info') { '{\"result\":{\"process_info\":{\"shell_pid\":90}}}'; exit 0 }\n$capture = $env:HERDR_TEST_CAPTURE\n[System.IO.File]::WriteAllText($capture, ($args -join \"`n\"), [System.Text.UTF8Encoding]::new($false))\n",
     )
     .unwrap();
 
@@ -1263,10 +1263,21 @@ fn claude_windows_hook_reports_utf8_session_path() {
         serde_json::to_string(transcript).unwrap()
     );
 
+    // The UTF-8 transport fixture has no real Claude parent. Supply only the
+    // ownership chain; the shared asset tests exercise nested-parent rejection.
+    let wrapper = base.join("invoke-hook.ps1");
+    fs::write(
+        &wrapper,
+        format!(
+            "function Get-CimInstance {{ @([pscustomobject]@{{ProcessId=100;ParentProcessId=90;Name='claude.exe'}}, [pscustomobject]@{{ProcessId=90;ParentProcessId=1;Name='herdr.exe'}}) }}\n& '{}' session\n",
+            installed.hook_path.display().to_string().replace('\'', "''")
+        ),
+    )
+    .unwrap();
     let mut child = Command::new("powershell")
         .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
-        .arg(&installed.hook_path)
-        .arg("session")
+        .arg(&wrapper)
+        .env("CLAUDE_PID", "100")
         .env("HERDR_ENV", "1")
         .env("HERDR_PANE_ID", "w1:p2")
         .env("HERDR_BIN_PATH", &fake_herdr)
@@ -1430,7 +1441,7 @@ fn codex_v2_integration_status_is_outdated() {
 
     assert_eq!(codex.path, hook_path);
     assert_eq!(codex.installed_version, Some(2));
-    assert_eq!(codex.expected_version, 10);
+    assert_eq!(codex.expected_version, CODEX_INTEGRATION_VERSION);
     assert_eq!(codex.state, IntegrationStatusKind::Outdated);
 
     std::env::remove_var("HOME");

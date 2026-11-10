@@ -3,7 +3,7 @@
 # managed by herdr; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
 # HERDR_INTEGRATION_ID=codex
-# HERDR_INTEGRATION_VERSION=10
+# HERDR_INTEGRATION_VERSION=11
 
 set -eu
 
@@ -50,6 +50,11 @@ if hook_input_file:
 
 hook_event_name = str(hook_input.get("hook_event_name") or "")
 if hook_event_name and hook_event_name != "SessionStart":
+    raise SystemExit(0)
+
+# Codex preserves Claude's tool-shell identity on cross-agent child launches.
+# Its own thread guard below covers nested Codex sessions.
+if os.environ.get("CLAUDE_CODE_SESSION_ID"):
     raise SystemExit(0)
 
 request_id = f"{source}:{int(time.time() * 1000)}:{random.randrange(1_000_000):06d}"

@@ -60,16 +60,35 @@ fn run_shell_hook_with_env(
     fs::create_dir_all(&base).unwrap();
     let socket_path = base.join("herdr.sock");
     let listener = UnixListener::bind(&socket_path).unwrap();
+    let boundary_pid = std::process::id();
 
     let server = thread::spawn(move || {
         listener.set_nonblocking(true).unwrap();
-        let deadline = Instant::now() + Duration::from_millis(700);
+        let mut deadline = Instant::now() + Duration::from_millis(700);
         while Instant::now() < deadline {
             match listener.accept() {
                 Ok((mut stream, _)) => {
                     let mut line = String::new();
                     let mut reader = BufReader::new(stream.try_clone().unwrap());
                     reader.read_line(&mut line).unwrap();
+                    let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                    if request["method"] == "pane.process_info" {
+                        // The ownership probe precedes the report on its own
+                        // connection. Bound it at this fixture's process so a
+                        // real coding agent running the tests is not its owner.
+                        let response = serde_json::json!({
+                            "id": request["id"],
+                            "result": {
+                                "type": "pane_process_info",
+                                "process_info": {"shell_pid": boundary_pid}
+                            }
+                        });
+                        writeln!(stream, "{response}").unwrap();
+                        // Once a hook is active, allow its bounded process-table
+                        // retry; ignored hooks still keep the short deadline.
+                        deadline = Instant::now() + Duration::from_secs(8);
+                        continue;
+                    }
                     let _ = stream.write_all(br#"{"id":"test","result":{"type":"ok"}}"#);
                     let _ = stream.write_all(b"\n");
                     let _ = stream.flush();
@@ -93,6 +112,8 @@ fn run_shell_hook_with_env(
         .env("HERDR_SOCKET_PATH", &socket_path)
         .env("HERDR_PANE_ID", "p_test")
         .env_remove("CODEX_THREAD_ID")
+        .env_remove("CLAUDE_PID")
+        .env_remove("CLAUDE_CODE_SESSION_ID")
         .env_remove("CURSOR_VERSION")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

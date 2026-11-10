@@ -2,7 +2,7 @@
 # managed by herdr; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
 # HERDR_INTEGRATION_ID=claude
-# HERDR_INTEGRATION_VERSION=11
+# HERDR_INTEGRATION_VERSION=12
 
 param([string]$Action = "")
 
@@ -28,8 +28,76 @@ if (-not [string]::IsNullOrWhiteSpace($payload.agent_id)) { exit 0 }
 $sessionId = $payload.session_id
 if ([string]::IsNullOrWhiteSpace($sessionId)) { exit 0 }
 
-$seq = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+# The pane shell PID survives server handoff. If its lookup fails, inspect the
+# whole ancestry instead: another agent still proves nesting, while a lookup
+# failure alone must not silently hide a top-level session for its lifetime.
 $herdr = if ([string]::IsNullOrWhiteSpace($env:HERDR_BIN_PATH)) { "herdr" } else { $env:HERDR_BIN_PATH }
+$shellPid = $null
+$infoProcess = $null
+try {
+    # Bound the optional CLI query as well as WMI below within the hook's 10s
+    # budget. Drain both pipes asynchronously so diagnostic output cannot block.
+    $start = New-Object System.Diagnostics.ProcessStartInfo
+    $start.FileName = $herdr
+    $arguments = @("pane", "process-info", "--pane", $env:HERDR_PANE_ID)
+    if ($herdr.EndsWith(".ps1", [StringComparison]::OrdinalIgnoreCase)) {
+        $start.FileName = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+        $arguments = @("-NoProfile", "-File", $herdr) + $arguments
+    }
+    $start.Arguments = ($arguments | ForEach-Object { '"' + $_.Replace('"', '\"') + '"' }) -join ' '
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $infoProcess = [System.Diagnostics.Process]::Start($start)
+    $stdout = $infoProcess.StandardOutput.ReadToEndAsync()
+    $stderr = $infoProcess.StandardError.ReadToEndAsync()
+    if (-not $infoProcess.WaitForExit(2000)) {
+        $infoProcess.Kill()
+        throw "pane ownership lookup timed out"
+    }
+    $info = $stdout.Result | ConvertFrom-Json
+    $shellPid = [uint32]::Parse([string]$info.result.process_info.shell_pid)
+} catch {
+    # Keep inspecting without a boundary when the server is busy/unavailable.
+} finally {
+    if ($null -ne $infoProcess) { $infoProcess.Dispose() }
+}
+
+$processes = @{}
+for ($attempt = 0; $attempt -lt 2; $attempt++) {
+    try {
+        Get-CimInstance Win32_Process -OperationTimeoutSec 2 -ErrorAction Stop | ForEach-Object {
+            $processes[[uint32]$_.ProcessId] = $_
+        }
+        if ($processes.Count -gt 0) { break }
+    } catch {
+        $processes = @{}
+    }
+}
+if ($processes.Count -eq 0) { exit 0 }
+
+$cliPid = [uint32]0
+$knownReporter = [uint32]::TryParse($env:CLAUDE_PID, [ref]$cliPid) -and $processes.ContainsKey($cliPid)
+$currentPid = if ($knownReporter) { $cliPid } else { [uint32]$PID }
+$cliName = if ($knownReporter) { $processes[$cliPid].Name } else { $null }
+$reporterSeen = $knownReporter
+$visited = New-Object 'System.Collections.Generic.HashSet[uint32]'
+# When CLAUDE_PID is absent/stale, the first agent above the hook is its reporter.
+# Only a second agent proves nesting; a truncated chain preserves reporting.
+while ($processes.ContainsKey($currentPid) -and $visited.Add($currentPid)) {
+    $process = $processes[$currentPid]
+    $name = $process.Name.ToLowerInvariant().TrimStart('.') -replace '\.exe$', '' -replace '-wrapped$', ''
+    $isAgent = ($null -ne $cliName -and $process.Name -eq $cliName) -or $name -in @("claude", "claude-code", "codex")
+    if ((-not $knownReporter -or $currentPid -ne $cliPid) -and $isAgent) {
+        if ($reporterSeen) { exit 0 }
+        $reporterSeen = $true
+    }
+    if ($currentPid -eq $shellPid) { break }
+    $currentPid = [uint32]$process.ParentProcessId
+}
+
+$seq = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 try {
     $args = @(
         "pane",

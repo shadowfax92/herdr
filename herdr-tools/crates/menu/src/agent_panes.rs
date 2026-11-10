@@ -206,6 +206,9 @@ impl AgentPaneController {
             session.kind == "id"
                 && !session.value.trim().is_empty()
                 && !session.value.chars().any(char::is_control)
+                // A nested agent can leave hook metadata for a different tool.
+                // The foreground detection owns which tool the pane can fork.
+                && pane.agent.as_deref().is_none_or(|agent| agent == session.agent)
                 && matches!(
                     (session.source.as_str(), session.agent.as_str()),
                     ("herdr:claude", "claude") | ("herdr:codex", "codex")
@@ -420,6 +423,35 @@ mod tests {
         );
         pane.agent = Some("shell".into());
         assert_eq!(controller.fork_command(&pane), "rtr fork --here");
+    }
+
+    #[test]
+    fn fork_command_uses_detected_agent_when_session_belongs_to_another_tool() {
+        let controller = AgentPaneController::new(
+            Herdr::new("herdr"),
+            "w1:p1",
+            "/work",
+            "/state/last-fork.json",
+            "rtr",
+        );
+        for (detected, reported) in [("codex", "claude"), ("claude", "codex")] {
+            let pane = PaneInfo {
+                pane_id: "w1:p1".into(),
+                cwd: Some("/work".into()),
+                foreground_cwd: None,
+                agent: Some(detected.into()),
+                agent_session: Some(AgentSessionInfo {
+                    source: format!("herdr:{reported}"),
+                    agent: reported.into(),
+                    kind: "id".into(),
+                    value: "nested-session".into(),
+                }),
+            };
+            assert_eq!(
+                controller.fork_command(&pane),
+                format!("rtr fork --here --tool {detected}")
+            );
+        }
     }
 
     #[test]

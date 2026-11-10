@@ -2,7 +2,7 @@
 # managed by herdr; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
 # HERDR_INTEGRATION_ID=codex
-# HERDR_INTEGRATION_VERSION=10
+# HERDR_INTEGRATION_VERSION=11
 
 param([string]$Action = "")
 
@@ -21,6 +21,10 @@ try {
 }
 
 if ($payload.hook_event_name -and $payload.hook_event_name -ne "SessionStart") { exit 0 }
+
+# Claude's identity survives in a nested Codex hook; Codex's own inherited
+# thread guard below handles Codex children in a Codex pane.
+if (-not [string]::IsNullOrWhiteSpace($env:CLAUDE_CODE_SESSION_ID)) { exit 0 }
 
 $sessionId = $payload.session_id
 if ([string]::IsNullOrWhiteSpace($sessionId)) { exit 0 }
