@@ -1,6 +1,42 @@
 use super::*;
 
+/// A shutdown may be consumed before the client paints its final toast. Repeat
+/// loss summaries in the existing exit reason so they survive TUI teardown;
+/// bound and sanitize terminal text while full payloads remain in warning logs.
+pub(super) fn prompt_shutdown_reason(notices: &[api::schema::NotificationShowParams]) -> String {
+    let mut reason = "server is shutting down".to_owned();
+    if notices.is_empty() {
+        return reason;
+    }
+    reason.push_str(&format!("; {} held prompt(s) undelivered", notices.len()));
+    let mut detail_chars = 0;
+    for notice in notices {
+        let title = sanitize_notification_text(&notice.title, 80).unwrap_or_default();
+        let body = notice
+            .body
+            .as_deref()
+            .and_then(|text| sanitize_notification_text(text, 240))
+            .unwrap_or_default();
+        let detail = format!("; {title}: {body}");
+        // A single exit message must remain comfortably inside every client
+        // frame limit even when many workers were held at shutdown.
+        detail_chars += detail.chars().count();
+        if detail_chars > 4096 {
+            break;
+        }
+        reason.push_str(&detail);
+    }
+    reason.push_str("; see server log for all undelivered text");
+    reason
+}
+
 impl HeadlessServer {
+    pub(super) fn flush_prompt_notifications(&mut self) {
+        for notification in std::mem::take(&mut self.app.prompt_delivery.notifications) {
+            self.show_notification_api("prompt-hold".to_owned(), notification, false);
+        }
+    }
+
     fn pane_effective_state(&self, pane_id: crate::layout::PaneId) -> crate::detect::AgentState {
         self.app
             .state
@@ -224,6 +260,15 @@ impl HeadlessServer {
         id: String,
         params: api::schema::NotificationShowParams,
     ) -> String {
+        self.show_notification_api(id, params, true)
+    }
+
+    fn show_notification_api(
+        &mut self,
+        id: String,
+        params: api::schema::NotificationShowParams,
+        rate_limit: bool,
+    ) -> String {
         use api::schema::NotificationShowReason;
 
         let Some(title) = sanitize_notification_text(&params.title, 80) else {
@@ -250,7 +295,9 @@ impl HeadlessServer {
             };
             return notification_show_result(id, false, reason);
         }
-        if self.app.api_notification_rate_limited(Instant::now()) {
+        // Runtime-owned held mail must surface every item, even when several
+        // workers finish together. Public notification.show keeps its throttle.
+        if rate_limit && self.app.api_notification_rate_limited(Instant::now()) {
             return notification_show_result(id, false, NotificationShowReason::RateLimited);
         }
         let sound = match params.sound {
@@ -275,7 +322,7 @@ impl HeadlessServer {
                 position: params.position,
             },
         ));
-        if shown {
+        if shown && rate_limit {
             self.app.mark_api_notification_shown(Instant::now());
         }
         notification_show_result(

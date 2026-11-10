@@ -103,6 +103,8 @@ pub enum ResponseResult {
     },
     AgentPrompted {
         agent: AgentInfo,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delivery: Option<String>,
     },
     AgentList {
         agents: Vec<AgentInfo>,

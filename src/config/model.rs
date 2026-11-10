@@ -309,6 +309,23 @@ pub fn validated_sidebar_bounds(min: u16, max: u16) -> Option<(u16, u16)> {
     }
 }
 
+/// Server policy for arbitrating agent prompts and human drafts.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(default)]
+pub struct AgentPromptConfig {
+    pub hold_while_drafting: bool,
+    pub abandoned_draft_secs: u64,
+}
+
+impl Default for AgentPromptConfig {
+    fn default() -> Self {
+        Self {
+            hold_while_drafting: true,
+            abandoned_draft_secs: 600,
+        }
+    }
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -316,6 +333,7 @@ pub struct Config {
     pub theme: ThemeConfig,
     pub terminal: TerminalConfig,
     pub session: SessionConfig,
+    pub agent_prompt: AgentPromptConfig,
     pub server: ServerConfig,
     pub update: UpdateConfig,
     pub keys: KeysConfig,

@@ -76,6 +76,12 @@ pub(crate) struct WorktreeReadData {
 /// An event from a background task to the main loop.
 #[derive(Debug)]
 pub enum AppEvent {
+    /// Completion of a server-owned, previously acknowledged held prompt failed.
+    HeldPromptDeliveryFailed {
+        target: String,
+        text: String,
+        reason: String,
+    },
     /// A pane's child process exited.
     PaneDied {
         pane_id: PaneId,

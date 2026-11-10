@@ -211,10 +211,12 @@ pub(super) fn prompt_agent(
     let prompt_started_working =
         before_prompt.agent_status == crate::api::schema::AgentStatus::Working;
     let target = params.target.clone();
+    let submission_baseline = Arc::new(std::sync::OnceLock::new());
     if let Some(prompt_wait) = params.wait.as_mut() {
         prompt_wait.submission_deadline = wait
             .timeout_ms
             .map(|timeout_ms| wait_started + std::time::Duration::from_millis(timeout_ms));
+        prompt_wait.submission_baseline = Some(Arc::clone(&submission_baseline));
     }
     let last_event_sequence = event_hub.current_sequence();
     let prompt_request = Request {
@@ -241,6 +243,13 @@ pub(super) fn prompt_agent(
         return agent_wait_not_running(request_id).map(Some);
     }
 
+    // A human can finish a whole turn while this request is held. Start event
+    // replay at actual release, retaining fast post-release Working/Idle events
+    // without accepting that earlier human turn as this prompt's activity.
+    let (last_event_sequence, prompt_started_working) = submission_baseline
+        .get()
+        .map(|baseline| (baseline.event_sequence, baseline.started_working))
+        .unwrap_or((last_event_sequence, prompt_started_working));
     let prompt_activity_observed = prompt_started_working
         || matches!(
             prompted.agent_status,
@@ -334,7 +343,10 @@ fn agent_prompt_success(
 ) -> std::io::Result<String> {
     serde_json::to_string(&SuccessResponse {
         id: request_id,
-        result: ResponseResult::AgentPrompted { agent },
+        result: ResponseResult::AgentPrompted {
+            agent,
+            delivery: None,
+        },
     })
     .map_err(std::io::Error::other)
 }
@@ -824,6 +836,155 @@ fn wait_matched_response(request_id: &str, event: serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prompt_hold_wait_ignores_human_turn_but_keeps_fast_post_release_activity() {
+        use crate::api::schema::{
+            AgentInfo, AgentPromptParams, AgentPromptSubmissionBaseline, AgentPromptWaitOptions,
+            AgentStatus,
+        };
+        use interprocess::local_socket::traits::Listener as _;
+        use std::sync::atomic::Ordering;
+
+        fn agent(status: AgentStatus, sequence: u64) -> AgentInfo {
+            serde_json::from_value(serde_json::json!({
+                "terminal_id": "term_test", "name": "worker", "agent": "opencode",
+                "agent_status": status, "workspace_id": "w1", "tab_id": "w1:t1",
+                "pane_id": "w1:p1", "focused": false, "state_change_seq": sequence,
+                "revision": 0,
+            }))
+            .unwrap()
+        }
+        fn status(hub: &EventHub, status: AgentStatus) {
+            hub.push(EventEnvelope {
+                event: EventKind::PaneAgentStatusChanged,
+                data: EventData::PaneAgentStatusChanged {
+                    pane_id: "w1:p1".into(),
+                    workspace_id: "w1".into(),
+                    agent_status: status,
+                    agent: Some("opencode".into()),
+                    title: None,
+                    display_agent: None,
+                    state_labels: Default::default(),
+                },
+            });
+        }
+
+        for (initial_working, post_release_activity) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let path = std::env::temp_dir().join(format!(
+                "hpw-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let listener = crate::ipc::bind_local_listener(&path).unwrap();
+            let peer = crate::ipc::connect_local_stream(&path).unwrap();
+            let mut stream = listener.accept().unwrap();
+            let (tx, mut rx) =
+                tokio::sync::mpsc::unbounded_channel::<crate::api::ApiRequestMessage>();
+            let hub = EventHub::default();
+            let app_hub = hub.clone();
+            let submitted = Arc::new(AtomicBool::new(false));
+            let app_submitted = Arc::clone(&submitted);
+            // The fake app completes a human turn during the hold, then captures
+            // release before optionally completing the worker's whole fast turn.
+            let app = std::thread::spawn(move || {
+                let mut accepted = false;
+                while let Some(message) = rx.blocking_recv() {
+                    let result = match message.request.method {
+                        Method::AgentGet(_) => ResponseResult::AgentInfo {
+                            agent: if accepted {
+                                agent(AgentStatus::Idle, if post_release_activity { 4 } else { 2 })
+                            } else {
+                                agent(
+                                    if initial_working {
+                                        AgentStatus::Working
+                                    } else {
+                                        AgentStatus::Idle
+                                    },
+                                    0,
+                                )
+                            },
+                        },
+                        Method::AgentPrompt(params) => {
+                            status(&app_hub, AgentStatus::Working);
+                            status(&app_hub, AgentStatus::Idle);
+                            params
+                                .wait
+                                .unwrap()
+                                .submission_baseline
+                                .unwrap()
+                                .set(AgentPromptSubmissionBaseline {
+                                    event_sequence: app_hub.current_sequence(),
+                                    started_working: false,
+                                })
+                                .unwrap();
+                            accepted = true;
+                            app_submitted.store(true, Ordering::Relaxed);
+                            if post_release_activity {
+                                status(&app_hub, AgentStatus::Working);
+                                status(&app_hub, AgentStatus::Idle);
+                            }
+                            ResponseResult::AgentPrompted {
+                                agent: agent(AgentStatus::Idle, 2),
+                                delivery: None,
+                            }
+                        }
+                        other => panic!("unexpected request: {other:?}"),
+                    };
+                    message
+                        .respond_to
+                        .send(
+                            serde_json::to_string(&SuccessResponse {
+                                id: message.request.id,
+                                result,
+                            })
+                            .unwrap(),
+                        )
+                        .unwrap();
+                }
+            });
+            let response = prompt_agent(
+                "held-wait".into(),
+                AgentPromptParams {
+                    target: "worker".into(),
+                    text: "worker text".into(),
+                    wait: Some(AgentPromptWaitOptions {
+                        until: Vec::new(),
+                        timeout_ms: Some(1000),
+                        submission_deadline: None,
+                        submission_baseline: None,
+                    }),
+                },
+                &mut stream,
+                &tx,
+                &hub,
+                &Arc::new(AtomicBool::new(true)),
+            )
+            .unwrap()
+            .unwrap();
+            let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+            assert!(submitted.load(Ordering::Relaxed));
+            if post_release_activity {
+                assert_eq!(response["result"]["type"], "agent_prompted", "{response}");
+            } else {
+                assert_eq!(
+                    response["error"]["code"], "timeout",
+                    "a human turn cannot complete the worker wait: {response}"
+                );
+            }
+            drop(tx);
+            app.join().unwrap();
+            drop(stream);
+            drop(peer);
+            drop(listener);
+            let _ = std::fs::remove_file(path);
+        }
+    }
 
     #[test]
     fn agent_wait_probe_only_translates_agent_disappearance() {

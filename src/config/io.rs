@@ -7,6 +7,7 @@ use super::{model::LoadedConfig, Config, CONFIG_PATH_ENV_VAR};
 const KNOWN_TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
     "advanced",
     "agent_key_rules",
+    "agent_prompt",
     "copy_hints",
     "experimental",
     "keys",
@@ -312,6 +313,14 @@ fn load_live_config_from_str(content: &str) -> Result<LoadedConfig, Vec<String>>
         &mut diagnostics,
         &mut invalid_sections,
         |section| config.terminal = section,
+    );
+    load_live_section(
+        table,
+        "agent_prompt",
+        "agent prompt config",
+        &mut diagnostics,
+        &mut invalid_sections,
+        |section| config.agent_prompt = section,
     );
     load_live_section(
         table,

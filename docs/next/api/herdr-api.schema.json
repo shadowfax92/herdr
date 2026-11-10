@@ -6868,6 +6868,14 @@
                 "null"
               ]
             },
+            "held_prompts": {
+              "format": "uint",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "interactive_ready": {
               "type": "boolean"
             },
@@ -9757,6 +9765,12 @@
               "properties": {
                 "agent": {
                   "$ref": "#/schemas/success_response/$defs/AgentInfo"
+                },
+                "delivery": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "type": {
                   "const": "agent_prompted",

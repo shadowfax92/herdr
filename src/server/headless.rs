@@ -515,6 +515,8 @@ impl HeadlessServer {
                 crate::render_prof::event("full_render_cause.scheduled_tasks");
             }
 
+            self.app.poll_due_prompt_gates(now);
+            self.flush_prompt_notifications();
             self.poll_pending_alt_screen_reads(now);
             if self.process_deferred_alt_screen_reads() {
                 needs_render = true;
@@ -623,6 +625,12 @@ impl HeadlessServer {
                 .fold(next_deadline, |deadline, pending| {
                     Some(deadline.map_or(pending, |current| current.min(pending)))
                 });
+            let next_deadline = self
+                .app
+                .next_prompt_gate_deadline()
+                .into_iter()
+                .chain(next_deadline)
+                .min();
             let event = {
                 tokio::select! {
                     maybe_api = self.app.api_rx.recv() => match maybe_api {
@@ -1186,8 +1194,22 @@ impl HeadlessServer {
                 };
                 if let Some(runtime) = self.runtime_for_terminal_id_string(terminal_id) {
                     let payload = paste_payload_for_runtime(runtime, &path);
-                    if let Err(err) = runtime.try_send_bytes(Bytes::from(payload)) {
+                    let result = runtime.try_send_bytes(Bytes::from(payload));
+                    let terminal_id = terminal_id.clone();
+                    if let Err(err) = result {
                         warn!(client_id, terminal_id = %terminal_id, err = %err, "terminal attach clipboard image paste failed");
+                    } else if let Some(id) = self
+                        .app
+                        .state
+                        .terminals
+                        .get_key_value(terminal_id.as_str())
+                        .map(|(id, _)| id.clone())
+                    {
+                        self.app.note_prompt_human_input(
+                            &id,
+                            &[crate::terminal::prompt_gate::HumanInput::Edit],
+                            Instant::now(),
+                        );
                     }
                 }
                 true
@@ -1226,6 +1248,15 @@ impl HeadlessServer {
                     &[protocol::ClientPaneInputEvent::Paste(path)],
                 ) {
                     warn!(client_id, pane_id, err = %err, "client shell clipboard image paste failed");
+                } else if let Some(id) = self.app.state.workspaces[workspace_index]
+                    .terminal_id(runtime_pane_id)
+                    .cloned()
+                {
+                    self.app.note_prompt_human_input(
+                        &id,
+                        &[crate::terminal::prompt_gate::HumanInput::Edit],
+                        Instant::now(),
+                    );
                 }
                 true
             }
@@ -1262,6 +1293,12 @@ impl HeadlessServer {
                     &[protocol::ClientPaneInputEvent::Paste(path)],
                 ) {
                     warn!(client_id, terminal_id, err = %err, "client shell popup clipboard image paste failed");
+                } else {
+                    self.app.note_prompt_human_input(
+                        &popup_terminal_id,
+                        &[crate::terminal::prompt_gate::HumanInput::Edit],
+                        Instant::now(),
+                    );
                 }
                 true
             }
@@ -1360,10 +1397,27 @@ impl HeadlessServer {
             return false;
         };
 
-        if let Err(err) =
-            apply_terminal_attach_scroll(runtime, source, direction, lines, column, row, modifiers)
-        {
+        let forwarded_page = matches!(&source, AttachScrollSource::PageKey { .. })
+            && runtime.plain_page_keys_use_host_scrollback() != Some(true);
+        let terminal_id = terminal_id.clone();
+        let result =
+            apply_terminal_attach_scroll(runtime, source, direction, lines, column, row, modifiers);
+        if let Err(err) = result {
             warn!(client_id, terminal_id = %terminal_id, err = %err, "terminal attach scroll failed");
+        } else if forwarded_page {
+            if let Some(id) = self
+                .app
+                .state
+                .terminals
+                .get_key_value(terminal_id.as_str())
+                .map(|(id, _)| id.clone())
+            {
+                self.app.note_prompt_human_input(
+                    &id,
+                    &[crate::terminal::prompt_gate::HumanInput::Edit],
+                    Instant::now(),
+                );
+            }
         }
         true
     }
@@ -2198,9 +2252,23 @@ impl HeadlessServer {
                 else {
                     return false;
                 };
-                if let Some(runtime) = self.runtime_for_terminal_id_string(terminal_id) {
-                    if let Err(err) = apply_terminal_attach_input(runtime, data) {
-                        warn!(client_id, terminal_id = %terminal_id, err = %err);
+                let terminal_id = terminal_id.clone();
+                if let Some(runtime) = self.runtime_for_terminal_id_string(&terminal_id) {
+                    let signal = super::pane_input::classify_attach_input(&data);
+                    match apply_terminal_attach_input(runtime, data) {
+                        Ok(()) => {
+                            if let Some(id) = self
+                                .app
+                                .state
+                                .terminals
+                                .get_key_value(terminal_id.as_str())
+                                .map(|(id, _)| id.clone())
+                            {
+                                self.app
+                                    .note_prompt_human_input(&id, &[signal], Instant::now());
+                            }
+                        }
+                        Err(err) => warn!(client_id, terminal_id = %terminal_id, err = %err),
                     }
                 }
                 true
@@ -2540,15 +2608,21 @@ impl HeadlessServer {
                     return foreground_changed | geometry_changed;
                 };
                 let scroll_before = runtime.scroll_metrics();
-                let mut keyboard_forwarded = false;
-                let input_result = apply_client_terminal_input_events(
-                    runtime,
-                    &events,
-                    true,
-                    &mut keyboard_forwarded,
-                );
+                let mut forwarded = super::pane_input::ForwardedInput::default();
+                let input_result =
+                    apply_client_terminal_input_events(runtime, &events, true, &mut forwarded);
                 let scroll_changed = runtime.scroll_metrics() != scroll_before;
-                if keyboard_forwarded {
+                if let Some(terminal_id) = self.app.state.workspaces[workspace_index]
+                    .terminal_id(runtime_pane_id)
+                    .cloned()
+                {
+                    self.app.note_prompt_human_input(
+                        &terminal_id,
+                        &forwarded.human_inputs,
+                        Instant::now(),
+                    );
+                }
+                if forwarded.keyboard_forwarded {
                     self.note_interactive_input(runtime_pane_id, Instant::now());
                 }
                 if let Err(err) = input_result {
@@ -2629,15 +2703,16 @@ impl HeadlessServer {
                     return foreground_changed | geometry_changed;
                 };
                 let scroll_before = runtime.scroll_metrics();
-                let mut keyboard_forwarded = false;
-                let input_result = apply_client_terminal_input_events(
-                    runtime,
-                    &events,
-                    false,
-                    &mut keyboard_forwarded,
-                );
+                let mut forwarded = super::pane_input::ForwardedInput::default();
+                let input_result =
+                    apply_client_terminal_input_events(runtime, &events, false, &mut forwarded);
                 let scroll_changed = runtime.scroll_metrics() != scroll_before;
-                if keyboard_forwarded {
+                self.app.note_prompt_human_input(
+                    &popup_terminal_id,
+                    &forwarded.human_inputs,
+                    Instant::now(),
+                );
+                if forwarded.keyboard_forwarded {
                     self.note_interactive_input(popup_pane_id, Instant::now());
                 }
                 if let Err(err) = input_result {

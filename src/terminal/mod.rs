@@ -1,5 +1,6 @@
 mod history_read;
 mod id;
+pub(crate) mod prompt_gate;
 mod runtime;
 mod runtime_registry;
 pub mod state;

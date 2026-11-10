@@ -636,3 +636,12 @@ Windows でのサポートは現時点で韓国語 IME に限定されていま�
 ```
 
 ログは自動的にローテーションされます。問題を報告するときは、現在のログとローテーションされた関連ファイルを含めてください。
+
+
+以下はプロンプト保留のサーバー設定です。`hold_while_drafting = false` で即時送信に戻り、`abandoned_draft_secs = 0` で無期限に保留します。`herdr server reload-config` で以降の判断に反映します。
+
+```toml
+[agent_prompt]
+hold_while_drafting = true
+abandoned_draft_secs = 600
+```
