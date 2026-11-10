@@ -184,6 +184,17 @@ fn apply_scroll(
     Ok(())
 }
 
+/// Raw attaches lack semantic events. Combined/unknown bytes count as edits;
+/// treating a newline inside pasted text as submission would recreate the splice.
+pub(super) fn classify_attach_input(data: &[u8]) -> crate::terminal::prompt_gate::HumanInput {
+    use crate::terminal::prompt_gate::HumanInput;
+    match data {
+        b"\r" => HumanInput::Clear,
+        b"" | b"\x1b" => HumanInput::Neutral,
+        _ => HumanInput::Edit,
+    }
+}
+
 pub(super) fn apply_terminal_attach_input(
     runtime: &crate::terminal::TerminalRuntime,
     data: Vec<u8>,
@@ -212,25 +223,33 @@ pub(super) fn apply_client_pane_input_events(
     runtime: &crate::terminal::TerminalRuntime,
     events: &[ClientPaneInputEvent],
 ) -> Result<bool, String> {
-    let mut keyboard_forwarded = false;
-    apply_client_terminal_input_events(runtime, events, true, &mut keyboard_forwarded)?;
-    Ok(keyboard_forwarded)
+    let mut forwarded = ForwardedInput::default();
+    apply_client_terminal_input_events(runtime, events, true, &mut forwarded)?;
+    Ok(forwarded.keyboard_forwarded)
 }
 
 pub(super) fn apply_client_popup_input_events(
     runtime: &crate::terminal::TerminalRuntime,
     events: &[ClientPaneInputEvent],
 ) -> Result<bool, String> {
-    let mut keyboard_forwarded = false;
-    apply_client_terminal_input_events(runtime, events, false, &mut keyboard_forwarded)?;
-    Ok(keyboard_forwarded)
+    let mut forwarded = ForwardedInput::default();
+    apply_client_terminal_input_events(runtime, events, false, &mut forwarded)?;
+    Ok(forwarded.keyboard_forwarded)
+}
+
+/// The funnel reports only accepted PTY input. Preserve partial progress on
+/// queue errors: earlier keys may already have armed a human draft.
+#[derive(Default)]
+pub(super) struct ForwardedInput {
+    pub keyboard_forwarded: bool,
+    pub human_inputs: Vec<crate::terminal::prompt_gate::HumanInput>,
 }
 
 pub(super) fn apply_client_terminal_input_events(
     runtime: &crate::terminal::TerminalRuntime,
     events: &[ClientPaneInputEvent],
     host_page_keys: bool,
-    keyboard_forwarded: &mut bool,
+    forwarded: &mut ForwardedInput,
 ) -> Result<(), String> {
     for event in events {
         if let ClientPaneInputEvent::Mouse {
@@ -301,7 +320,9 @@ pub(super) fn apply_client_terminal_input_events(
             continue;
         }
 
-        match event.to_raw_input_event() {
+        let raw = event.to_raw_input_event();
+        let human_input = crate::terminal::prompt_gate::classify(&raw, false);
+        match raw {
             crate::raw_input::RawInputEvent::Key(key) => {
                 let key_event = key.as_key_event();
                 if host_page_keys
@@ -329,7 +350,8 @@ pub(super) fn apply_client_terminal_input_events(
                     runtime
                         .try_send_bytes(Bytes::from(bytes))
                         .map_err(|err| format!("targeted pane key input failed: {err}"))?;
-                    *keyboard_forwarded |= key_event.kind != KeyEventKind::Release;
+                    forwarded.keyboard_forwarded |= key_event.kind != KeyEventKind::Release;
+                    forwarded.human_inputs.push(human_input);
                 }
             }
             crate::raw_input::RawInputEvent::Text(text) => {
@@ -337,13 +359,15 @@ pub(super) fn apply_client_terminal_input_events(
                 runtime
                     .try_send_bytes(Bytes::copy_from_slice(text.as_str().as_bytes()))
                     .map_err(|err| format!("targeted pane text input failed: {err}"))?;
-                *keyboard_forwarded |= !text.as_str().is_empty();
+                forwarded.keyboard_forwarded |= !text.as_str().is_empty();
+                forwarded.human_inputs.push(human_input);
             }
             crate::raw_input::RawInputEvent::Paste(text) => {
                 runtime.scroll_reset();
                 runtime
                     .try_send_paste(text)
                     .map_err(|err| format!("targeted pane paste failed: {err}"))?;
+                forwarded.human_inputs.push(human_input);
             }
             crate::raw_input::RawInputEvent::Mouse(_)
             | crate::raw_input::RawInputEvent::OuterFocusGained

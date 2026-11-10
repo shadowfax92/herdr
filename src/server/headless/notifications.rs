@@ -1,6 +1,12 @@
 use super::*;
 
 impl HeadlessServer {
+    pub(super) fn flush_prompt_notifications(&mut self) {
+        for notification in std::mem::take(&mut self.app.prompt_delivery.notifications) {
+            self.show_notification_api("prompt-hold".to_owned(), notification, false);
+        }
+    }
+
     fn pane_effective_state(&self, pane_id: crate::layout::PaneId) -> crate::detect::AgentState {
         self.app
             .state
@@ -224,6 +230,15 @@ impl HeadlessServer {
         id: String,
         params: api::schema::NotificationShowParams,
     ) -> String {
+        self.show_notification_api(id, params, true)
+    }
+
+    fn show_notification_api(
+        &mut self,
+        id: String,
+        params: api::schema::NotificationShowParams,
+        rate_limit: bool,
+    ) -> String {
         use api::schema::NotificationShowReason;
 
         let Some(title) = sanitize_notification_text(&params.title, 80) else {
@@ -250,7 +265,9 @@ impl HeadlessServer {
             };
             return notification_show_result(id, false, reason);
         }
-        if self.app.api_notification_rate_limited(Instant::now()) {
+        // Runtime-owned held mail must surface every item, even when several
+        // workers finish together. Public notification.show keeps its throttle.
+        if rate_limit && self.app.api_notification_rate_limited(Instant::now()) {
             return notification_show_result(id, false, NotificationShowReason::RateLimited);
         }
         let sound = match params.sound {
@@ -275,7 +292,7 @@ impl HeadlessServer {
                 position: params.position,
             },
         ));
-        if shown {
+        if shown && rate_limit {
             self.app.mark_api_notification_shown(Instant::now());
         }
         notification_show_result(

@@ -185,6 +185,8 @@ pub struct AgentPromptParams {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_prompts: Option<usize>,
     pub terminal_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,

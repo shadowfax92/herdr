@@ -673,3 +673,12 @@ Common log files:
 ```
 
 Logs rotate automatically. Include the current log and rotated siblings when reporting issues.
+
+
+Control prompt holding with the following server settings. `hold_while_drafting = false` restores immediate submission; `abandoned_draft_secs = 0` holds indefinitely. `herdr server reload-config` applies changes to later decisions.
+
+```toml
+[agent_prompt]
+hold_while_drafting = true
+abandoned_draft_secs = 600
+```

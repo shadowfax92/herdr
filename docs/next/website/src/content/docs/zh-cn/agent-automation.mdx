@@ -125,3 +125,8 @@ herdr pane wait-output w1:p3 --regex "passed|failed" --timeout 120000
 ```
 
 完整命令和选项列表见 [CLI 参考](/zh-cn/docs/cli-reference/)。Shell 补全也能以交互方式显示同一命令树。
+
+
+`agent prompt` 会在用户有未发送的草稿时暂缓提交。不带 `--wait` 时立即返回 `delivery: "held"`，由 Herdr 负责投递。`agent get` 和 `agent list` 仅在有保留提示时返回 `held_prompts`。按下无修饰键的 Enter 后，若 1500 ms 内没有新编辑，保留提示会在用户消息之后按到达顺序分别提交。`--wait --timeout` 包含保留时间；超时后撤回提示且不输入文本。期间变为 blocked 的代理会等到准备好再投递。
+
+CLI 弹层可能消耗 Ctrl+C 而保留草稿，因此 Ctrl+C 保守地视为编辑。退格删空仍视为草稿。用于弹窗选择或续行的 Enter 可能被误判为清空。原始 pane 写入不受保护。最后一次编辑后 600 秒解除废弃草稿的保护。保留文本仅存于内存；关闭、交接或代理消失时会通知并记录日志，崩溃会丢失内容。

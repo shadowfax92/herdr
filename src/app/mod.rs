@@ -20,6 +20,7 @@ mod custom_commands;
 mod git_refresh;
 mod ids;
 mod popup;
+mod prompt_hold;
 mod runtime;
 mod session;
 pub mod state;
@@ -104,6 +105,7 @@ impl AppPolicy {
 
 pub struct App {
     pub state: AppState,
+    pub(crate) prompt_delivery: prompt_hold::PromptDelivery,
     pub(crate) pixel_mouse_available: bool,
     pub(crate) terminal_runtimes: crate::terminal::TerminalRuntimeRegistry,
     pub event_tx: mpsc::Sender<AppEvent>,
@@ -557,6 +559,7 @@ impl App {
             pane_scrollback_limit_bytes: config.advanced.scrollback_limit_bytes,
             sound: config.ui.sound.clone(),
             toast_config: config.ui.toast.clone(),
+            agent_prompt_config: config.agent_prompt,
             keybinds: config.keybinds(),
             palette: theme_palette,
             theme_name,
@@ -619,6 +622,7 @@ impl App {
         let endpoint_commands = custom_commands::EndpointCommandRegistry::new(&state.keybinds);
 
         let mut app = Self {
+            prompt_delivery: prompt_hold::PromptDelivery::default(),
             plugin_installation_leases,
             plugin_installation_cleanup_allowed,
             config_diagnostic_deadline: None,
@@ -861,6 +865,16 @@ impl App {
         let mut diagnostics = load_diagnostics.to_vec();
         let invalid_section =
             |section: &str| invalid_sections.iter().any(|invalid| invalid == section);
+
+        if !invalid_section("agent_prompt") {
+            self.state.agent_prompt_config = config.agent_prompt;
+            let now = Instant::now();
+            let ids = self.state.terminals.keys().cloned().collect::<Vec<_>>();
+            for terminal_id in ids {
+                self.configure_prompt_gate(&terminal_id);
+                self.poll_prompt_gate(&terminal_id, now);
+            }
+        }
 
         if !invalid_section("keys") {
             match config.live_keybinds_with_diagnostics() {

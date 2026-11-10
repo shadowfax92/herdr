@@ -54,6 +54,11 @@ impl HeadlessServer {
             }
         }
 
+        // Held text is memory-only. Surface it before clients disconnect so a
+        // successful handoff cannot silently abandon already acknowledged mail.
+        self.app
+            .discard_all_prompt_gates("server handoff while prompt was held");
+        self.flush_prompt_notifications();
         self.handoff_in_progress = true;
         self.disconnect_all_clients_for_handoff();
         let _ = reject_pending_client_connections(&self.client_listener);
@@ -225,6 +230,9 @@ impl HeadlessServer {
     }
 
     pub(super) fn finish_live_handoff_shutdown(&mut self) {
+        self.app
+            .discard_all_prompt_gates("server shutdown while prompt was held");
+        self.flush_prompt_notifications();
         self.shutting_down = true;
         self.app.state.should_quit = true;
         self.app.policy.persist_session = false;

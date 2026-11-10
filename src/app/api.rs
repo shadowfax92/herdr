@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 mod agent_view;
-mod agents;
+pub(crate) mod agents;
 mod env;
 mod integrations;
 mod layouts;
@@ -31,6 +31,15 @@ enum RuntimeExitAction {
 impl App {
     pub(crate) fn handle_internal_event_with_render_impact(&mut self, ev: AppEvent) -> bool {
         match ev {
+            AppEvent::HeldPromptDeliveryFailed {
+                target,
+                text,
+                reason,
+            } => {
+                self.report_held_prompt_failure(target, text, &reason);
+                false
+            }
+
             AppEvent::GitStatusRefreshed {
                 results,
                 cache_updates,
@@ -689,6 +698,20 @@ impl App {
     }
 
     pub(crate) fn emit_pane_state_update(&mut self, update: &crate::app::actions::PaneStateUpdate) {
+        if let Some(terminal_id) = self
+            .state
+            .workspaces
+            .get(update.ws_idx)
+            .and_then(|ws| ws.terminal_id(update.pane_id))
+            .cloned()
+        {
+            let now = Instant::now();
+            if update.previous_agent_label != update.agent_label || update.agent_released {
+                self.reset_prompt_gate(&terminal_id, now);
+            } else {
+                self.poll_prompt_gate(&terminal_id, now);
+            }
+        }
         let Some(pane_id) = self.public_pane_id(update.ws_idx, update.pane_id) else {
             return;
         };

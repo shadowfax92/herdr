@@ -4,6 +4,7 @@ mod event_fairness;
 mod native_graphics;
 #[path = "pane_move.rs"]
 mod pane_move_tests;
+mod prompt_hold;
 #[path = "pane_graphics.rs"]
 mod retained_graphics_tests;
 #[path = "scope.rs"]

@@ -127,6 +127,7 @@ struct RecentAgentProcessExit {
 /// pane/view state no longer owns terminal identity, cwd, labels, or agent
 /// metadata.
 pub struct TerminalState {
+    pub(crate) prompt_gate: super::prompt_gate::PromptGate,
     pub id: TerminalId,
     pub cwd: PathBuf,
     pub detected_agent: Option<Agent>,
@@ -167,6 +168,7 @@ pub struct TerminalState {
 impl TerminalState {
     pub fn new(id: TerminalId, cwd: PathBuf) -> Self {
         Self {
+            prompt_gate: super::prompt_gate::PromptGate::default(),
             id,
             cwd,
             detected_agent: None,

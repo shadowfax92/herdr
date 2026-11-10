@@ -429,6 +429,11 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # name = "ticket"
 # regex = 'TKT-(?<match>[0-9]+)'
 
+[agent_prompt]
+# Hold agent prompts behind unsent human drafts. Changes apply on config reload.
+# hold_while_drafting = true
+# abandoned_draft_secs = 600  # 0 holds drafts indefinitely
+
 [session]
 # Resume supported AI-agent panes into their native conversation sessions after
 # a Herdr server restart. Requires official integrations that report session refs.

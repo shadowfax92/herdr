@@ -636,3 +636,12 @@ switch_ascii_input_source_in_prefix = true
 ```
 
 日志会自动轮转。报告问题时，请附上当前日志和轮转后的同级日志文件。
+
+
+以下服务器设置控制提示保留。`hold_while_drafting = false` 恢复立即提交；`abandoned_draft_secs = 0` 无限期保留。运行 `herdr server reload-config` 后应用于后续决策。
+
+```toml
+[agent_prompt]
+hold_while_drafting = true
+abandoned_draft_secs = 600
+```

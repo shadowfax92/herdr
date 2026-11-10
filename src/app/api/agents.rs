@@ -94,6 +94,17 @@ impl App {
                 return true;
             }
         };
+        self.accept_agent_prompt(validated, params, respond_to);
+        true
+    }
+
+    pub(crate) fn start_agent_prompt_submission(
+        &mut self,
+        validated: ValidatedAgentPrompt,
+        params: &AgentPromptParams,
+        respond_to: std::sync::mpsc::Sender<String>,
+        owned_prompt: Option<(String, String)>,
+    ) {
         // Start the completion waiter before submitting, so a refused thread
         // fails the request while nothing has been sent yet.
         let (handoff_tx, handoff_rx) = std::sync::mpsc::channel::<(
@@ -102,42 +113,67 @@ impl App {
             std::sync::mpsc::Receiver<std::io::Result<()>>,
         )>();
         let waiter_respond_to = respond_to.clone();
+        let failure_prompt = owned_prompt.clone();
+        let event_tx = self.event_tx.clone();
         let spawned = crate::thread_spawn::spawn_named("herdr-agent-prompt", move || {
             let Ok((id, agent, completion)) = handoff_rx.recv() else {
                 return;
             };
             let response = match completion.recv() {
-                Ok(Ok(())) => encode_success(id, ResponseResult::AgentPrompted { agent }),
+                Ok(Ok(())) => encode_success(
+                    id,
+                    ResponseResult::AgentPrompted {
+                        agent,
+                        delivery: None,
+                    },
+                ),
                 Ok(Err(err)) if err.kind() == std::io::ErrorKind::TimedOut => {
                     encode_error(id, "timeout", err.to_string())
                 }
                 Ok(Err(err)) => encode_error(id, "agent_prompt_failed", err.to_string()),
                 Err(_) => encode_error(id, "agent_prompt_failed", "pty actor closed"),
             };
+            if let Some((target, text)) = failure_prompt {
+                if let Ok(failed) =
+                    serde_json::from_str::<crate::api::schema::ErrorResponse>(&response)
+                {
+                    let _ =
+                        event_tx.blocking_send(crate::events::AppEvent::HeldPromptDeliveryFailed {
+                            target,
+                            text,
+                            reason: failed.error.message,
+                        });
+                }
+            }
             let _ = waiter_respond_to.send(response);
         });
         if let Err(err) = spawned {
             tracing::warn!(err = %err, "failed to spawn agent prompt thread");
+            if let Some((target, text)) = owned_prompt {
+                self.report_held_prompt_failure(target, text, &err.to_string());
+            }
             let _ = respond_to.send(encode_error(
                 validated.id,
                 "agent_prompt_failed",
                 format!("could not start prompt completion waiter: {err}"),
             ));
-            return true;
+            return;
         }
-        match self.submit_agent_prompt(validated, &params) {
+        match self.submit_agent_prompt(validated, params) {
             Ok(submission) => {
                 let _ = handoff_tx.send(submission);
             }
             Err(response) => {
+                if let Some((target, text)) = owned_prompt {
+                    self.report_held_prompt_failure(target, text, &response);
+                }
                 let _ = respond_to.send(response);
             }
         }
-        true
     }
 
     /// Runs every check that can reject a prompt without touching the pane.
-    fn validate_agent_prompt(
+    pub(crate) fn validate_agent_prompt(
         &self,
         id: String,
         params: &AgentPromptParams,
@@ -426,12 +462,12 @@ impl App {
     }
 }
 
-struct ValidatedAgentPrompt {
-    id: String,
-    ws_idx: usize,
-    pane_id: crate::layout::PaneId,
-    expected_agent: crate::detect::Agent,
-    agent: crate::api::schema::AgentInfo,
+pub(crate) struct ValidatedAgentPrompt {
+    pub(crate) id: String,
+    pub(crate) ws_idx: usize,
+    pub(crate) pane_id: crate::layout::PaneId,
+    pub(crate) expected_agent: crate::detect::Agent,
+    pub(crate) agent: crate::api::schema::AgentInfo,
 }
 
 fn agent_not_ready(id: String, target: &str) -> String {
