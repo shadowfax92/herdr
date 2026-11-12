@@ -1023,7 +1023,9 @@ impl App {
             identity_cwd: self.state.workspaces[source_ws_idx].identity_cwd.clone(),
         };
 
-        if self.state.workspaces[source_ws_idx].tabs[source_tab_idx].zoomed {
+        // Focus-taking moves keep their existing zoomed-tab no-op contract.
+        // Unfocused moves may edit the hidden tree without disturbing its owner.
+        if focus && self.state.workspaces[source_ws_idx].tabs[source_tab_idx].zoomed {
             let Some(layout) = self.pane_layout_snapshot(source_ws_idx, source_tab_idx) else {
                 return encode_error(id, "pane_layout_unavailable", "pane layout unavailable");
             };
@@ -1075,7 +1077,7 @@ impl App {
                         layout,
                     );
                 }
-                if self.state.workspaces[target_ws_idx].tabs[target_tab_idx].zoomed {
+                if focus && self.state.workspaces[target_ws_idx].tabs[target_tab_idx].zoomed {
                     let Some(source_layout) =
                         self.pane_layout_snapshot(source_ws_idx, source_tab_idx)
                     else {
@@ -1304,6 +1306,31 @@ impl App {
                 (target_ws_idx, 0, moved_pane_id)
             }
         };
+
+        // A moved runtime brings its source dimensions with it. A zoomed target
+        // does not lay out hidden runtimes during rendering, so size the incoming
+        // pane now from its destination's tiled geometry, without revealing it.
+        let target_tab = &self.state.workspaces[target_ws_idx].tabs[target_tab_idx];
+        if target_tab.zoomed
+            && target_tab.layout.focused() != moved_pane_id
+            && !self
+                .state
+                .direct_attach_resize_locks
+                .contains(&source_terminal_id)
+        {
+            if let Some(runtime) = self.terminal_runtimes.get(&source_terminal_id) {
+                if let Some((rows, cols)) = crate::ui::hidden_pane_terminal_size(
+                    &self.state,
+                    target_tab,
+                    moved_pane_id,
+                    runtime,
+                    self.state.new_pane_area(),
+                ) {
+                    let cell = self.state.host_cell_size;
+                    runtime.resize(rows, cols, cell.width_px, cell.height_px);
+                }
+            }
+        }
 
         if focus || self.state.active.is_none() {
             self.state

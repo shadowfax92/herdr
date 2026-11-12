@@ -222,7 +222,7 @@ macOS では、`pane.send_input`（`pane run` が使用）と `agent.start` は�
 {"id":"req_move_new_workspace","method":"pane.move","params":{"pane_id":"w1:p2","destination":{"type":"new_workspace","label":"logs","tab_label":"main"},"focus":true}}
 ```
 
-既存タブへの移動には `split: "right" | "down"` が必要です。`target_pane_id` は任意で、デフォルトは移動先タブのフォーカス中ペインです。同じタブ内のレイアウト変更は引き続き `pane.swap` です。元のタブへの移動は `reason: "same_tab"` 付きで `changed: false` を返します。ズームされた移動元/移動先タブを含む移動は `reason: "zoomed_tab"` 付きで `changed: false` を返します。
+既存タブへの移動には `split: "right" | "down"` が必要です。`target_pane_id` は任意で、デフォルトは移動先タブのフォーカス中ペインです。同じタブ内のレイアウト変更は引き続き `pane.swap` です。元のタブへの移動は `reason: "same_tab"` 付きで `changed: false` を返します。ズームされた移動元/移動先タブを含む `focus: true` の移動は `reason: "zoomed_tab"` 付きで `changed: false` を返します。`focus: false` の移動は隠れたレイアウトを変更できます。フォーカス中のペインがタブに残る限り、ズームは同じ幅で維持されます。フォーカスを変えない分割や他のペインを閉じる操作でもズームは維持されます。ズーム中のペインだけが残ってもズームは維持され、その後のフォーカスを変えない分割も非表示のままです。ズーム中のペインを取り除く、または新しいペインにフォーカスする分割を行うとズームは終了します。
 
 レスポンスは `type: "pane_move"` で、`changed`、任意の `reason`、`previous_pane_id`、`previous_workspace_id`、`previous_tab_id`、移動された `pane`、任意の `source_layout`、`target_layout`、任意の作成されたワークスペース/タブのレコード、任意の閉じられたワークスペース/タブの id、`focused_pane_id` を含みます。ワークスペースをまたぐ移動では、内部のペインとターミナルは生きたまま、移動先ワークスペースで新しい公開ペイン id が割り当てられます。購読者は `pane.moved` を購読できます。Herdr は移動されたターミナルプロセスについて偽のペインの close/create イベントを発行しません。
 

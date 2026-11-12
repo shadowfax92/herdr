@@ -283,8 +283,13 @@ workspace:
 Existing-tab moves require `split: "right" | "down"`. `target_pane_id` is
 optional and defaults to the target tab's focused pane. Same-tab layout changes
 remain `pane.swap`; moving to the source tab returns `changed: false` with
-`reason: "same_tab"`. Moves involving a zoomed source or target tab return
-`changed: false` with `reason: "zoomed_tab"`.
+`reason: "same_tab"`. Moves with `focus: true` involving a zoomed source or target
+tab return `changed: false` with `reason: "zoomed_tab"`. Moves with `focus: false`
+can edit the hidden layout: a zoom stays at the same width while its focused
+pane remains in the tab. Unfocused splits and closing other panes also preserve
+zoom, even when the zoomed pane is left alone; a later unfocused split stays
+hidden. Removing the zoomed pane ends zoom; a split that focuses its new pane
+also ends zoom.
 
 The response is `type: "pane_move"` with `changed`, optional `reason`,
 `previous_pane_id`, `previous_workspace_id`, `previous_tab_id`, the moved

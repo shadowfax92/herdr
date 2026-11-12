@@ -11,6 +11,9 @@ use crate::pane::{PaneLaunchEnv, PaneState};
 use crate::render_signal::RenderSignal;
 use crate::terminal::{TerminalId, TerminalRuntime, TerminalRuntimeRegistry, TerminalState};
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) type DetachedPane = (PaneId, TerminalId);
 
 pub(crate) struct MovedPane {
@@ -46,7 +49,8 @@ pub struct Tab {
     #[cfg(test)]
     pub runtimes: HashMap<PaneId, TerminalRuntime>,
     /// Whether the tab shows only its focused pane. This is the shared fact
-    /// the wire snapshot and the saved session carry.
+    /// the wire snapshot and the saved session carry. Pane-tree edits preserve
+    /// it while that pane stays focused, including when it is the only pane.
     pub zoomed: bool,
     /// How wide that zoom is drawn. Meaningful only while `zoomed`; afterwards
     /// it keeps the last zoom's width, which an overlay's zoom reuses (see
@@ -412,16 +416,23 @@ impl Tab {
             }
             None => TerminalState::new(terminal_id.clone(), actual_cwd),
         };
-        if focus_new_pane {
-            self.layout.focus_pane(new_id);
-        }
-        self.panes.insert(new_id, PaneState::new(terminal_id));
-        self.zoomed = false;
+        self.complete_pane_split(new_id, PaneState::new(terminal_id), focus_new_pane);
         Ok(NewPane {
             pane_id: new_id,
             terminal,
             runtime,
         })
+    }
+
+    /// Commit viewport state only after the split's runtime has spawned. Keeping
+    /// focus policy here lets unfocused API/worker splits leave the owner's zoom
+    /// alone, while a user split that focuses the new pane still unzooms.
+    fn complete_pane_split(&mut self, new_id: PaneId, pane: PaneState, focus: bool) {
+        if focus {
+            self.layout.focus_pane(new_id);
+            self.zoomed = false;
+        }
+        self.panes.insert(new_id, pane);
     }
 
     #[cfg(test)]
@@ -470,6 +481,7 @@ impl Tab {
             return None;
         }
 
+        let removes_focus = self.layout.focused() == pane_id;
         if self.layout.pane_count() > 1 {
             let next_root = self.promoted_root_if_needed(pane_id);
             self.layout.close_pane(pane_id);
@@ -479,7 +491,7 @@ impl Tab {
         }
 
         let pane_state = self.panes.remove(&pane_id)?;
-        self.zoomed = false;
+        self.zoomed &= !removes_focus;
         Some(MovedPane {
             pane_id,
             pane_state,
@@ -502,7 +514,7 @@ impl Tab {
         }
         let pane_id = moved.pane_id;
         self.panes.insert(pane_id, moved.pane_state);
-        self.zoomed = false;
+        self.zoomed &= !focus;
         Ok(pane_id)
     }
 
@@ -511,13 +523,16 @@ impl Tab {
             return None;
         }
 
+        let removes_focus = self.layout.focused() == pane_id;
         let next_root = self.promoted_root_if_needed(pane_id);
 
         self.layout.close_pane(pane_id);
 
         let pane = self.panes.remove(&pane_id)?;
         let terminal_id = pane.attached_terminal_id;
-        self.zoomed = false;
+        // Zoom belongs to focus, even when the last hidden sibling closes.
+        // Keeping it on a lone pane also keeps a later worker split hidden.
+        self.zoomed &= !removes_focus;
         if let Some(next_root) = next_root {
             self.root_pane = next_root;
         }

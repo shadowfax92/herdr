@@ -867,11 +867,10 @@ impl AppState {
             }
         };
         // A lone pane still zooms Fitted, because on a wide client the
-        // margins centre it, which is the point of the zoom. A Full zoom of a
-        // lone pane would cover exactly the area it already has, so it stays
-        // a no-op. A split or a close back to one pane clears the zoom
-        // (`Tab::split_pane_with_runtime`, `Tab::detach_pane`), so a one-pane
-        // zoom never outlives the layout it was made for.
+        // margins centre it, which is the point of the zoom. Starting a Full
+        // zoom on an unzoomed lone pane would not change its area, so it stays
+        // a no-op. An existing zoom of either width survives losing its last
+        // sibling; this guard must still let its toggle or off command unzoom.
         if tab.layout.pane_count() <= 1 && current.is_none() && next == Some(ZoomWidth::Full) {
             return Some(PaneZoomOutcome {
                 changed: false,
@@ -4474,6 +4473,38 @@ mod tests {
         assert!(outcome.changed && !outcome.zoomed);
         let outcome = state.apply_pane_zoom(0, pane, Off).unwrap();
         assert_eq!(outcome.reason, Some(PaneZoomNoopReason::AlreadyUnzoomed));
+    }
+
+    #[test]
+    fn a_retained_lone_zoom_obeys_both_toggle_keys() {
+        use ZoomWidth::{Fitted, Full};
+
+        for (width, toggle, expected) in [
+            (Fitted, Fitted, None),
+            (Full, Fitted, None),
+            (Full, Full, None),
+            (Fitted, Full, Some(Full)),
+        ] {
+            let mut state = app_with_workspaces(&["test"]);
+            let owner = state.workspaces[0].root_pane;
+            let sibling = state.workspaces[0].test_split(Direction::Horizontal);
+            state.workspaces[0].layout.focus_pane(owner);
+            assert_eq!(
+                zoom_after(&mut state, PaneZoomCommand::On(width)),
+                Some(width)
+            );
+            state.workspaces[0].remove_pane(sibling);
+            assert_eq!(state.workspaces[0].layout.pane_count(), 1);
+            assert!(state.workspaces[0].zoomed);
+            assert_eq!(state.workspaces[0].zoom_width, width);
+            state.assert_invariants_for_test();
+
+            assert_eq!(
+                zoom_after(&mut state, PaneZoomCommand::Toggle(toggle)),
+                expected
+            );
+            state.assert_invariants_for_test();
+        }
     }
 
     #[test]

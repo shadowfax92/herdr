@@ -960,7 +960,7 @@ impl AppState {
         crate::ui::new_layout_terminal_sizes(self, self.new_pane_area(), layout)
     }
 
-    fn new_pane_area(&self) -> Rect {
+    pub(crate) fn new_pane_area(&self) -> Rect {
         let area = self.view.terminal_area;
         if area.width == 0 || area.height == 0 {
             Rect::new(0, 0, self.headless_size.0, self.headless_size.1)

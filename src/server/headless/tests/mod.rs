@@ -15,6 +15,7 @@ mod surface_delta_tests;
 mod surface_interest_tests;
 #[path = "surface_scroll.rs"]
 mod surface_scroll_tests;
+mod zoom_keep;
 
 fn client_shell_projection(
     receiver: &std::sync::mpsc::Receiver<Vec<u8>>,

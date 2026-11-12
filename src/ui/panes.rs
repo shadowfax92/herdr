@@ -175,6 +175,35 @@ fn new_terminal_size(app: &AppState, pane_inner: Rect) -> (u16, u16) {
     )
 }
 
+/// Destination size for a live pane hidden behind zoom. Unlike a newly spawned
+/// shell, a moved program may already use the alternate screen, where the
+/// scrollbar gutter is absent. Use the same chrome and runtime policy as unzoom.
+pub(crate) fn hidden_pane_terminal_size(
+    app: &AppState,
+    tab: &crate::workspace::Tab,
+    pane: PaneId,
+    runtime: &TerminalRuntime,
+    area: Rect,
+) -> Option<(u16, u16)> {
+    let info = apply_pane_chrome(
+        tab.layout.panes(area),
+        app.pane_borders,
+        app.pane_gaps,
+        app.pane_outer_borders,
+    )
+    .into_iter()
+    .find(|info| info.id == pane)?;
+    let inner = terminal_inner_rect(
+        runtime,
+        pane_inner_rect(info.rect, info.borders),
+        app.pane_scrollbars,
+    );
+    Some((
+        inner.height.max(crate::pane::MIN_PANE_ROWS),
+        inner.width.max(crate::pane::MIN_PANE_COLS),
+    ))
+}
+
 pub(crate) fn pane_inner_rect(area: Rect, borders: Borders) -> Rect {
     if borders.is_empty() {
         area
@@ -1528,7 +1557,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_lone_pane_between_fitted_margins_is_framed() {
-        let (app, _) = zoomed_lone_pane_app(crate::layout::ZoomWidth::Fitted);
+        let (app, pane) = zoomed_lone_pane_app(crate::layout::ZoomWidth::Fitted);
         let infos = compute_pane_infos(
             &app,
             &TerminalRuntimeRegistry::new(),
@@ -1545,16 +1574,32 @@ mod tests {
             Borders::ALL,
             "its edges show against the margins"
         );
+        let runtime = &app.workspaces[0].tabs[0].runtimes[&pane];
+        assert_eq!(runtime.current_size(), (38, 272));
+        runtime.resize(2, 4, 0, 0);
+        resize_tab_panes(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            0,
+            &app.workspaces[0].tabs[0],
+            ULTRAWIDE_AREA,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        assert_eq!(
+            runtime.current_size(),
+            (38, 272),
+            "background resize keeps the lone fitted geometry"
+        );
     }
 
     #[tokio::test]
     async fn a_lone_pane_filling_the_area_stays_unframed() {
         let laptop = Rect::new(26, 1, 293 - 26, 40);
-        for (width, area) in [
-            (crate::layout::ZoomWidth::Full, ULTRAWIDE_AREA),
-            (crate::layout::ZoomWidth::Fitted, laptop),
+        for (width, area, expected_size) in [
+            (crate::layout::ZoomWidth::Full, ULTRAWIDE_AREA, (40, 456)),
+            (crate::layout::ZoomWidth::Fitted, laptop, (40, 266)),
         ] {
-            let (app, _) = zoomed_lone_pane_app(width);
+            let (app, pane) = zoomed_lone_pane_app(width);
             let infos = compute_pane_infos(
                 &app,
                 &TerminalRuntimeRegistry::new(),
@@ -1564,6 +1609,22 @@ mod tests {
             );
             assert_eq!(infos[0].rect, area);
             assert_eq!(infos[0].borders, Borders::NONE, "{width:?} over {area:?}");
+            let runtime = &app.workspaces[0].tabs[0].runtimes[&pane];
+            assert_eq!(runtime.current_size(), expected_size);
+            runtime.resize(2, 4, 0, 0);
+            resize_tab_panes(
+                &app,
+                &TerminalRuntimeRegistry::new(),
+                0,
+                &app.workspaces[0].tabs[0],
+                area,
+                crate::kitty_graphics::HostCellSize::default(),
+            );
+            assert_eq!(
+                runtime.current_size(),
+                expected_size,
+                "background resize supports a lone {width:?} zoom"
+            );
         }
     }
 

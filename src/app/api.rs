@@ -538,8 +538,10 @@ impl App {
         let tab = &mut ws.tabs[overlay.tab_idx];
         if tab.panes.contains_key(&overlay.previous_focus) {
             tab.layout.focus_pane(overlay.previous_focus);
+            tab.zoomed = overlay.previous_zoomed;
         }
-        tab.zoomed = overlay.previous_zoomed;
+        // If the original pane left while the overlay was open, its zoom must
+        // not be restored onto whichever sibling inherited focus on close.
 
         if was_overlay_active && self.state.active == Some(overlay.ws_idx) {
             self.state.mode = Mode::Terminal;
@@ -2296,6 +2298,65 @@ mod tests {
         assert_eq!(tab.layout.focused(), previous_focus);
         assert!(tab.zoomed);
         assert!(app.overlay_panes.is_empty());
+    }
+
+    #[test]
+    fn overlay_exit_does_not_restore_zoom_after_original_pane_leaves() {
+        for width in [
+            crate::layout::ZoomWidth::Fitted,
+            crate::layout::ZoomWidth::Full,
+        ] {
+            let mut workspace = crate::workspace::Workspace::test_new("overlay");
+            let previous_focus = workspace.root_pane;
+            workspace.test_split(ratatui::layout::Direction::Horizontal);
+            workspace.test_split(ratatui::layout::Direction::Horizontal);
+            let overlay_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
+            workspace.remove_pane(previous_focus);
+            workspace.zoomed = true;
+            workspace.zoom_width = width;
+            let mut app = app_with_overlay(workspace, overlay_pane, previous_focus, true);
+
+            app.handle_internal_event(AppEvent::PaneDied {
+                pane_id: overlay_pane,
+                exit_reason: crate::platform::ChildExitReason::Exited,
+            });
+
+            assert!(!app.state.workspaces[0].zoomed);
+            assert!(app.overlay_panes.is_empty());
+        }
+    }
+
+    #[test]
+    fn overlay_exit_restores_both_zoom_widths_with_or_without_siblings() {
+        for (width, hidden_split) in [
+            (crate::layout::ZoomWidth::Fitted, false),
+            (crate::layout::ZoomWidth::Fitted, true),
+            (crate::layout::ZoomWidth::Full, false),
+            (crate::layout::ZoomWidth::Full, true),
+        ] {
+            let mut workspace = crate::workspace::Workspace::test_new("overlay");
+            let previous_focus = workspace.root_pane;
+            let overlay_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
+            if hidden_split {
+                workspace.test_split(ratatui::layout::Direction::Horizontal);
+            }
+            workspace.layout.focus_pane(overlay_pane);
+            workspace.zoomed = true;
+            workspace.zoom_width = width;
+            let mut app = app_with_overlay(workspace, overlay_pane, previous_focus, true);
+
+            app.handle_internal_event(AppEvent::PaneDied {
+                pane_id: overlay_pane,
+                exit_reason: crate::platform::ChildExitReason::Exited,
+            });
+
+            let tab = &app.state.workspaces[0].tabs[0];
+            assert!(tab.zoomed);
+            assert_eq!(tab.zoom_width, width);
+            assert_eq!(tab.layout.focused(), previous_focus);
+            assert_eq!(tab.layout.pane_count(), if hidden_split { 2 } else { 1 });
+            app.state.assert_invariants_for_test();
+        }
     }
 
     #[test]

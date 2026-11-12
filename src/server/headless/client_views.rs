@@ -808,6 +808,79 @@ impl HeadlessServer {
         self.apply_shell_tab_geometry_to_target(client_id, target, true)
     }
 
+    /// Launch/arrival geometry for a hidden pane comes from its destination's
+    /// controller, which may be a different client from the foreground one.
+    /// Normal rendering continues to use each client's own surface geometry.
+    pub(super) fn hidden_pane_change_geometry(
+        &self,
+        method: &api::schema::Method,
+    ) -> Option<(Rect, crate::kitty_graphics::HostCellSize)> {
+        use api::schema::{Method, PaneMoveDestination, PluginPanePlacement};
+
+        let split_target = |pane: Option<&str>, workspace: Option<&str>| {
+            if let Some(pane) = pane {
+                let (ws, pane) = self.app.parse_pane_id(pane)?;
+                Some((
+                    ws,
+                    self.app
+                        .state
+                        .workspaces
+                        .get(ws)?
+                        .find_tab_index_for_pane(pane)?,
+                ))
+            } else {
+                let ws = match workspace {
+                    Some(id) => self.app.parse_workspace_id(id)?,
+                    None => self.app.state.active?,
+                };
+                Some((ws, self.app.state.workspaces.get(ws)?.active_tab_index()))
+            }
+        };
+        let (workspace_index, tab_index) = match method {
+            Method::PaneSplit(params) if !params.focus => split_target(
+                params.target_pane_id.as_deref(),
+                params.workspace_id.as_deref(),
+            )?,
+            Method::PluginPaneOpen(params)
+                if !params.focus
+                    && matches!(params.placement, None | Some(PluginPanePlacement::Split)) =>
+            {
+                split_target(
+                    params.target_pane_id.as_deref(),
+                    params.workspace_id.as_deref(),
+                )?
+            }
+            Method::PaneMove(params) if !params.focus => {
+                let PaneMoveDestination::Tab { tab_id, .. } = &params.destination else {
+                    return None;
+                };
+                self.app.parse_tab_id(tab_id)?
+            }
+            _ => return None,
+        };
+        let tab = self
+            .app
+            .state
+            .workspaces
+            .get(workspace_index)?
+            .tabs
+            .get(tab_index)?;
+        if !tab.zoomed {
+            return None;
+        }
+        let tab_id = self.app.public_tab_id(workspace_index, tab_index)?;
+        let client = self
+            .clients
+            .get(self.tab_geometry_controllers.get(&tab_id)?)?;
+        let (cols, rows) = client.terminal_size;
+        let cell = if client.cell_size.is_known() {
+            client.cell_size
+        } else {
+            crate::kitty_graphics::HostCellSize::default()
+        };
+        Some((Rect::new(0, 0, cols, rows), cell))
+    }
+
     /// Applies a public socket request, including its session-wide focus projection.
     pub(super) fn handle_api_request_with_shutdown_check(
         &mut self,

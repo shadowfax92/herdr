@@ -222,7 +222,7 @@ CLI 的 `herdr api snapshot` 会把当前 `session.snapshot` 响应输出为 JSO
 {"id":"req_move_new_workspace","method":"pane.move","params":{"pane_id":"w1:p2","destination":{"type":"new_workspace","label":"logs","tab_label":"main"},"focus":true}}
 ```
 
-移动到已有标签页需要 `split: "right" | "down"`。`target_pane_id` 可选,默认是目标标签页的聚焦窗格。同一标签页内的布局变化仍然用 `pane.swap`;移动到来源标签页返回 `changed: false` 和 `reason: "same_tab"`。涉及缩放状态的来源或目标标签页的移动返回 `changed: false` 和 `reason: "zoomed_tab"`。
+移动到已有标签页需要 `split: "right" | "down"`。`target_pane_id` 可选,默认是目标标签页的聚焦窗格。同一标签页内的布局变化仍然用 `pane.swap`;移动到来源标签页返回 `changed: false` 和 `reason: "same_tab"`。涉及缩放状态的来源或目标标签页且 `focus: true` 的移动返回 `changed: false` 和 `reason: "zoomed_tab"`。`focus: false` 的移动可以修改隐藏布局:只要聚焦窗格仍留在标签页中,缩放就保持原来的宽度。不改变焦点的拆分和关闭其他窗格也保留缩放。即使只剩缩放窗格本身,缩放也保持不变,之后不改变焦点的拆分仍然隐藏。移除缩放窗格或拆分后聚焦新窗格时,缩放结束。
 
 响应是 `type: "pane_move"`,带 `changed`、可选的 `reason`、`previous_pane_id`、`previous_workspace_id`、`previous_tab_id`、被移动的 `pane`、可选的 `source_layout`、`target_layout`、可选的新建工作区或标签页记录、可选的已关闭工作区或标签页 id,以及 `focused_pane_id`。跨工作区移动保持内部窗格和终端存活,但在目标工作区分配新的公开窗格 id。订阅者可以监听 `pane.moved`;Herdr 不会为被移动的终端进程发出假的窗格关闭/创建事件。
 

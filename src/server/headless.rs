@@ -3310,6 +3310,21 @@ impl HeadlessServer {
             self.app.state.view.terminal_area =
                 Rect::new(0, 0, self.effective_size.0, self.effective_size.1);
         }
+        // App owns pane creation and moves, but only the server knows which
+        // client controls the receiving tab. Scope its hidden-pane sizing to
+        // that geometry, then restore the foreground view before publishing.
+        // This also gives an unfocused split its final dimensions at spawn.
+        let foreground_geometry =
+            self.hidden_pane_change_geometry(&msg.request.method)
+                .map(|(area, cell)| {
+                    let previous = (
+                        self.app.state.view.terminal_area,
+                        self.app.state.host_cell_size,
+                    );
+                    self.app.state.view.terminal_area = area;
+                    self.app.state.host_cell_size = cell;
+                    previous
+                });
         let mut response = if matches!(
             &msg.request.method,
             api::schema::Method::ServerReloadConfig(_)
@@ -3336,6 +3351,10 @@ impl HeadlessServer {
             self.app
                 .handle_api_request_after_internal_events_drained(msg.request)
         };
+        if let Some((area, cell)) = foreground_geometry {
+            self.app.state.view.terminal_area = area;
+            self.app.state.host_cell_size = cell;
+        }
         if let Some(snapshot) = frozen_alt_screen_read {
             if let Ok(mut success) = serde_json::from_str::<api::schema::SuccessResponse>(&response)
             {
