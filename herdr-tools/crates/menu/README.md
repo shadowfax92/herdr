@@ -107,18 +107,17 @@ into another agent to identify the terminal you want it to watch. The action
 copies immediately and closes the popup on success. If copying fails, its error
 screen offers Enter to retry, Escape to return, and Alt-q to close.
 
-The handoff includes capture time, session/socket routing, workspace/tab identity,
-pane ID, terminal ID, pane label, terminal title, working directories, and any
-recognized agent name, kind, state, and native session identity. It also supplies
-commands for refreshing metadata, reading output, waiting, and prompting that
-specific pane. Shell panes work too. It does not read terminal output during the
-copy operation. Only the source pane is included; there is no pane picker.
-
-`terminal_id` lets an agent correlate the same terminal after a cross-workspace
-move changes its pane ID. It is not an agent command target. The recipient should
-use the Herdr skill, check `HERDR_ENV=1`, refresh identity before messaging, and
-use the exact copied session/socket. Copied context is not permission to send a
-message.
+The handoff contains a compact JSON record with the pane ID, session, recognized
+agent kind, pane label (or registered agent name), tab/workspace labels, and
+working directory, preferring the foreground process's directory. Missing values
+are omitted. Agent panes include ready-to-run `pane read`, `agent prompt`, and
+`agent wait` commands; shell panes include `pane read` and `pane run` instead.
+Commands carry the pane ID and explicit `--session` when the session name is
+usable and the first `herdr` on PATH resolves to the same file as the Herdr that
+started the plugin (including symlinks). If discovery fails, the session name is
+unusable, either binary cannot be resolved, or the binaries differ, the record
+and commands use the exact socket path with shell quoting. Capture reads metadata
+only, without terminal output.
 
 macOS uses `pbcopy`; Linux uses an available `wl-copy`, `xclip`, or `xsel`.
 Success is reported only after the clipboard command exits successfully.
