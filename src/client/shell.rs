@@ -22,6 +22,7 @@ mod fuzzy;
 mod landing_glow;
 mod pane_flag_paint;
 mod pane_flags;
+mod prompt_hold_paint;
 mod prompt_holds;
 pub(super) use endpoints::*;
 mod global_menu;

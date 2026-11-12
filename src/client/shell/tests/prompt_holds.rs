@@ -1,10 +1,10 @@
-//! The hold store is read through the presented snapshot, and the placeholder
-//! is checked against bordered surfaces using the real client paint seam.
-use super::landing_glow::{tab_snapshot, tab_surface};
+//! The hold store is read through the presented snapshot. What a hold draws
+//! is pinned in `super::prompt_hold_paint`.
+use super::landing_glow::tab_snapshot;
 use super::*;
 use crate::protocol::endpoint::{EndpointPromptHold, EndpointPromptHolds};
 
-fn holds(boot: &str, values: &[(&str, usize)]) -> EndpointPromptHolds {
+pub(super) fn holds(boot: &str, values: &[(&str, usize)]) -> EndpointPromptHolds {
     EndpointPromptHolds {
         boot_id: boot.into(),
         holds: values
@@ -62,44 +62,4 @@ fn prompt_holds_match_presented_endpoint_boot_and_connection() {
     );
     state.set_endpoint_prompt_holds(&remote, 3, holds("boot-1", &[]));
     assert!(state.prompt_holds().unwrap().is_empty());
-}
-
-#[test]
-fn prompt_holds_placeholder_marks_only_holding_pane_and_empty_paints_nothing() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
-    state.set_snapshot(Box::new(tab_snapshot(1, "pane_1")));
-    let surface = tab_surface("boot-1", 1, &["pane_1", "pane_2", "pane_3"], "pane_1");
-    let original = surface.frame.clone();
-    let mut frame = original.clone();
-    state.paint_prompt_holds(&mut frame, &surface, Rect::default());
-    assert_eq!(frame, original);
-    state.set_endpoint_prompt_holds(
-        &ClientEndpointId::Local,
-        1,
-        holds("boot-1", &[("pane_2", 2)]),
-    );
-    state.paint_prompt_holds(&mut frame, &surface, Rect::default());
-    let row: String = frame.cells[..frame.width as usize]
-        .iter()
-        .map(|cell| cell.symbol.as_str())
-        .collect();
-    assert_eq!(&row.chars().skip(20).take(3).collect::<String>(), "⏸ 2");
-    assert_eq!(&frame.cells[..12], &original.cells[..12]);
-    assert_eq!(&frame.cells[24..], &original.cells[24..]);
-    assert_eq!(
-        frame.cells[20].fg,
-        crate::protocol::color_to_u32(state.config.palette.yellow)
-    );
-    state.set_endpoint_prompt_holds(
-        &ClientEndpointId::Local,
-        1,
-        holds("boot-1", &[("pane_2", 0)]),
-    );
-    let mut frame = original.clone();
-    state.paint_prompt_holds(&mut frame, &surface, Rect::default());
-    assert_eq!(frame.cells[22].symbol, "⏸");
-    state.set_endpoint_prompt_holds(&ClientEndpointId::Local, 1, holds("boot-1", &[]));
-    let mut frame = original.clone();
-    state.paint_prompt_holds(&mut frame, &surface, Rect::default());
-    assert_eq!(frame, original);
 }

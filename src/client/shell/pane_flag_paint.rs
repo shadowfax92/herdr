@@ -27,9 +27,8 @@ use std::collections::{HashMap, HashSet};
 use ratatui::style::Color;
 use unicode_width::UnicodeWidthChar;
 
-use super::landing_glow::{
-    is_line_glyph, luminance, mix, pack, rgb, unpack_rgb, with_cell, Rgb, RESET,
-};
+use super::landing_glow::{luminance, mix, pack, rgb, unpack_rgb, with_cell, Rgb, RESET};
+use super::prompt_hold_paint::{plan_top_row, TopRow, TopRowPlan};
 use super::*;
 use crate::protocol::{CellData, SurfaceRect};
 
@@ -145,15 +144,24 @@ impl ClientShellState {
                 rect.height,
             )
         };
+        // The hold mark shares the top border, so the chip is placed by the
+        // joint plan (`super::prompt_hold_paint`), which leaves it room.
+        let holds = self.prompt_holds().filter(|holds| !holds.is_empty());
         for pane in &surface.panes {
             let Some(message) = marks.pane(&pane.pane_id) else {
                 continue;
             };
-            let (rect, inner) = (place(pane.rect), place(pane.inner_rect));
             if let Some((yellow, base)) = colors.wash {
-                wash(frame, inner, yellow, base);
+                wash(frame, place(pane.inner_rect), yellow, base);
             }
-            paint_chip(frame, rect, inner, message, &colors);
+            let Some(row) = TopRow::of(&surface.frame, pane) else {
+                continue;
+            };
+            let held = holds
+                .and_then(|holds| holds.get(&pane.pane_id))
+                .map(|hold| hold.held);
+            let plan = plan_top_row(&row, Some(message), held);
+            paint_chip(frame, &row, &plan, offset, &colors);
         }
     }
 }
@@ -238,77 +246,38 @@ fn wash(frame: &mut FrameData, area: Rect, yellow: Rgb, base: Option<Rgb>) {
     }
 }
 
-/// Places the chip. A bordered pane carries it on its top border after the
-/// server's label; a borderless pane (a lone pane, `pane_borders = "off"`)
-/// has no border to use, so the chip sits at the right end of its first row.
+/// Draws the chip where `plan` puts it. On a bordered pane that drops its
+/// label, the label's cells become border line first; a borderless pane (a
+/// lone pane, `pane_borders = "off"`) carries the chip at the right end of its
+/// first row.
 fn paint_chip(
     frame: &mut FrameData,
-    rect: Rect,
-    inner: Rect,
-    message: Option<&str>,
+    row: &TopRow,
+    plan: &TopRowPlan,
+    offset: Rect,
     colors: &FlagColors,
 ) {
-    if inner.y > rect.y && rect.width > 2 {
-        border_chip(frame, rect, message, colors);
-    } else if inner.width > 0 && inner.height > 0 {
-        let Some(text) = chip_text(message, usize::from(inner.width)) else {
-            return;
+    let x = offset.x.saturating_add(row.x);
+    let y = offset.y.saturating_add(row.y);
+    let end = x.saturating_add(row.room);
+    if plan.drop_label {
+        let label_end = x.saturating_add(row.label);
+        // Styled like the line cell after the label, or the corner.
+        let like = if label_end < end {
+            label_end
+        } else {
+            x.saturating_sub(1)
         };
-        let width = chip_width(&text);
-        put_chip(
-            frame,
-            inner.right().saturating_sub(width),
-            inner.y,
-            inner.right(),
-            &text,
-            colors,
-        );
+        redraw_as_line(frame, x, label_end, y, like);
     }
-}
-
-/// The chip on the top border, between the two corners.
-///
-/// The flag outranks the label. When the label, a one-cell gap and the whole
-/// chip fit, all three show. Otherwise the label is redrawn as border line,
-/// the chip takes the row, and its message truncates; the narrowest pane keeps
-/// a bare `⚑`.
-fn border_chip(frame: &mut FrameData, rect: Rect, message: Option<&str>, colors: &FlagColors) {
-    let y = rect.y;
-    let start = rect.x.saturating_add(1);
-    let end = rect.right().saturating_sub(1);
-    let room = end.saturating_sub(start);
-    // The server draws its label (` name `) right after the corner; it runs
-    // until the first line glyph. No label means a line glyph at `start`.
-    let mut label_end = start;
-    while label_end < end && !is_line_glyph(frame, label_end, y) {
-        label_end += 1;
-    }
-    let label = label_end - start;
-    let Some(full) = chip_text(message, usize::MAX) else {
-        return;
-    };
-    let gap = u16::from(label > 0);
-    if label + gap + chip_width(&full) <= room {
-        put_chip(frame, start + label + gap, y, end, &full, colors);
-        return;
-    }
-    if label > 0 {
-        redraw_as_line(
-            frame,
-            start,
-            label_end,
-            y,
-            if label_end < end { label_end } else { rect.x },
-        );
-    }
-    if let Some(text) = chip_text(message, usize::from(room)) {
-        put_chip(frame, start, y, end, &text, colors);
+    if let Some(text) = plan.chip.as_deref() {
+        put_chip(frame, x.saturating_add(plan.chip_x), y, end, text, colors);
     }
 }
 
 /// Repaints cells `from..to` on row `y` as border line, styled like the line
 /// cell at `like`, where the dropped label was.
-fn redraw_as_line(frame: &mut FrameData, from: u16, to: u16, y: u16, like: u16) {
+pub(super) fn redraw_as_line(frame: &mut FrameData, from: u16, to: u16, y: u16, like: u16) {
     let index = usize::from(y) * usize::from(frame.width) + usize::from(like);
     let Some(template) = frame.cells.get(index).cloned() else {
         return;
@@ -325,7 +294,7 @@ fn redraw_as_line(frame: &mut FrameData, from: u16, to: u16, y: u16, like: u16) 
 
 /// ` ⚑ message ` fitted to `room` cells: the whole message, then the message
 /// cut with an ellipsis, then a bare ` ⚑ `, then `⚑` alone.
-fn chip_text(message: Option<&str>, room: usize) -> Option<String> {
+pub(super) fn chip_text(message: Option<&str>, room: usize) -> Option<String> {
     if let Some(message) = message.filter(|message| !message.is_empty()) {
         let full = format!(" {FLAG_GLYPH} {message} ");
         if usize::from(chip_width(&full)) <= room {

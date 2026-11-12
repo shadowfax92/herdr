@@ -278,4 +278,5 @@ mod startup_overlays;
 
 mod pane_flag_paint;
 mod pane_flags;
+mod prompt_hold_paint;
 mod prompt_holds;

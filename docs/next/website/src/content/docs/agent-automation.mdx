@@ -131,6 +131,8 @@ See the [CLI reference](/docs/cli-reference/) for the complete command and optio
 
 Ctrl+C conservatively counts as an edit because CLI overlays can consume it without clearing the draft. Draft detection is conservative: backspacing to empty still counts as a draft. Enter that selects a popup or continues a line can falsely clear it after the settle delay. Raw pane writers bypass protection. After 600 seconds without an edit, an abandoned draft stops holding prompts. Held text is memory-only; shutdown, handoff, or agent loss produces notifications and logs, but a crash loses it. Normal shutdown also repeats loss summaries in the final terminal message so they remain readable after the TUI closes; the server log retains full text.
 
+While Herdr holds prompts for a pane, a quiet `✎` sits at the right end of the pane's top border. Once prompts are waiting it turns teal with a count, such as `✎ 2 prompts waiting`: press Enter to send your draft and let them in. The mark stays after backspacing to empty, since that still counts as a draft. Narrow panes shorten it to `✎ 2`; a pane without a border shows it at the right end of its first row.
+
 
 ## Flag a pane for review
 

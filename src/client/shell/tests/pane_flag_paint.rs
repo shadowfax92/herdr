@@ -9,28 +9,28 @@ use crate::protocol::CellData;
 use ratatui::style::Color;
 use ratatui::widgets::{Block, Widget};
 
-type Rgb = (u8, u8, u8);
+pub(super) type Rgb = (u8, u8, u8);
 
 // gruvbox, the theme the look was picked in.
-const BG: Rgb = (40, 40, 40);
-const YELLOW: Rgb = (250, 189, 47);
-const ACCENT: Rgb = (215, 153, 33);
-const OVERLAY0: Rgb = (146, 131, 116);
+pub(super) const BG: Rgb = (40, 40, 40);
+pub(super) const YELLOW: Rgb = (250, 189, 47);
+pub(super) const ACCENT: Rgb = (215, 153, 33);
+pub(super) const OVERLAY0: Rgb = (146, 131, 116);
 /// 12% of the way from the panel background to yellow: `#413A29`.
-const WASH: Rgb = (65, 58, 41);
+pub(super) const WASH: Rgb = (65, 58, 41);
 /// The same share over gruvbox's focused-row background `#323130`.
 const FOCUSED_ROW_WASH: Rgb = (74, 66, 48);
 /// A cell the agent painted itself, and that cell once washed.
-const OWN_BG: Rgb = (100, 0, 0);
-const OWN_BG_WASHED: Rgb = (118, 23, 6);
+pub(super) const OWN_BG: Rgb = (100, 0, 0);
+pub(super) const OWN_BG_WASHED: Rgb = (118, 23, 6);
 
-const RESET: u32 = 0;
+pub(super) const RESET: u32 = 0;
 
-fn packed((r, g, b): Rgb) -> u32 {
+pub(super) fn packed((r, g, b): Rgb) -> u32 {
     crate::protocol::color_to_u32(Color::Rgb(r, g, b))
 }
 
-fn gruvbox_state() -> ClientShellState {
+pub(super) fn gruvbox_state() -> ClientShellState {
     let mut config = Config::default();
     config.theme.name = Some("gruvbox".into());
     let state = ClientShellState::new(ClientShellConfig::from_config(&config));
@@ -39,7 +39,7 @@ fn gruvbox_state() -> ClientShellState {
 }
 
 /// The presented endpoint's flags, as the server's projection delivers them.
-fn set_flags(state: &mut ClientShellState, flags: &[(&str, Option<&str>)]) {
+pub(super) fn set_flags(state: &mut ClientShellState, flags: &[(&str, Option<&str>)]) {
     state.set_endpoint_pane_flags(
         &ClientEndpointId::Local,
         1,
@@ -63,7 +63,7 @@ fn set_flags(state: &mut ClientShellState, flags: &[(&str, Option<&str>)]) {
 /// Bordered panes side by side, `widths` wide and six rows tall, titled
 /// ` claude ` like the server's agent labels. Each pane's first content row
 /// reads `ok` and ends in one cell with the agent's own background.
-fn surface(widths: &[u16], focused: usize) -> PaneSurfaceFrame {
+pub(super) fn surface(widths: &[u16], focused: usize) -> PaneSurfaceFrame {
     let palette = crate::app::state::Palette::gruvbox();
     let total = widths.iter().sum::<u16>();
     let mut buffer = Buffer::empty(Rect::new(0, 0, total, 6));
@@ -136,17 +136,17 @@ fn paint(
     frame
 }
 
-fn cell(frame: &FrameData, x: u16, y: u16) -> &CellData {
+pub(super) fn cell(frame: &FrameData, x: u16, y: u16) -> &CellData {
     &frame.cells[usize::from(y) * usize::from(frame.width) + usize::from(x)]
 }
 
-fn row_text(frame: &FrameData, y: u16, from: u16, to: u16) -> String {
+pub(super) fn row_text(frame: &FrameData, y: u16, from: u16, to: u16) -> String {
     (from..to)
         .map(|x| cell(frame, x, y).symbol.as_str())
         .collect()
 }
 
-fn bold(cell: &CellData) -> bool {
+pub(super) fn bold(cell: &CellData) -> bool {
     cell.modifier & Modifier::BOLD.bits() != 0
 }
 
@@ -318,7 +318,7 @@ fn the_default_theme_takes_its_own_yellow_over_the_host_background() {
 
 /// One workspace with two tabs: the three agent panes in tab_1, which is
 /// shown, and a plain shell pane in tab_2, which is not.
-fn composed_state() -> ClientShellState {
+pub(super) fn composed_state() -> ClientShellState {
     let mut state = gruvbox_state();
     let mut snapshot = tab_snapshot(1, "pane_1");
     snapshot.agents[0].focused = true;
