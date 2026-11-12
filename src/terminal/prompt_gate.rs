@@ -30,8 +30,9 @@ pub(crate) enum GateAction {
     Undeliverable(PromptId),
 }
 
-/// One terminal's draft and FIFO. Deadlines exist only while prompts are waiting;
-/// a quiet terminal with no held work never needs a timer or background polling.
+/// One terminal's draft and FIFO. The runtime observes draft deadlines even with
+/// no queued work, so clients can stop showing a hold without further input.
+/// A terminal with neither a draft nor held work still needs no timer or polling.
 #[derive(Debug, Clone)]
 pub(crate) struct PromptGate {
     edited_at: Option<Instant>,
@@ -39,6 +40,8 @@ pub(crate) struct PromptGate {
     abandoned_after: Option<Duration>,
     enabled: bool,
     pending: VecDeque<(PromptId, Option<Instant>)>,
+    #[cfg(test)]
+    expiry_scans: std::cell::Cell<usize>,
 }
 
 impl Default for PromptGate {
@@ -49,6 +52,8 @@ impl Default for PromptGate {
             abandoned_after: Some(Duration::from_secs(600)),
             enabled: true,
             pending: VecDeque::new(),
+            #[cfg(test)]
+            expiry_scans: std::cell::Cell::new(0),
         }
     }
 }
@@ -57,9 +62,16 @@ impl PromptGate {
     pub(crate) fn configure(&mut self, enabled: bool, abandoned_secs: u64) {
         self.enabled = enabled;
         self.abandoned_after = (abandoned_secs != 0).then(|| Duration::from_secs(abandoned_secs));
+        if !enabled {
+            self.edited_at = None;
+            self.clear_at = None;
+        }
     }
 
     pub(crate) fn human_input(&mut self, input: HumanInput, now: Instant) {
+        if !self.enabled {
+            return;
+        }
         match input {
             HumanInput::Edit => {
                 self.edited_at = Some(now);
@@ -104,19 +116,26 @@ impl PromptGate {
         actions
     }
 
-    pub(crate) fn next_deadline(&self) -> Option<Instant> {
-        if self.pending.is_empty() {
-            return None;
-        }
-        self.pending
-            .iter()
-            .filter_map(|(_, expiry)| *expiry)
-            .chain(self.enabled.then(|| self.draft_deadline()).flatten())
-            .min()
+    /// The runtime caches this scan when servicing a queue, never on the
+    /// per-key loop. Draft deadlines have a separate runtime index.
+    pub(crate) fn next_expiry(&self) -> Option<Instant> {
+        #[cfg(test)]
+        self.expiry_scans
+            .set(self.expiry_scans.get() + self.pending.len());
+        self.pending.iter().filter_map(|(_, expiry)| *expiry).min()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn expiry_scan_count(&self) -> usize {
+        self.expiry_scans.get()
     }
 
     pub(crate) fn held(&self) -> usize {
         self.pending.len()
+    }
+
+    pub(crate) fn holding(&self) -> bool {
+        self.enabled && self.edited_at.is_some()
     }
 
     /// A replacement agent must never inherit the previous agent's draft or mail.
@@ -127,7 +146,7 @@ impl PromptGate {
         actions
     }
 
-    fn draft_deadline(&self) -> Option<Instant> {
+    pub(crate) fn draft_deadline(&self) -> Option<Instant> {
         self.clear_at
             .into_iter()
             .chain(self.edited_at.and_then(|edited| {
@@ -170,6 +189,38 @@ mod tests {
     use HumanInput::{Clear, Edit, Neutral};
 
     #[test]
+    fn prompt_gate_exposes_draft_lifetime_without_held_work() {
+        let now = Instant::now();
+        let mut gate = PromptGate::default();
+        assert!(!gate.holding());
+        assert_eq!(gate.draft_deadline(), None);
+        gate.human_input(Edit, now);
+        assert!(gate.holding());
+        assert_eq!(gate.draft_deadline(), Some(now + Duration::from_secs(600)));
+        gate.human_input(Clear, now);
+        gate.poll(
+            AgentReadiness::Ready,
+            now + SETTLE - Duration::from_millis(1),
+        );
+        assert!(gate.holding());
+        gate.poll(AgentReadiness::Ready, now + SETTLE);
+        assert!(!gate.holding());
+        gate.human_input(Edit, now);
+        gate.poll(AgentReadiness::Ready, now + Duration::from_secs(600));
+        assert!(!gate.holding());
+        gate.human_input(Edit, now);
+        gate.configure(false, 600);
+        gate.human_input(Edit, now);
+        assert!(!gate.holding());
+        assert_eq!(gate.draft_deadline(), None);
+        gate.configure(true, 600);
+        assert!(
+            !gate.holding(),
+            "reenabling must not resurrect a disabled draft"
+        );
+    }
+
+    #[test]
     fn prompt_gate_draft_table() {
         let cases = [
             ("empty", vec![], 0, true),
@@ -191,7 +242,11 @@ mod tests {
             for (at, input) in inputs {
                 gate.human_input(input, start + Duration::from_millis(at));
             }
-            assert_eq!(gate.next_deadline(), None, "no mail needs no timer");
+            assert_eq!(
+                gate.next_expiry(),
+                None,
+                "no queued mail needs no delivery deadline"
+            );
             gate.push(1, None);
             let actions = gate.poll(AgentReadiness::Ready, start + Duration::from_millis(millis));
             assert_eq!(
@@ -216,16 +271,16 @@ mod tests {
         gate.push(1, None);
         gate.push(2, Some(now));
         gate.push(3, None);
-        assert_eq!(gate.next_deadline(), Some(now));
+        assert_eq!(gate.next_expiry(), Some(now));
         assert_eq!(
             gate.poll(AgentReadiness::Ready, now),
             vec![GateAction::Expire(2)]
         );
-        assert_eq!(gate.next_deadline(), None);
+        assert_eq!(gate.next_expiry(), None);
         gate.human_input(Clear, now);
         assert!(gate.poll(AgentReadiness::NotReady, now + SETTLE).is_empty());
         assert_eq!(
-            gate.next_deadline(),
+            gate.next_expiry(),
             None,
             "blocked panes do not spin after settle"
         );

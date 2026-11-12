@@ -19,6 +19,7 @@ fn attach(server: &mut HeadlessServer, client_id: u64, surface_active: bool) -> 
             surface_reuse: false,
             surface_delta: false,
             surface_scroll: false,
+            prompt_holds: false,
             client_id,
             surface_cols: 80,
             surface_rows: 23,

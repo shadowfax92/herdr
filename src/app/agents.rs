@@ -381,6 +381,7 @@ impl App {
         let pane = self.pane_metadata(ws_idx, pane_id)?;
         Some(crate::api::schema::AgentInfo {
             held_prompts: (terminal.prompt_gate.held() != 0).then(|| terminal.prompt_gate.held()),
+            holding: Some(terminal.prompt_gate.holding()),
             terminal_id: pane.terminal_id,
             name: terminal.agent_name.clone(),
             agent: pane.agent,

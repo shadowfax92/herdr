@@ -6975,6 +6975,13 @@
                 "null"
               ]
             },
+            "holding": {
+              "description": "Whether an unsent human draft currently holds incoming agent prompts.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
             "interactive_ready": {
               "type": "boolean"
             },

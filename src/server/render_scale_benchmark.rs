@@ -80,6 +80,9 @@ impl RenderPipeline {
         if !self.app.state.flagged_terminals.is_empty() {
             black_box(self.app.pane_flags_projection("bench-boot"));
         }
+        if self.app.prompt_holds_revision() != 0 {
+            black_box(self.app.prompt_holds_projection("bench-boot"));
+        }
         let target = self
             .app
             .state
@@ -648,6 +651,55 @@ async fn render_scale_profile() {
     print_surface_damage_profiles();
     print_trailing_slot_profiles();
     print_pane_flag_profiles();
+    print_prompt_hold_profiles();
+}
+
+/// Include both the server's identity projection and the client overlay at
+/// fixed geometry, with the same populated terminal histories as other profiles.
+fn print_prompt_hold_profiles() {
+    for (label, build) in [
+        (
+            "background workspaces",
+            workspaces as fn(usize) -> Vec<Workspace>,
+        ),
+        ("active panes", active_panes),
+    ] {
+        println!("prompt holds: {label}, fixed {COLS}x{ROWS}");
+        for count in [1, 15] {
+            for holding in [false, true] {
+                let mut pipeline = RenderPipeline::new(build(count));
+                pipeline.app.state.ensure_test_terminals();
+                let ids: Vec<_> = pipeline.app.state.terminals.keys().cloned().collect();
+                for id in ids {
+                    pipeline
+                        .app
+                        .state
+                        .terminals
+                        .get_mut(&id)
+                        .unwrap()
+                        .set_detected_state(
+                            Some(crate::detect::Agent::OpenCode),
+                            crate::detect::AgentState::Idle,
+                        );
+                    if holding {
+                        pipeline.app.note_prompt_human_input(
+                            &id,
+                            &[crate::terminal::prompt_gate::HumanInput::Edit],
+                            Instant::now(),
+                        );
+                    }
+                }
+                pipeline.client.set_endpoint_prompt_holds(
+                    &crate::client::endpoint::ClientEndpointId::Local,
+                    1,
+                    pipeline.app.prompt_holds_projection("bench-boot"),
+                );
+                let stats = profile_pipeline(pipeline);
+                println!("  panes={count} holding={holding} server_median_us={} client_median_us={} client_p95_us={} total_median_us={}",
+                    stats.server.median_us, stats.client.median_us, stats.client.p95_us, stats.total.median_us);
+            }
+        }
+    }
 }
 
 /// Dirty-row collection while output scrolls a large pane, the host's hot path

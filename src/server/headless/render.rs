@@ -529,6 +529,67 @@ impl HeadlessServer {
         true
     }
 
+    /// Draft/count revisions bypass rendering; render passes also reconcile
+    /// public pane identity after structural edits. Equality suppresses controls
+    /// on ordinary keys and stale timer wakes, independent of surface activity.
+    pub(super) fn stream_prompt_holds(&mut self, refresh_identity: bool) {
+        let revision = self.app.prompt_holds_revision();
+        if !refresh_identity && self.streamed_prompt_holds_revision == revision {
+            return;
+        }
+        if !self.clients.values().any(|client| {
+            client.shell_prompt_holds_enabled
+                && (client.shell_prompt_holds_revision != revision
+                    || (refresh_identity
+                        && client
+                            .shell_prompt_holds
+                            .as_ref()
+                            .is_some_and(|holds| !holds.holds.is_empty())))
+        }) {
+            self.streamed_prompt_holds_revision = revision;
+            return;
+        }
+        let holds = self.app.prompt_holds_projection(&self.client_shell_boot_id);
+        let mut broken = Vec::new();
+        let mut framed = None;
+        for (id, client) in &mut self.clients {
+            if !client.shell_prompt_holds_enabled {
+                continue;
+            }
+            client.shell_prompt_holds_revision = revision;
+            if client.shell_prompt_holds.as_ref() == Some(&holds) {
+                continue;
+            }
+            if framed.is_none() {
+                framed = match crate::protocol::endpoint::prompt_holds_message(&holds)
+                    .map_err(std::io::Error::other)
+                    .and_then(|message| {
+                        Self::frame_server_message(&message).map_err(std::io::Error::other)
+                    }) {
+                    Ok(bytes) => Some(bytes),
+                    Err(err) => {
+                        warn!(err = %err, "failed to frame prompt holds");
+                        return;
+                    }
+                };
+            }
+            if client
+                .writer
+                .as_ref()
+                .zip(framed.as_ref())
+                .is_some_and(|(writer, bytes)| writer.control.send(bytes.clone()).is_ok())
+            {
+                client.shell_prompt_holds = Some(holds.clone());
+            } else {
+                broken.push(*id);
+            }
+        }
+        for id in broken {
+            self.remove_client_and_resize_if_needed(id);
+        }
+        self.streamed_prompt_holds_revision = revision;
+    }
+
     pub(super) fn render_and_stream(&mut self) {
         self.render_and_stream_with_graphics_limit(MAX_GRAPHICS_FRAME_SIZE);
     }
@@ -645,6 +706,7 @@ impl HeadlessServer {
         }
 
         let mut broken_clients: Vec<u64> = Vec::new();
+        self.stream_prompt_holds(true);
         let pane_flags = (!self.app.state.flagged_terminals.is_empty())
             .then(|| self.app.pane_flags_projection(&self.client_shell_boot_id));
         for (client_id, (cols, rows), cell_size, _is_foreground, mode) in render_targets {

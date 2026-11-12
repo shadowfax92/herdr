@@ -185,6 +185,10 @@ pub(crate) struct ClientConnection {
     /// so a client viewing another machine still filters by the current scope.
     pub(crate) shell_scope: Option<crate::scope::ScopeState>,
     pub(crate) shell_pane_flags: Option<crate::protocol::endpoint::EndpointPaneFlags>,
+    /// Negotiated optional control; never sent to older shells.
+    pub(crate) shell_prompt_holds_enabled: bool,
+    pub(crate) shell_prompt_holds: Option<crate::protocol::endpoint::EndpointPromptHolds>,
+    pub(crate) shell_prompt_holds_revision: u64,
     /// The scope this client filters by, as it last handed it to this server
     /// with `scope.mirror` (a remote machine never owns the client's scope).
     /// Plugin `scope.get` judges local tabs by it while this client is the one
@@ -262,6 +266,9 @@ impl ClientConnection {
             shell_agent_view: None,
             shell_scope: None,
             shell_pane_flags: None,
+            shell_prompt_holds_enabled: false,
+            shell_prompt_holds: None,
+            shell_prompt_holds_revision: 0,
             scope_mirror: None,
             shell_projection_revision: 0,
             shell_endpoint_command_in_flight: false,

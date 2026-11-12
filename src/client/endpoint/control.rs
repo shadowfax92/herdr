@@ -11,6 +11,7 @@ pub(crate) enum EndpointControlMessage {
     AgentViewProjection(DecodedAgentViewProjection),
     AgentCompletions(crate::protocol::endpoint::EndpointAgentCompletions),
     PaneFlags(crate::protocol::endpoint::EndpointPaneFlags),
+    PromptHolds(crate::protocol::endpoint::EndpointPromptHolds),
     /// Focus and hide; see `ScopeControl` for which endpoints each applies from.
     Scope(ScopeControl),
     Snapshot(Box<crate::protocol::ClientShellSnapshot>),
@@ -38,6 +39,11 @@ pub(crate) fn decode_endpoint_control(
     if kind == crate::protocol::endpoint::PANE_FLAGS_KIND {
         return Ok(serde_json::from_str(data)
             .map(EndpointControlMessage::PaneFlags)
+            .unwrap_or(EndpointControlMessage::Ignored));
+    }
+    if kind == crate::protocol::endpoint::PROMPT_HOLDS_KIND {
+        return Ok(serde_json::from_str(data)
+            .map(EndpointControlMessage::PromptHolds)
             .unwrap_or(EndpointControlMessage::Ignored));
     }
     if kind == crate::protocol::endpoint::AGENT_COMPLETIONS_KIND {

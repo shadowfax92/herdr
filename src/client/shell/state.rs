@@ -1021,6 +1021,7 @@ pub(crate) struct ClientShellState {
     pub(super) endpoint_error_deadline: Option<std::time::Instant>,
     pub(super) dismissed_product_announcement: Option<(String, String)>,
     pub(super) pane_flags: super::pane_flags::PaneFlags,
+    pub(super) prompt_holds: super::prompt_holds::PromptHolds,
     pub(super) landing_glow: super::landing_glow::LandingGlow,
     /// The Local endpoint's projected focus/hide scope (`crate::scope`); `None`
     /// until one arrives or when Local cannot project one. Read it through
@@ -1225,6 +1226,7 @@ impl ClientShellState {
             dismissed_product_announcement: None,
             landing_glow: Default::default(),
             pane_flags: Default::default(),
+            prompt_holds: Default::default(),
             scope_projection: None,
             #[cfg(test)]
             scope_set_requests: Vec::new(),

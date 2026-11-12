@@ -214,6 +214,8 @@ pub struct HeadlessServer {
     popup_owner_tab_id: Option<String>,
     /// Process-local identity used to reject shell replacements from an earlier server boot.
     client_shell_boot_id: String,
+    /// Avoid even client-fleet inspection on ordinary key/timer loop iterations.
+    streamed_prompt_holds_revision: u64,
     /// Outer window title last pushed, paired with the client that received it.
     /// Keying on the client means a newly attached terminal is written to even
     /// when the title itself has not changed, without every code path that
@@ -366,6 +368,7 @@ impl HeadlessServer {
             foreground_client_id: None,
             tab_geometry_controllers: HashMap::new(),
             popup_owner_tab_id: None,
+            streamed_prompt_holds_revision: 0,
             client_shell_boot_id: format!(
                 "{}-{}",
                 std::process::id(),
@@ -516,6 +519,9 @@ impl HeadlessServer {
             }
 
             self.app.poll_due_prompt_gates(now);
+            // Draft expiry is control-plane work: a quiet PTY may never request
+            // a render. Deliver its replacement even to inactive shell clients.
+            self.stream_prompt_holds(false);
             self.flush_prompt_notifications();
             self.poll_pending_alt_screen_reads(now);
             if self.process_deferred_alt_screen_reads() {
@@ -2049,6 +2055,7 @@ impl HeadlessServer {
                 surface_reuse,
                 surface_delta,
                 surface_scroll,
+                prompt_holds,
                 writer,
             } => {
                 if self.handoff_in_progress {
@@ -2099,6 +2106,7 @@ impl HeadlessServer {
                 connection
                     .render_state
                     .enable_surface_scroll(surface_scroll);
+                connection.shell_prompt_holds_enabled = prompt_holds;
                 connection.shell_projection_revision = 1;
                 let config_diagnostic = if endpoint_keybindings {
                     self.server_config_diagnostic.as_deref()
@@ -2174,12 +2182,30 @@ impl HeadlessServer {
                     }
                 };
                 connection.shell_pane_flags = Some(flags);
+                let holds_message = if prompt_holds {
+                    let holds = self.app.prompt_holds_projection(&self.client_shell_boot_id);
+                    let message = match crate::protocol::endpoint::prompt_holds_message(&holds) {
+                        Ok(message) => message,
+                        Err(err) => {
+                            warn!(client_id, err = %err, "failed to encode prompt holds");
+                            return false;
+                        }
+                    };
+                    connection.shell_prompt_holds = Some(holds);
+                    connection.shell_prompt_holds_revision = self.app.prompt_holds_revision();
+                    Some(message)
+                } else {
+                    None
+                };
                 self.clients.insert(client_id, connection);
                 if self.app.state.popup_pane.is_some() && self.popup_owner_tab_id.is_none() {
                     self.popup_owner_tab_id = self.shell_tab_id_for_client(client_id);
                 }
                 self.send_to_client(client_id, scope_message);
                 self.send_to_client(client_id, flags_message);
+                if let Some(message) = holds_message {
+                    self.send_to_client(client_id, message);
+                }
                 if let Some(message) = projection_message {
                     self.send_to_client(client_id, message);
                 }

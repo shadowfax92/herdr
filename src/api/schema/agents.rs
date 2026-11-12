@@ -199,6 +199,9 @@ pub struct AgentPromptParams {
 pub struct AgentInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held_prompts: Option<usize>,
+    /// Whether an unsent human draft currently holds incoming agent prompts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holding: Option<bool>,
     pub terminal_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,

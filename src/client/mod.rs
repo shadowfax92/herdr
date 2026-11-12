@@ -2168,6 +2168,28 @@ async fn run_client_loop(
                                 }
                                 continue;
                             }
+                            Ok(endpoint::EndpointControlMessage::PromptHolds(projection)) => {
+                                let frame = state.shell.as_mut().and_then(|shell| {
+                                    shell.set_endpoint_prompt_holds(
+                                        &endpoint_id,
+                                        generation,
+                                        projection,
+                                    );
+                                    shell
+                                        .endpoint_is_active(&endpoint_id)
+                                        .then(|| {
+                                            shell.compose(
+                                                state.reported_size.0,
+                                                state.reported_size.1,
+                                            )
+                                        })
+                                        .flatten()
+                                });
+                                if let Some(frame) = frame {
+                                    state.present_frame(frame);
+                                }
+                                continue;
+                            }
                             Ok(endpoint::EndpointControlMessage::Scope(control)) => {
                                 if finish_scope_control(
                                     &mut state,

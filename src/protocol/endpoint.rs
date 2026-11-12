@@ -35,6 +35,9 @@ pub const AGENT_COMPLETIONS_KIND: &str = "endpoint.agent-completions.v1";
 /// on plain shell panes that have no detected agent.
 pub const PANE_FLAGS_CAPABILITY: &str = "pane_flags";
 pub const PANE_FLAGS_KIND: &str = "endpoint.pane-flags.v1";
+/// Optional draft gate metadata; clients opt in independently of the core codecs.
+pub const PROMPT_HOLDS_CAPABILITY: &str = "prompt_holds";
+pub const PROMPT_HOLDS_KIND: &str = "endpoint.prompt-holds.v1";
 /// Focus and hide (`crate::scope`): the server's whole scope, sent on attach and
 /// on every change, ahead of the snapshot it belongs with. Clients read it
 /// only from their Local endpoint.
@@ -81,6 +84,9 @@ pub struct EndpointClientHello {
     /// Accept the optional scroll-aware patch encoding on this connection.
     #[serde(default)]
     pub surface_scroll: bool,
+    /// Receive draft gate replacements, including while presenting another endpoint.
+    #[serde(default)]
+    pub prompt_holds: bool,
     #[serde(default)]
     pub snapshot_codecs: Vec<String>,
     #[serde(default)]
@@ -124,6 +130,26 @@ pub struct EndpointScopeProjection {
 pub struct EndpointPaneFlags {
     pub boot_id: String,
     pub flags: Vec<EndpointPaneFlag>,
+}
+
+/// Complete replacement of the holding agent panes for one server boot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointPromptHolds {
+    pub boot_id: String,
+    pub holds: std::collections::BTreeMap<String, EndpointPromptHold>,
+}
+
+/// Presence in the replacement means a human draft is holding agent prompts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointPromptHold {
+    pub held: usize,
+}
+
+pub fn prompt_holds_message(projection: &EndpointPromptHolds) -> serde_json::Result<ServerMessage> {
+    Ok(ServerMessage::EndpointControl {
+        kind: PROMPT_HOLDS_KIND.into(),
+        data: serde_json::to_string(projection)?,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -268,6 +294,7 @@ impl EndpointServerWelcome {
                 AGENT_COMPLETIONS_CAPABILITY.into(),
                 SCOPE_PROJECTION_CAPABILITY.into(),
                 PANE_FLAGS_CAPABILITY.into(),
+                PROMPT_HOLDS_CAPABILITY.into(),
                 SCOPE_PICK_CAPABILITY.into(),
                 SCOPE_TOGGLE_CAPABILITY.into(),
             ],
@@ -297,6 +324,15 @@ impl EndpointServerWelcome {
 mod tests {
     use super::*;
 
+    #[test]
+    fn prompt_holds_opt_in_defaults_off_for_older_hello_json() {
+        let mut json = serde_json::to_value(hello()).unwrap();
+        json.as_object_mut().unwrap().remove("prompt_holds");
+        let older: EndpointClientHello = serde_json::from_value(json).unwrap();
+        assert!(!older.prompt_holds);
+        assert!(older.supports_required_codecs());
+    }
+
     fn hello() -> EndpointClientHello {
         EndpointClientHello {
             generation: ENDPOINT_PROTOCOL_GENERATION,
@@ -311,6 +347,7 @@ mod tests {
             surface_reuse: false,
             surface_delta: false,
             surface_scroll: false,
+            prompt_holds: false,
             snapshot_codecs: vec![SNAPSHOT_CODEC_V1.into()],
             surface_codecs: vec![SURFACE_CODEC_V1.into()],
             input_codecs: vec![INPUT_CODEC_V1.into()],
@@ -487,6 +524,7 @@ mod tests {
                 AGENT_COMPLETIONS_CAPABILITY.to_string(),
                 SCOPE_PROJECTION_CAPABILITY.to_string(),
                 PANE_FLAGS_CAPABILITY.to_string(),
+                PROMPT_HOLDS_CAPABILITY.to_string(),
                 SCOPE_PICK_CAPABILITY.to_string(),
                 SCOPE_TOGGLE_CAPABILITY.to_string(),
             ]
