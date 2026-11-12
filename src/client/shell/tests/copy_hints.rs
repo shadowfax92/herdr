@@ -141,7 +141,7 @@ fn pane_rows(state: &ClientShellState, frame: &FrameData) -> Vec<String> {
 }
 
 #[test]
-fn prefix_f_labels_the_pane_and_a_label_copies_and_leaves() {
+fn prefix_f_at_the_bottom_copies_and_returns_to_the_pane() {
     let surface = hint_surface(&["see /tmp/a.txt", "or https://herdr.dev/x"], 30);
     let mut state = client(&Config::default(), &surface);
 
@@ -166,6 +166,121 @@ fn prefix_f_labels_the_pane_and_a_label_copies_and_leaves() {
     );
     assert_eq!(state.mode, ClientShellMode::Terminal);
     assert!(state.copy_mode.is_none());
+    assert!(scrolled_to(&chosen).is_empty());
+    assert_eq!(state.pane_surface.as_ref(), Some(&surface));
+}
+
+#[test]
+fn a_copy_in_copy_mode_keeps_the_cursor_scroll_and_selection() {
+    for entry in [b"f".as_slice(), PREFIX_F] {
+        for select in [false, true] {
+            let mut surface = hint_surface(&["/old/zero", "/old/one"], 20);
+            surface.panes[0].scroll = scroll(5, 20, 2);
+            let mut state = client(&Config::default(), &surface);
+            state.handle_input_bytes(PREFIX_BRACKET);
+            if select {
+                state.handle_input_bytes(b"v");
+            }
+            press(&mut state, KeyCode::Right, KeyModifiers::empty());
+            let before = state.copy_mode.clone();
+            let selection = state
+                .selection
+                .as_ref()
+                .map(|selection| selection.ordered_cells());
+            assert_eq!(selection.is_some(), select);
+
+            state.handle_input_bytes(entry);
+            assert!(state.copy_hints_open());
+            let chosen = state.handle_input_bytes(b"a");
+
+            assert_eq!(clipboard(&chosen).as_deref(), Some("/old/one"));
+            assert!(scrolled_to(&chosen).is_empty());
+            assert_eq!(state.mode, ClientShellMode::Copy);
+            assert_eq!(state.copy_mode, before);
+            assert_eq!(
+                state
+                    .selection
+                    .as_ref()
+                    .map(|selection| selection.ordered_cells()),
+                selection
+            );
+
+            state.handle_input_bytes(entry);
+            let cancelled = esc(&mut state);
+            assert!(clipboard(&cancelled).is_none());
+            assert!(scrolled_to(&cancelled).is_empty());
+            assert_eq!(state.mode, ClientShellMode::Copy);
+            assert_eq!(
+                state.copy_mode, before,
+                "Esc preserves the same session too"
+            );
+            assert_eq!(
+                state
+                    .selection
+                    .as_ref()
+                    .map(|selection| selection.ordered_cells()),
+                selection
+            );
+        }
+    }
+}
+
+#[test]
+fn copy_mode_can_scroll_and_copy_hints_repeatedly() {
+    let mut surface = hint_surface(&["/new/one", "/new/two"], 20);
+    surface.panes[0].scroll = scroll(0, 20, 2);
+    let mut state = client(&Config::default(), &surface);
+    state.handle_input_bytes(PREFIX_BRACKET);
+
+    for (offset, rows, expected) in [
+        (1, ["/old/zero", "/old/one"], "/old/one"),
+        (2, ["/older/zero", "/older/one"], "/older/one"),
+    ] {
+        let page = press(&mut state, KeyCode::PageUp, KeyModifiers::empty());
+        assert_eq!(scrolled_to(&page), [offset]);
+        let [ClientShellAction::Endpoint { request, .. }] = &page.actions[..] else {
+            panic!("one pane.scroll request");
+        };
+        redraw(&mut surface, &rows);
+        surface.panes[0].scroll = scroll(offset, 20, 2);
+        state.set_pane_surface(surface.clone());
+        state.handle_endpoint_result("boot-1", &request.id, Ok(pane_scroll_result(offset, 20, 2)));
+        let before = state.copy_mode.clone();
+
+        state.handle_input_bytes(b"f");
+        let chosen = state.handle_input_bytes(b"a");
+
+        let [ClientShellAction::ClipboardWrite(bytes)] = &chosen.actions[..] else {
+            panic!("each copy writes only its chosen text");
+        };
+        assert_eq!(bytes, expected.as_bytes(), "replace the previous clipboard");
+        assert_eq!(state.mode, ClientShellMode::Copy);
+        assert_eq!(
+            state.copy_mode, before,
+            "keep the page and cursor each time"
+        );
+        assert_eq!(
+            state
+                .copy_mode
+                .as_ref()
+                .expect("copy mode")
+                .offset_from_bottom,
+            offset as usize
+        );
+    }
+}
+
+#[test]
+fn a_hint_copy_repaints_even_when_the_clipboard_toast_is_disabled() {
+    let surface = hint_surface(&["/tmp/a", ""], 20);
+    let mut state = client(&Config::default(), &surface);
+    state.config.clipboard_toast_enabled = false;
+    state.handle_input_bytes(PREFIX_F);
+    let chosen = state.handle_input_bytes(b"a");
+    assert_eq!(clipboard(&chosen).as_deref(), Some("/tmp/a"));
+    assert!(chosen.repaint, "remove the frozen labels without a toast");
+    assert!(!state.copy_hints_open());
+    assert!(state.copy_feedback.is_none());
 }
 
 #[test]
@@ -245,7 +360,7 @@ fn labels_and_the_copied_text_hold_still_while_a_busy_pane_redraws() {
 }
 
 #[test]
-fn a_fullscreen_app_gets_hints_and_copying_pages_it_back_down() {
+fn a_fullscreen_app_stays_paged_up_after_a_hint_copy_until_copy_mode_exits() {
     use crate::protocol::{ClientKeyCode, ClientKeyKind};
     let stroke = |code: ClientKeyCode| {
         vec![
@@ -266,9 +381,12 @@ fn a_fullscreen_app_gets_hints_and_copying_pages_it_back_down() {
         Some("https://herdr.dev/page/2")
     );
     assert!(keys_sent_to_pane(&chosen).is_empty());
+    assert_eq!(state.mode, ClientShellMode::Terminal);
+    assert!(state.copy_mode.is_none());
 
     // From copy mode after paging the app up: the app redraws its older page
-    // under the same scroll metrics, and copying pages it back down.
+    // under the same scroll metrics. Copying leaves that page in copy mode;
+    // only leaving copy mode owes the app its PageDown.
     let mut state = client(&Config::default(), &surface);
     state.handle_input_bytes(PREFIX_BRACKET);
     let page = press(&mut state, KeyCode::Char('u'), KeyModifiers::CONTROL);
@@ -283,8 +401,13 @@ fn a_fullscreen_app_gets_hints_and_copying_pages_it_back_down() {
         clipboard(&chosen).as_deref(),
         Some("https://herdr.dev/page/1")
     );
+    assert_eq!(state.mode, ClientShellMode::Copy);
+    assert!(!state.copy_hints_open());
+    assert!(keys_sent_to_pane(&chosen).is_empty());
+    assert_eq!(state.copy_mode.as_ref().expect("copy mode").app_pages_up, 1);
+    let exited = esc(&mut state);
     assert_eq!(state.mode, ClientShellMode::Terminal);
-    assert_eq!(keys_sent_to_pane(&chosen), stroke(ClientKeyCode::PageDown));
+    assert_eq!(keys_sent_to_pane(&exited), stroke(ClientKeyCode::PageDown));
 }
 
 #[test]
@@ -327,15 +450,20 @@ fn f_in_copy_mode_waits_for_the_page_it_asked_for_and_esc_returns_there() {
     assert_eq!(copy_mode.offset_from_bottom, 1, "on the same page");
     assert_eq!(copy_mode.cursor, paged.cursor);
 
+    let resumed = state.copy_mode.clone();
     state.handle_input_bytes(b"f");
     let chosen = state.handle_input_bytes(b"s");
     assert_eq!(clipboard(&chosen).as_deref(), Some("/old/zero"));
-    assert_eq!(scrolled_to(&chosen), [0], "a copy lands on the live bottom");
-    assert_eq!(state.mode, ClientShellMode::Terminal);
+    assert!(
+        scrolled_to(&chosen).is_empty(),
+        "copying keeps the same page"
+    );
+    assert_eq!(state.mode, ClientShellMode::Copy);
+    assert_eq!(state.copy_mode, resumed);
 }
 
 #[test]
-fn a_copy_from_a_scrolled_pane_lands_on_the_live_bottom_and_esc_stays() {
+fn a_copy_from_a_scrolled_pane_returns_to_the_same_scroll_position() {
     let mut surface = hint_surface(&["/old/zero", "/old/one"], 20);
     surface.panes[0].scroll = scroll(5, 20, 2);
 
@@ -343,17 +471,34 @@ fn a_copy_from_a_scrolled_pane_lands_on_the_live_bottom_and_esc_stays() {
     state.handle_input_bytes(PREFIX_F);
     let chosen = state.handle_input_bytes(b"a");
     assert_eq!(clipboard(&chosen).as_deref(), Some("/old/one"));
-    assert_eq!(scrolled_to(&chosen), [0], "the copy returns to the bottom");
+    assert!(scrolled_to(&chosen).is_empty(), "the viewport stays put");
     assert_eq!(state.mode, ClientShellMode::Terminal);
+    assert!(state.copy_mode.is_none());
+    assert_eq!(
+        state.pane_surface.as_ref().expect("surface").panes[0]
+            .scroll
+            .as_ref()
+            .expect("scroll metrics")
+            .offset_from_bottom,
+        5
+    );
+}
 
+#[test]
+fn esc_from_a_scrolled_pane_returns_to_the_same_scroll_position() {
+    let mut surface = hint_surface(&["/old/zero", "/old/one"], 20);
+    surface.panes[0].scroll = scroll(5, 20, 2);
     let mut state = client(&Config::default(), &surface);
     state.handle_input_bytes(PREFIX_F);
     let cancelled = esc(&mut state);
     assert_eq!(state.mode, ClientShellMode::Terminal);
+    assert!(state.copy_mode.is_none());
+    assert!(clipboard(&cancelled).is_none());
     assert!(
-        scrolled_to(&cancelled).iter().all(|offset| *offset == 5),
-        "Esc leaves the pane where it was scrolled"
+        scrolled_to(&cancelled).is_empty(),
+        "Esc leaves the viewport put"
     );
+    assert_eq!(state.pane_surface.as_ref(), Some(&surface));
 }
 
 fn ab_targets() -> (ClientShellState, PaneSurfaceFrame) {

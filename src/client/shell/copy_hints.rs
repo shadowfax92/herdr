@@ -4,7 +4,9 @@
 //! focused pane's visible cells, labels every copy target on them with
 //! `crate::copy_hints`, and waits for a label. Typing one writes that text to
 //! this client's clipboard (native, or OSC 52 under SSH), shows the usual
-//! "copied to clipboard" toast, and ends copy mode as `y` does.
+//! "copied to clipboard" toast, and closes only the hints, as Esc does. Hints
+//! opened in copy mode return to its cursor, scroll position and selection;
+//! hints opened from the pane return there without moving its viewport.
 //!
 //! ```text
 //!  prefix+f / f ─► enter_copy_hints ─► enter_copy_mode, hints = Waiting ─┐
@@ -15,8 +17,9 @@
 //!                                                     Waiting, and the surface shows copy
 //!                                                     mode's viewport ─► capture ─► Frozen
 //!  key ─► route_copy_mode_key ─► route_copy_hints_key ─► ClientCopyHints::press
-//!           Chosen(text) ─► ClipboardWrite + toast + exit_copy_mode
-//!           Cancelled    ─► close_copy_hints: back to copy mode, or out of it
+//!           Chosen(text) ─► ClipboardWrite + toast ─┐
+//!           Cancelled    ──────────────────────────┴─► close_copy_hints:
+//!                                                     back to where hints opened
 //!  compose ─► render_copy_hints: frozen cells, underlines, labels; reads only
 //! ```
 //!
@@ -38,14 +41,14 @@ use crate::copy_hints::{HintRules, HintTarget};
 use crate::protocol::{CellData, PaneSurfacePane};
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 
-/// Where Esc returns to, decided once when hints open.
+/// Where copying or Esc returns to, decided once when hints open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HintEntry {
     /// Opened from the pane (prefix+f): the copy session exists only for the
-    /// hints, so cancelling ends it too and the user is back in the pane.
+    /// hints, so closing them ends it too and the user is back in the pane.
     Direct,
-    /// Opened inside copy mode (`f`, or prefix+f there): cancelling returns
-    /// to copy mode at the same cursor and scroll position.
+    /// Opened inside copy mode (`f`, or prefix+f there): closing returns
+    /// to copy mode at the same cursor, scroll position and selection.
     FromCopyMode,
 }
 
@@ -232,14 +235,11 @@ impl ClientShellState {
                 outcome
                     .actions
                     .push(ClientShellAction::ClipboardWrite(text.into_bytes()));
-                // A hint copy finishes with the pane, so from either entry it
-                // lands on the live bottom, even if the pane was already
-                // scrolled up when hints opened. Exiting also pages a
-                // fullscreen app back down.
-                if let Some(copy_mode) = self.copy_mode.as_mut() {
-                    copy_mode.entry_offset_from_bottom = 0;
-                }
-                self.exit_copy_mode(false, outcome);
+                // Like Esc, return to where hints opened. Keep an existing
+                // copy session intact, including its selection and any app
+                // pages owed on exit; a direct session never moved the pane.
+                self.close_copy_hints();
+                outcome.repaint = true;
             }
         }
         true
@@ -323,7 +323,7 @@ impl ClientShellState {
         }
     }
 
-    /// Ends the hint session the way Esc does, without copying. A `Direct`
+    /// Ends the hint session after copying, Esc or a lifetime change. A `Direct`
     /// session drops its whole copy session and returns to Terminal mode; a
     /// `FromCopyMode` one drops only the hints. It sends nothing, so it is
     /// safe from reconcile seams that have no outcome. A `Direct` session
